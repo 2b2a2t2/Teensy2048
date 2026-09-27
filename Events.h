@@ -9,3 +9,6 @@
 
 void handleButtonEvents();
 void handleEncoderEvents();
+
+// ENCMODE: current CC value (0..127) of encoder 0..7 (sends CC 1..8)
+uint8_t encCcValue(uint8_t idx);

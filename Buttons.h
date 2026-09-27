@@ -11,6 +11,8 @@
 #define DATA_PIN 6
 
 #define BTN_HOLD_MS   300
+#define BTN_HOLD_ENC_MS 150   // ENC mode button fires HOLD sooner: the
+                              // momentary ENCMODE3 comes up twice as fast
 #define BTN_DOUBLE_MS 300
 
 enum BtnEvent : uint8_t { EV_NONE=0, EV_PRESSED, EV_RELEASED, EV_HOLD, EV_CLICKED, EV_DOUBLE };
@@ -49,6 +51,7 @@ typedef CRGB (*LedColorHook)(uint8_t pad, bool isTouched, CRGB defaultColor);
 void setLedColorHook(LedColorHook hook);
 
 void initButtons();
+void refreshAllLeds();   // repaint every pad via hook; shows only on change
 void handleTouches(uint8_t chip, uint16_t currtouched, uint16_t &lasttouched);
 void btnUpdate();
 bool popEvent(uint8_t &pad, uint8_t &ev);

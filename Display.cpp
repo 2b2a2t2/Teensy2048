@@ -2,6 +2,9 @@
 #include "Encoders.h"
 #include "Bindings.h"
 #include "SeqClock.h"
+#include "Modes.h"
+#include "Keyboard.h"
+#include "Events.h"
 #include <Wire.h>
 
 U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, U8X8_PIN_NONE);
@@ -38,14 +41,34 @@ void refreshMainScreen() {
 
   ModeBinding b = currentBinding();
   char val[12];
+  // SEQMODE3 encoders show state, not the raw shared counter
+  bool seq3 = (modeBase == MODE_SEQ && modeVariant == 3);
 
   for (uint8_t c = 0; c < 4; c++) {
     uint8_t x = c * 32 + 1;
     u8g2.drawStr(x, 22, encLabel(b.enc, c));
-    snprintf(val, sizeof(val), "%ld", encPosition(c));
+    if (seq3 && c == 0) {
+      snprintf(val, sizeof(val), "%u", seqTempo());          // ENC1 = BPM
+    } else if (seq3 && c == 3) {
+      snprintf(val, sizeof(val), "%s", seqIsSyncInternal() ? "INT" : "EXT");
+    } else if (modeBase == MODE_KEY && c == 0) {
+      snprintf(val, sizeof(val), "%d", keyOctave());         // ENC1 = octave
+    } else if (modeBase == MODE_ENC) {
+      snprintf(val, sizeof(val), "%u", encCcValue(c));       // CC value
+    } else {
+      snprintf(val, sizeof(val), "%ld", encPosition(c));
+    }
     u8g2.drawStr(x, 30, val);
     u8g2.drawStr(x, 38, encLabel(b.enc, 4 + c));
-    snprintf(val, sizeof(val), "%ld", encPosition(4 + c));
+    if (seq3 && 4 + c == 4) {
+      snprintf(val, sizeof(val), "%u", seqInputChannel()); // ENC5 = input ch
+    } else if (seq3 && 4 + c == 5) {
+      snprintf(val, sizeof(val), "%s", seqTrackName());   // ENC6 = TRACK
+    } else if (modeBase == MODE_ENC) {
+      snprintf(val, sizeof(val), "%u", encCcValue(4 + c)); // CC value
+    } else {
+      snprintf(val, sizeof(val), "%ld", encPosition(4 + c));
+    }
     u8g2.drawStr(x, 46, val);
   }
 

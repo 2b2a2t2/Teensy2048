@@ -59,3 +59,12 @@ long encPosition(uint8_t idx) {
   if (idx >= NUM_ENCODERS) return 0;
   return encoders[idx]->read();
 }
+
+// ENCMODE3: channel of the encoder CCs
+static uint8_t encCh = 1;
+
+void encSetChannel(uint8_t ch) {
+  if (ch >= 1 && ch <= 16) encCh = ch;
+}
+
+uint8_t encChannel() { return encCh; }

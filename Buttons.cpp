@@ -87,7 +87,8 @@ static void btnOnRelease(uint8_t pad) {
 void btnUpdate() {
   unsigned long now = millis();
   for (uint8_t p = 0; p < 48; p++) {
-    if (btnState[p] == ST_PRESSED && (now - btnDownAt[p]) >= BTN_HOLD_MS) {
+    if (btnState[p] == ST_PRESSED && (now - btnDownAt[p]) >=
+        (p == padToLedList[32] ? BTN_HOLD_ENC_MS : BTN_HOLD_MS)) {  // 32 = "ENC"
       btnState[p] = ST_HOLD;
       pushEvent(p, EV_HOLD);
     }
@@ -114,9 +115,23 @@ const char* buttonName(uint8_t pad) {
 }
 
 static LedColorHook ledColorHook = nullptr;
+static bool padTouched[48] = {false};
 
 void setLedColorHook(LedColorHook hook) {
   ledColorHook = hook;
+}
+
+// full repaint through the LED hook (mode colors, playhead, keyboard, ...)
+void refreshAllLeds() {
+  bool changed = false;
+  for (uint8_t p = 0; p < 48; p++) {
+    int8_t led = ledForPad[p];
+    if (led < 0) continue;
+    CRGB c = padTouched[p] ? CRGB::White : CRGB::Black;
+    if (ledColorHook) c = ledColorHook(p, padTouched[p], c);
+    if (leds[led] != c) { leds[led] = c; changed = true; }
+  }
+  if (changed) FastLED.show();
 }
 
 void initButtons() {
@@ -136,6 +151,7 @@ void handleTouches(uint8_t chip, uint16_t currtouched, uint16_t &lasttouched) {
 
     if (isTouched && !wasTouched) btnOnPress(pad);
     if (!isTouched && wasTouched) btnOnRelease(pad);
+    padTouched[pad] = isTouched;
 
     int8_t led = ledForPad[pad];
     if (led >= 0) {

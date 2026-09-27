@@ -30,16 +30,16 @@ static const ModeBinding table[3][4] = {
 static const char* encLabels[ENC_SET_COUNT][8] = {
   /* ENC_SEQ          */ { "SQ1", "SQ2", "SQ3", "SQ4", "SQ5", "SQ6", "SQ7", "SQ8" },
   /* ENC_SEQ2         */ { "S21", "S22", "S23", "S24", "S25", "S26", "S27", "S28" },
-  /* ENC_SEQ3         */ { "S31", "S32", "S33", "S34", "S35", "S36", "S37", "S38" },
+  /* ENC_SEQ3         */ { "BPM", "S32", "S33", "SYNC", "INCH", "TRACK", "S37", "S38" },
   /* ENC_SEQ4         */ { "S41", "S42", "S43", "S44", "S45", "S46", "S47", "S48" },
   /* ENC_ENC          */ { "EN1", "EN2", "EN3", "EN4", "EN5", "EN6", "EN7", "EN8" },
   /* ENC_ENC2         */ { "E21", "E22", "E23", "E24", "E25", "E26", "E27", "E28" },
   /* ENC_ENC3         */ { "E31", "E32", "E33", "E34", "E35", "E36", "E37", "E38" },
   /* ENC_ENC4         */ { "E41", "E42", "E43", "E44", "E45", "E46", "E47", "E48" },
-  /* ENC_KEY          */ { "KY1", "KY2", "KY3", "KY4", "KY5", "KY6", "KY7", "KY8" },
-  /* ENC_KEY2         */ { "K21", "K22", "K23", "K24", "K25", "K26", "K27", "K28" },
-  /* ENC_KEY3         */ { "K31", "K32", "K33", "K34", "K35", "K36", "K37", "K38" },
-  /* ENC_KEY4         */ { "K41", "K42", "K43", "K44", "K45", "K46", "K47", "K48" },
+  /* ENC_KEY          */ { "OCT", "KY2", "KY3", "KY4", "KY5", "KY6", "KY7", "KY8" },
+  /* ENC_KEY2         */ { "OCT", "K22", "K23", "K24", "K25", "K26", "K27", "K28" },
+  /* ENC_KEY3         */ { "OCT", "K32", "K33", "K34", "K35", "K36", "K37", "K38" },
+  /* ENC_KEY4         */ { "OCT", "K42", "K43", "K44", "K45", "K46", "K47", "K48" },
   /* ENC_SEQ_STEP_HELD*/ { "HD1", "HD2", "HD3", "HD4", "HD5", "HD6", "HD7", "HD8" },
 };
 
