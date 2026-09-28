@@ -13,3 +13,8 @@ void initModes();                    // installs LED color hook
 void pollModeLeds();                 // call every loop: pulse/blink animation
 void modeOnEvent(uint8_t pad, uint8_t ev);  // EV_CLICKED / EV_HOLD / EV_DOUBLE
 const char* modeName();              // "---", "ENC", "ENC2", "ENC3", "ENC4"...
+
+// which KEY variant defines the keyboard behavior: the current one while
+// in KEYMODE, the last latched KEY variant elsewhere (KEYMODE2 = chord
+// mode is inherited by SEQMODE/ENCMODE)
+uint8_t keyBehaviorVariant();

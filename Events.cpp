@@ -6,6 +6,7 @@
 #include "Bindings.h"
 #include "SeqClock.h"
 #include "Keyboard.h"
+#include "Chords.h"
 
 // skip a log line if the USB TX buffer is congested (never block the loop —
 // a blocked Serial.write stalls pollSeqClock and freezes the playhead)
@@ -26,6 +27,9 @@ static void logSets() {
   Serial.print(keySetName(b.key));
   Serial.println("]");
 }
+
+// PREV overlay (KEYMODE2) is held down - clear its slot on release
+static bool prevOvActive = false;
 
 void handleButtonEvents() {
   uint8_t pad, ev;
@@ -140,6 +144,53 @@ void handleButtonEvents() {
       }
     }
 
+    // KEYMODE2 chord buttons (momentary): M1/M2/M3/NEXT select the quality
+    // Maj/Min/Dim/Sus, F1..F4 the extensions 6/m7/M7/9 - press sets,
+    // release clears, a sounding chord re-triggers.  M1 in SEQ+DRUM keeps
+    // its part-select priority above
+    if ((ev == EV_PRESSED || ev == EV_RELEASED) && keyBehaviorVariant() == 2) {
+      int8_t ci = -1;
+      for (uint8_t i = 0; i < CONTROLS_NUM_G; i++)
+        if (groupControls[i] == kl) ci = (int8_t)i;
+      bool m1Drum = (ci == 2 && modeBase == MODE_SEQ && modeVariant != 3 &&
+                     seqTrack() == SEQ_TRACK_DRUM);
+      if (ci > 0 && !m1Drum) {          // ci 0 = PREV, handled below
+        bool on = (ev == EV_PRESSED);
+        static const uint8_t extOf[4] = { CHORD_EXT_6, CHORD_EXT_m7,
+                                          CHORD_EXT_M7, CHORD_EXT_9 };
+        if (ci >= 5) {
+          chordSetExt(extOf[ci - 5], on);
+        } else {
+          static const uint8_t qOf[5] = { CHORD_Q_NONE, CHORD_Q_SUS,
+                                          CHORD_Q_MAJ, CHORD_Q_MIN, CHORD_Q_DIM };
+          // order on the panel: NEXT=1 Sus, M1=2 Maj, M2=3 Min, M3=4 Dim
+          chordSetQuality(on ? qOf[ci] : CHORD_Q_NONE);
+        }
+        refreshAllLeds();               // sounding pitch classes may change
+        if (chordName()[0]) headerShow(chordName());
+        if (logRoom(48)) {
+          Serial.print(on ? "  chord set " : "  chord clear ");
+          Serial.println(chordName());
+        }
+      }
+    }
+
+    // PREV = momentary encoder overlay in KEYMODE2: while held the row
+    // remaps to Oct/Scale/Root/Latch/KLock/Perf, release restores it
+    if (kl == groupControls[0]) {
+      if (ev == EV_PRESSED && keyBehaviorVariant() == 2) {
+        setOverlay(G_ENC, ENC_KEY2_PREV);
+        prevOvActive = true;
+        refreshMainScreen();
+        if (logRoom(48)) Serial.println("  overlay KEY2 PREV");
+      } else if (ev == EV_RELEASED && prevOvActive) {
+        clearOverlay(G_ENC);
+        prevOvActive = false;
+        refreshMainScreen();
+        if (logRoom(48)) Serial.println("  overlay off");
+      }
+    }
+
     // PLAY in SEQMODE: Start (or Stop while the INT transport runs)
     if (ev == EV_PRESSED && modeBase == MODE_SEQ &&
         ledForPad[pad] == groupTransport[0]) {
@@ -157,6 +208,9 @@ void handleButtonEvents() {
           Serial.print("  note on ");
           Serial.println(n);
         }
+        // KEYMODE2: the header shows the chord that just started
+        if (n >= 0 && keyBehaviorVariant() == 2 && chordName()[0])
+          headerShow(chordName());
       } else if (ev == EV_RELEASED) {
         keyPadRelease(kidx);
       }
@@ -188,6 +242,66 @@ void handleEncoderEvents() {
         Serial.println(keyOctave());
       }
       any = true;
+    }
+
+    // KEYMODE: ENC2 = scale (every variant, and the PREV overlay row);
+    // 4 counts = 1 scale, clamped 0..12, no wrap.  Selecting a scale
+    // flashes its mood ("Happy", "Sad", ...) in the temporary header
+    if (modeBase == MODE_KEY && ei == 1 && ed != 0) {
+      keyScaleAdjust(ed);
+      headerShow(keyScaleMood());
+      refreshAllLeds();             // in-scale / out-of-scale keys repaint
+      if (logRoom(48)) {
+        Serial.print("  scale ");
+        Serial.println(keyScaleName());
+      }
+      any = true;
+    }
+
+    // KEYMODE2: ENC3 = root, ENC4..ENC7 = voicing/bass/spread/density,
+    // ENC8 = latch.  With PREV held the row remaps: ENC4 = latch,
+    // ENC5 = KeyLock, ENC6 = Perf (state only)
+    if (modeBase == MODE_KEY && modeVariant == 2 && ed != 0) {
+      ModeBinding b = currentBinding();
+      if (ei == 2) {
+        keyRootAdjust(ed);
+        refreshAllLeds();           // the scale mask is rooted here too
+        if (logRoom(48)) {
+          Serial.print("  root ");
+          Serial.println(keyRootName());
+        }
+        any = true;
+      } else if (b.enc == ENC_KEY2_PREV) {
+        if (ei == 3) chordLatchAdjust(ed);
+        else if (ei == 4) chordKeyLockAdjust(ed);
+        else if (ei == 5) chordPerfAdjust(ed);
+        if (ei >= 3 && ei <= 5) {
+          refreshAllLeds();         // latch off silences the chord's tint
+          if (logRoom(48)) {
+            Serial.print(ei == 3 ? "  latch " : ei == 4 ? "  klock " : "  perf ");
+            Serial.println(ei == 3 ? (chordLatch() ? "ON" : "OFF") :
+                           ei == 4 ? (chordKeyLock() ? "ON" : "OFF") :
+                                     (chordPerf() ? "ON" : "OFF"));
+          }
+          any = true;
+        }
+      } else if (ei == 7) {
+        chordLatchAdjust(ed);       // main row: ENC8 = latch
+        refreshAllLeds();
+        if (logRoom(48)) {
+          Serial.print("  latch ");
+          Serial.println(chordLatch() ? "ON" : "OFF");
+        }
+        any = true;
+      } else if (ei >= 3 && ei <= 6) {
+        chordParamAdjust(ei - 3, ed);   // VOIC / BASS / SPRD / DENS
+        if (logRoom(48)) {
+          static const char* pn[4] = { "voic ", "bass ", "sprd ", "dens " };
+          Serial.print(pn[ei - 3]);
+          Serial.println(chordParam(ei - 3));
+        }
+        any = true;
+      }
     }
 
     // ENCMODE: ENC1..ENC8 send CC1..CC8 on the encoder channel (ENCMODE3);

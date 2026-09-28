@@ -12,6 +12,11 @@ int  keyPadRelease(uint8_t idx);     // returns note released, or -1
 void keyOctaveAdjust(int16_t counts); // 4 encoder counts = 1 octave step
 int  keyOctave();                    // current octave (-2..8)
 
+// called by the chord engine (Chords.cpp) whenever the sounding chord's
+// notes change: re-snap the pending chord of every sequence the keyboard
+// channel reaches (chords feed the sequencer like single notes)
+void keyPendingRefresh();
+
 // keyboard MIDI output channel (1..16); changing it first cuts every note
 // sounding on the old channel (no stuck notes), held keys re-strike on the
 // new channel.  The keyboard channel also SELECTS which sequence the
@@ -82,3 +87,9 @@ void stepAssignSet(int8_t step);     // step = 0..15 to arm, -1 to disarm
 bool stepIsActive(uint8_t step);     // step has a recorded chord
 void seqStepAdvance(uint8_t step);   // release previous step, play this one
 void seqStepStop();                  // transport stopped: release notes
+
+// notes the playhead currently has sounding on MIDI channel (1..16):
+// the keyboard LEDs blink these pitch classes while they play on the
+// keyboard channel (count 0 = silent)
+uint8_t seqSoundingCount(uint8_t ch);
+uint8_t seqSoundingNote(uint8_t ch, uint8_t i);

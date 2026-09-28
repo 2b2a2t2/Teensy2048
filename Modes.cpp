@@ -4,6 +4,8 @@
 #include "SeqClock.h"
 #include "Keyboard.h"
 #include "Encoders.h"
+#include "Bindings.h"
+#include "Chords.h"
 
 ModeBase modeBase = MODE_NONE;
 uint8_t modeVariant = 0;
@@ -33,6 +35,20 @@ static const int8_t kbPitchIdx[17] = {
 
 // last non-momentary variant per family (index = ModeBase), default 1
 static uint8_t familyMem[4] = { 0, 1, 1, 1 };
+
+// playback blink phase: set by pollModeLeds(), read by modeLedHook() -
+// while the playhead sounds notes on the keyboard channel, their pitch
+// classes flash dim green on the keys (blink wins over the idle colors)
+static bool kbBlinkOn = false;
+
+// is the playhead currently playing this pitch class on the keyboard channel?
+static bool kbSeqPlays(uint8_t pc) {
+  uint8_t n = seqSoundingCount(keyChannel());
+  pc %= 12;
+  for (uint8_t i = 0; i < n; i++)
+    if (seqSoundingNote(keyChannel(), i) % 12 == pc) return true;
+  return false;
+}
 
 static int8_t activeModeLed() {
   for (uint8_t i = 0; i < 3; i++) {
@@ -116,12 +132,28 @@ static CRGB modeLedHook(uint8_t pad, bool isTouched, CRGB defaultColor) {
   // mode (behavior inherited); color follows the KEY family variant —
   // current variant while in KEYMODE, last latched KEY variant elsewhere
   if ((led >= 25 && led <= 31) || (led >= 37 && led <= 41)) {
-    if (isTouched) return CRGB::White;
-    uint8_t kv = (modeBase == MODE_KEY) ? modeVariant : familyMem[MODE_KEY];
+    int8_t k = kbPitchIdx[led - 25];          // -1 for non-key LEDs in range
+    uint8_t kv = keyBehaviorVariant();
+    bool inScale = (keyScale() == 0) || keyIsInScale((uint8_t)k);
+    if (isTouched) {
+      // a key the scale filter silences flashes red (chord mode / KeyLock
+      // play it, so they flash white)
+      if (kv != 2 && !chordKeyLock() && !inScale) return CRGB(40, 0, 0);
+      return CRGB::White;
+    }
+    // sequence playing on the keyboard channel: those pitch classes blink
+    // dim green - wins over the chord tint and the scale (playback feedback)
+    if (kbBlinkOn && kbSeqPlays((uint8_t)k)) {
+      CRGB g = CRGB::Green;
+      g.nscale8(64);
+      return g;
+    }
+    // sounding chord keys tint cyan (they win over the scale's dark keys)
+    if (kv == 2 && chordPlaysPitch((uint8_t)k)) return CRGB(0, 90, 160);
+    if (!inScale) return CRGB::Black;         // scale display: dead keys dark
     CRGB c;
     if (kv == 4) {
       // FastLED hue: 170=blue ... 213=magenta ... 255=red
-      int8_t k = kbPitchIdx[led - 25];          // -1 for non-key LEDs in range
       uint8_t hue = (k >= 0) ? (uint8_t)(170 + (k * 85 + 5) / 11) : 170;
       c = CHSV(hue, 255, 255);
     } else if (kv == 2) {
@@ -150,6 +182,23 @@ void pollModeLeds() {
   static unsigned long lastPulseShow = 0;
   static int8_t lastBlink = -1;
 
+  // playback blink driver: flash the keys the playhead sounds on the
+  // keyboard channel (edge on/off repaints immediately - a finished chord
+  // never keeps its green; the phase flip drives the flashing)
+  static bool kbActive = false;
+  static unsigned long kbFlip = 0;
+  bool kbNow = (seqSoundingCount(keyChannel()) > 0);
+  if (kbNow != kbActive) {
+    kbActive = kbNow;
+    if (!kbActive) kbBlinkOn = false;
+    refreshAllLeds();
+  }
+  if (kbActive && (long)(millis() - kbFlip) >= 0) {
+    kbFlip = millis() + BLINK_MS;
+    kbBlinkOn = !kbBlinkOn;
+    refreshAllLeds();
+  }
+
   int8_t active = activeModeLed();
   if (active < 0) { lastBlink = -1; return; }
 
@@ -177,6 +226,11 @@ void initModes() {
   applyModeLeds();
   headerSetLeft(modeName());
   refreshMainScreen();      // main screen shows the KEY binding from boot
+}
+
+uint8_t keyBehaviorVariant() {
+  if (modeBase == MODE_KEY) return modeVariant;
+  return familyMem[MODE_KEY];
 }
 
 void modeOnEvent(uint8_t pad, uint8_t ev) {
@@ -223,6 +277,11 @@ void modeOnEvent(uint8_t pad, uint8_t ev) {
     familyMem[b] = modeVariant;
   }
   modeBase = b;
+
+  // leaving KEYMODE2 = leaving chord mode: silence it; the PREV overlay is
+  // momentary - it never outlives the binding it remaps
+  if (keyBehaviorVariant() != 2) chordStopAll();
+  clearOverlay(G_ENC);
 
   applyModeLeds();
   headerSetLeft(modeName());

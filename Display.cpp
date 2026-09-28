@@ -5,6 +5,7 @@
 #include "Modes.h"
 #include "Keyboard.h"
 #include "Events.h"
+#include "Chords.h"
 #include <Wire.h>
 
 U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, U8X8_PIN_NONE);
@@ -43,6 +44,9 @@ void refreshMainScreen() {
   char val[12];
   // SEQMODE3 encoders show state, not the raw shared counter
   bool seq3 = (modeBase == MODE_SEQ && modeVariant == 3);
+  // KEYMODE2 rows: the main chord row, or the PREV overlay row
+  bool key2 = (modeBase == MODE_KEY && modeVariant == 2 && b.enc != ENC_KEY2_PREV);
+  bool keyOv = (b.enc == ENC_KEY2_PREV);
 
   for (uint8_t c = 0; c < 4; c++) {
     uint8_t x = c * 32 + 1;
@@ -53,6 +57,14 @@ void refreshMainScreen() {
       snprintf(val, sizeof(val), "%s", seqIsSyncInternal() ? "INT" : "EXT");
     } else if (modeBase == MODE_KEY && c == 0) {
       snprintf(val, sizeof(val), "%d", keyOctave());         // ENC1 = octave
+    } else if (modeBase == MODE_KEY && c == 1) {
+      snprintf(val, sizeof(val), "%s", keyScaleName());      // ENC2 = scale
+    } else if ((key2 || keyOv) && c == 2) {
+      snprintf(val, sizeof(val), "%s", keyRootName());       // ENC3 = root
+    } else if (keyOv && c == 3) {
+      snprintf(val, sizeof(val), "%s", chordLatch() ? "ON" : "OFF");
+    } else if (key2 && c == 3) {
+      snprintf(val, sizeof(val), "%u", chordParam(0));       // ENC4 = voicing
     } else if (modeBase == MODE_ENC) {
       snprintf(val, sizeof(val), "%u", encCcValue(c));       // CC value
     } else {
@@ -68,6 +80,18 @@ void refreshMainScreen() {
       snprintf(val, sizeof(val), "%s", seqMonoTypeName()); // ENC7 = TYPE
     } else if (seq3 && 4 + c == 7) {
       snprintf(val, sizeof(val), "%u", seqTempo());         // ENC8 = BPM
+    } else if (keyOv && 4 + c == 4) {
+      snprintf(val, sizeof(val), "%s", chordKeyLock() ? "ON" : "OFF");
+    } else if (keyOv && 4 + c == 5) {
+      snprintf(val, sizeof(val), "%s", chordPerf() ? "ON" : "OFF");
+    } else if (key2 && 4 + c == 4) {
+      snprintf(val, sizeof(val), "%u", chordParam(1));      // ENC5 = bass
+    } else if (key2 && 4 + c == 5) {
+      snprintf(val, sizeof(val), "%u", chordParam(2));      // ENC6 = spread
+    } else if (key2 && 4 + c == 6) {
+      snprintf(val, sizeof(val), "%u", chordParam(3));      // ENC7 = density
+    } else if (key2 && 4 + c == 7) {
+      snprintf(val, sizeof(val), "%s", chordLatch() ? "ON" : "OFF"); // ENC8
     } else if (modeBase == MODE_ENC) {
       snprintf(val, sizeof(val), "%u", encCcValue(4 + c)); // CC value
     } else {

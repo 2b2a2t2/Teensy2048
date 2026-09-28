@@ -1,5 +1,7 @@
 #include "Keyboard.h"
 #include "SeqClock.h"   // seqTrack() - step view follows the TRACK type
+#include "Modes.h"      // keyBehaviorVariant() - KEYMODE2 = chord mode
+#include "Chords.h"     // chord engine + scale filter state
 
 #define KEY_OCT_MIN   (-2)
 #define KEY_OCT_MAX    8
@@ -14,7 +16,8 @@
 static int8_t  octave = KEY_OCT_DEF;
 static int16_t octRes = 0;              // leftover encoder counts
 static uint8_t keyCh = 1;               // keyboard MIDI channel (1..16)
-static bool    keyActive[12] = {false}; // key currently sounding
+static bool    keyActive[12] = {false}; // key currently held
+static bool    keySounding[12] = {false}; // key has its OWN note out (single mode)
 static uint8_t keyNote[12] = {0};       // note sounding on that key
 
 // pending chord per sequence: fed by external notes on that sequence's
@@ -159,57 +162,97 @@ static uint8_t noteFor(uint8_t k, int8_t oct) {
 // chord of every sequence the keyboard channel (KEY3) reaches: its own
 // sequence N (keyboard channel N feeds sequence N) plus every sequence
 // whose input channel listens to N (input-channel propagation, so a
-// keyboard chord recorded on ch2 also feeds ch3 when ch3 input = ch2)
+// keyboard chord recorded on ch2 also feeds ch3 when ch3 input = ch2).
+// In KEYMODE2 the snapshot is the chord engine's sounding notes instead
+// (chords feed the sequencer like single notes)
 static void updatePending() {
+  bool chordMode = (keyBehaviorVariant() == 2);
+  const uint8_t *cn = chordNotes();
+  uint8_t ccount = chordCount();
   for (uint8_t s = 0; s < SEQ_CH_COUNT; s++) {
     if (s + 1 != keyCh && seqInCh[s] != keyCh) continue;
     pendingLen[s] = 0;
-    for (uint8_t i = 0; i < 12 && pendingLen[s] < CHORD_MAX; i++) {
-      if (keyActive[i]) pending[s][pendingLen[s]++] = keyNote[i];
+    if (chordMode) {
+      for (uint8_t i = 0; i < ccount && pendingLen[s] < CHORD_MAX; i++)
+        pending[s][pendingLen[s]++] = cn[i];
+    } else {
+      for (uint8_t i = 0; i < 12 && pendingLen[s] < CHORD_MAX; i++)
+        if (keyActive[i]) pending[s][pendingLen[s]++] = keyNote[i];
     }
     histFeed(s);
   }
 }
 
+void keyPendingRefresh() { updatePending(); }
+
 static void setOctave(int8_t o) {
   if (o < KEY_OCT_MIN) o = KEY_OCT_MIN;
   if (o > KEY_OCT_MAX) o = KEY_OCT_MAX;
   if (o == octave) return;
+  int16_t delta = 12 * (o - octave);
   octave = o;
+  // KEYMODE2: the chord engine owns its notes - shift and re-send them
+  if (keyBehaviorVariant() == 2) {
+    chordShift(delta);
+    return;
+  }
   // re-trigger every sounding key so no note is stranded in the old octave
   for (uint8_t k = 0; k < 12; k++) {
-    if (!keyActive[k]) continue;
+    if (!keySounding[k]) continue;
     usbMIDI.sendNoteOff(keyNote[k], 0, keyCh);
     keyNote[k] = noteFor(k, octave);
     usbMIDI.sendNoteOn(keyNote[k], KEY_VEL, keyCh);
   }
 }
 
+// holding a step = assign mode: every note of this gesture replaces that
+// step's stored chord (first note starts the new chord)
+static void assignAppend(const uint8_t *notes, uint8_t n) {
+  if (assignStep < 0 || n == 0) return;
+  if (!assignStarted) {
+    stepChordLen[assignCh][assignStep] = 0;
+    assignStarted = true;
+  }
+  for (uint8_t i = 0; i < n && stepChordLen[assignCh][assignStep] < CHORD_MAX; i++)
+    stepChord[assignCh][assignStep][stepChordLen[assignCh][assignStep]++] = notes[i];
+  seqOctClamp(assignCh);
+  stepSyncFrom(assignCh);
+}
+
 int keyPadPress(uint8_t idx) {
   if (idx >= 12) return -1;
+  // KEYMODE2: the chord engine owns the gesture (quality/diatonic chords,
+  // latch, KeyLock) - it sends its own notes and feeds the pending chord
+  if (keyBehaviorVariant() == 2) {
+    keyNote[idx] = noteFor(idx, octave);
+    keyActive[idx] = true;
+    keySounding[idx] = false;   // the chord engine, not us, sends the sound
+    int r = chordPadPress(idx, keyNote[idx]);
+    assignAppend(chordNotes(), chordCount());
+    return r;
+  }
+  // scale filter: an out-of-scale key is silent and untracked (KeyLock
+  // bypasses it); Chromatic (the default) has every key in scale = no change
+  if (keyScale() != 0 && !chordKeyLock() && !keyIsInScale(idx)) return -1;
   keyNote[idx] = noteFor(idx, octave);
   usbMIDI.sendNoteOn(keyNote[idx], KEY_VEL, keyCh);
+  keySounding[idx] = true;
   keyActive[idx] = true;
   updatePending();
-  // holding a step = assign mode: this key (and the rest of the chord
-  // played while still held) replaces that step's stored chord
-  if (assignStep >= 0) {
-    if (!assignStarted) {
-      stepChordLen[assignCh][assignStep] = 0;
-      assignStarted = true;
-    }
-    if (stepChordLen[assignCh][assignStep] < CHORD_MAX)
-      stepChord[assignCh][assignStep][stepChordLen[assignCh][assignStep]++] = keyNote[idx];
-    seqOctClamp(assignCh);
-    stepSyncFrom(assignCh);
-  }
+  assignAppend(&keyNote[idx], 1);
   return keyNote[idx];
 }
 
 int keyPadRelease(uint8_t idx) {
   if (idx >= 12 || !keyActive[idx]) return -1;
-  usbMIDI.sendNoteOff(keyNote[idx], 0, keyCh);
   keyActive[idx] = false;
+  // this key's own single note (only ever sent outside chord mode): covers
+  // a mode change while the key was held - never a stuck note
+  if (keySounding[idx]) {
+    usbMIDI.sendNoteOff(keyNote[idx], 0, keyCh);
+    keySounding[idx] = false;
+  }
+  if (keyBehaviorVariant() == 2) chordPadRelease(idx);
   // all keys up while assigning = that chord is finished; the next press
   // starts a fresh replacement instead of appending
   if (assignStep >= 0) {
@@ -420,6 +463,16 @@ void seqStepStop() {
   for (uint8_t c = 0; c < SEQ_CH_COUNT; c++) arpIdx[c] = 0;
 }
 
+uint8_t seqSoundingCount(uint8_t ch) {
+  if (ch < 1 || ch > SEQ_CH_COUNT) return 0;
+  return seqLen[ch - 1];
+}
+
+uint8_t seqSoundingNote(uint8_t ch, uint8_t i) {
+  if (ch < 1 || ch > SEQ_CH_COUNT || i >= seqLen[ch - 1]) return 0;
+  return seqNotes[ch - 1][i];
+}
+
 uint8_t seqEditChannel() { return seqEditCh + 1; }
 
 void seqSetEditChannel(uint8_t ch) {
@@ -573,9 +626,11 @@ void keySetChannel(uint8_t ch) {
   // cut every keyboard note sounding on the OLD channel first: prevents
   // stuck notes (held pads release later -> harmless off on the new channel)
   for (uint8_t k = 0; k < 12; k++)
-    if (keyActive[k]) usbMIDI.sendNoteOff(keyNote[k], 0, keyCh);
+    if (keySounding[k]) usbMIDI.sendNoteOff(keyNote[k], 0, keyCh);
+  chordCut();                     // chord engine notes, old channel
   keyCh = ch;
   // keys still held re-strike on the new channel (same idea as octave change)
   for (uint8_t k = 0; k < 12; k++)
-    if (keyActive[k]) usbMIDI.sendNoteOn(keyNote[k], KEY_VEL, keyCh);
+    if (keySounding[k]) usbMIDI.sendNoteOn(keyNote[k], KEY_VEL, keyCh);
+  chordRestore();                 // chord engine notes, new channel
 }
