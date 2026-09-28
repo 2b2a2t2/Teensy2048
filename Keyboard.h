@@ -29,10 +29,21 @@ uint8_t seqEditChannel();
 // input (listen) channel of the edit sequence (1..16): notes arriving
 // there feed THAT sequence's pending chord - every sequence listening to
 // the channel is fed at once (no edit-focus gating).  Default sequence N
-// listens to channel N.  ENC5 in SEQMODE3 adjusts it (4 counts = 1 step,
-// clamped, no wrap)
+// listens to channel N.  Changing the input channel BACKFILLS the pending
+// chord from that channel's track (record on ch2, point ch3 at ch2, ch3
+// can activate immediately).  ENC5 in SEQMODE3 adjusts it (4 counts = 1
+// step, clamped, no wrap)
 void seqInputChannelAdjust(int16_t counts);
 uint8_t seqInputChannel();
+
+// octave shift of the SELECTED sequence's playback (ENC1 in SEQMODE, all
+// variants): +1 = one octave up, applied by the playhead only - stored
+// notes stay raw so the shift is live-changeable.  Clamped so shifted
+// notes fit the -2..8 octave convention; the range is recalculated from
+// the stored notes (notes at C3 -> -5..+5, empty -> keyboard-octave
+// reference), 4 counts = 1 octave, no wrap
+void seqOctaveShiftAdjust(int16_t counts);
+int  seqOctaveShift();                // edit sequence's shift (for the OLED)
 
 // incoming USB-MIDI notes -> feed the pending chord of every sequence
 // whose input channel matches, and the step held in assign mode

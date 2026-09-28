@@ -210,12 +210,23 @@ void handleEncoderEvents() {
       any = true;
     }
 
-    // SEQMODE3: ENC1 = tempo 40..240 (clamped, no wrap)
-    //           ENC4 = SYNC  INT/EXT (two-state, no wrap: CW=INT, CCW=EXT)
+    // SEQMODE: ENC1 = octave shift of the selected sequence (all variants)
+    // SEQMODE3: ENC4 = SYNC INT/EXT (two-state, no wrap: CW=INT, CCW=EXT)
     //           ENC5 = input channel of the edit sequence, 1..16
     //           ENC6 = TRACK DRUM/MONO/POLY (three-state, no wrap)
-    if (modeBase == MODE_SEQ && modeVariant == 3) {
+    //           ENC7 = TYPE ROOT/BASS/ARP (MONO sequences only, no wrap)
+    //           ENC8 = tempo 40..240 (moved from ENC1)
+    if (modeBase == MODE_SEQ) {
       if (ei == 0 && ed != 0) {
+        seqOctaveShiftAdjust(ed);           // octave shift of the edit seq
+        if (logRoom(48)) {
+          Serial.print("  octshift ");
+          Serial.println(seqOctaveShift());
+        }
+        any = true;
+      } else if (modeVariant != 3) {
+        // nothing else bound in variants 1/2/4 yet
+      } else if (ei == 7 && ed != 0) {
         long bpm = (long)seqTempo() + ed;
         if (bpm < 40) bpm = 40;
         if (bpm > 240) bpm = 240;
@@ -247,6 +258,13 @@ void handleEncoderEvents() {
         if (logRoom(48)) {
           Serial.print("  track ");
           Serial.println(seqTrackName());
+        }
+        any = true;
+      } else if (ei == 6 && ed != 0 && seqTrack() == SEQ_TRACK_MONO) {
+        seqMonoTypeAdjust(ed);             // TYPE: ROOT/BASS/ARP (no wrap)
+        if (logRoom(48)) {
+          Serial.print("  mono ");
+          Serial.println(seqMonoTypeName());
         }
         any = true;
       }

@@ -47,8 +47,8 @@ void refreshMainScreen() {
   for (uint8_t c = 0; c < 4; c++) {
     uint8_t x = c * 32 + 1;
     u8g2.drawStr(x, 22, encLabel(b.enc, c));
-    if (seq3 && c == 0) {
-      snprintf(val, sizeof(val), "%u", seqTempo());          // ENC1 = BPM
+    if (modeBase == MODE_SEQ && c == 0) {
+      snprintf(val, sizeof(val), "%d", seqOctaveShift()); // ENC1 = octave shift
     } else if (seq3 && c == 3) {
       snprintf(val, sizeof(val), "%s", seqIsSyncInternal() ? "INT" : "EXT");
     } else if (modeBase == MODE_KEY && c == 0) {
@@ -64,6 +64,10 @@ void refreshMainScreen() {
       snprintf(val, sizeof(val), "%u", seqInputChannel()); // ENC5 = input ch
     } else if (seq3 && 4 + c == 5) {
       snprintf(val, sizeof(val), "%s", seqTrackName());   // ENC6 = TRACK
+    } else if (seq3 && 4 + c == 6 && seqTrack() == SEQ_TRACK_MONO) {
+      snprintf(val, sizeof(val), "%s", seqMonoTypeName()); // ENC7 = TYPE
+    } else if (seq3 && 4 + c == 7) {
+      snprintf(val, sizeof(val), "%u", seqTempo());         // ENC8 = BPM
     } else if (modeBase == MODE_ENC) {
       snprintf(val, sizeof(val), "%u", encCcValue(4 + c)); // CC value
     } else {

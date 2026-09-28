@@ -206,6 +206,37 @@ const char* seqTrackName() {
   return names[seqTrack()];
 }
 
+uint8_t seqTrackOf(uint8_t idx) {
+  return (idx < 16) ? trackType[idx] : SEQ_TRACK_POLY;
+}
+
+// SEQMODE3 TYPE (ENC7): per-channel mono transform (default ROOT = 0)
+static uint8_t monoType[16] = {0};
+static int16_t monoRes = 0;             // leftover encoder counts
+
+void seqMonoTypeAdjust(int16_t counts) {
+  monoRes += counts;
+  int8_t step = 0;
+  while (monoRes >= 4)  { monoRes -= 4;  step++; }
+  while (monoRes <= -4) { monoRes += 4;  step--; }
+  if (!step) return;
+  int16_t t = (int16_t)monoType[seqEditChannel() - 1] + step;
+  if (t < SEQ_MONO_ROOT) t = SEQ_MONO_ROOT;
+  if (t > SEQ_MONO_ARP)  t = SEQ_MONO_ARP;
+  monoType[seqEditChannel() - 1] = (uint8_t)t;
+}
+
+uint8_t seqMonoType() { return monoType[seqEditChannel() - 1]; }
+
+const char* seqMonoTypeName() {
+  static const char* names[3] = { "ROOT", "BASS", "ARP" };
+  return names[seqMonoType()];
+}
+
+uint8_t seqMonoTypeOf(uint8_t idx) {
+  return (idx < 16) ? monoType[idx] : SEQ_MONO_ROOT;
+}
+
 // System Real-Time Start (0xFA): with SYNC=INT also launch the internal
 // transport so Clock ticks flow to the DAW; with SYNC=EXT just emit Start.
 void seqSendStart() {

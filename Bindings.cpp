@@ -28,10 +28,10 @@ static const ModeBinding table[3][4] = {
 
 // placeholder encoder names — edit rows to real function names
 static const char* encLabels[ENC_SET_COUNT][8] = {
-  /* ENC_SEQ          */ { "SQ1", "SQ2", "SQ3", "SQ4", "SQ5", "SQ6", "SQ7", "SQ8" },
-  /* ENC_SEQ2         */ { "S21", "S22", "S23", "S24", "S25", "S26", "S27", "S28" },
-  /* ENC_SEQ3         */ { "BPM", "S32", "S33", "SYNC", "INCH", "TRACK", "S37", "S38" },
-  /* ENC_SEQ4         */ { "S41", "S42", "S43", "S44", "S45", "S46", "S47", "S48" },
+  /* ENC_SEQ          */ { "OCT", "SQ2", "SQ3", "SQ4", "SQ5", "SQ6", "SQ7", "SQ8" },
+  /* ENC_SEQ2         */ { "OCT", "S22", "S23", "S24", "S25", "S26", "S27", "S28" },
+  /* ENC_SEQ3         */ { "OCT", "S32", "S33", "SYNC", "INCH", "TRACK", "TYPE", "BPM" },
+  /* ENC_SEQ4         */ { "OCT", "S42", "S43", "S44", "S45", "S46", "S47", "S48" },
   /* ENC_ENC          */ { "EN1", "EN2", "EN3", "EN4", "EN5", "EN6", "EN7", "EN8" },
   /* ENC_ENC2         */ { "E21", "E22", "E23", "E24", "E25", "E26", "E27", "E28" },
   /* ENC_ENC3         */ { "E31", "E32", "E33", "E34", "E35", "E36", "E37", "E38" },

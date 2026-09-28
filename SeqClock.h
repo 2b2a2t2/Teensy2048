@@ -26,6 +26,18 @@ uint16_t seqTempo();
 // channels 2..16 to POLY.  4 encoder counts = 1 step (residual kept).
 enum SeqTrackType : uint8_t { SEQ_TRACK_DRUM = 0, SEQ_TRACK_MONO = 1, SEQ_TRACK_POLY = 2 };
 void seqTrackAdjust(int16_t counts);
-uint8_t seqTrack();                 // 0..2
+uint8_t seqTrack();                 // track type of the edit sequence
 const char* seqTrackName();         // "DRUM" / "MONO" / "POLY"
+uint8_t seqTrackOf(uint8_t idx);    // track type of sequence idx 0..15
+
+// SEQMODE3 TYPE (ENC7): mono transform of a MONO sequence, applied at
+// playback (steps keep storing the full incoming chord).
+// ROOT = chord-root detection (template based, fallback lowest note),
+// BASS = lowest note, ARP = chord notes ascending, 1 note per playhead
+// step, wraps; counter resets on transport stop.  Default ROOT everywhere.
+enum SeqMonoType : uint8_t { SEQ_MONO_ROOT = 0, SEQ_MONO_BASS = 1, SEQ_MONO_ARP = 2 };
+void seqMonoTypeAdjust(int16_t counts);  // edit channel; 4 counts = 1 step, no wrap
+uint8_t seqMonoType();                   // edit channel
+const char* seqMonoTypeName();           // "ROOT" / "BASS" / "ARP"
+uint8_t seqMonoTypeOf(uint8_t idx);      // sequence idx 0..15
 void seqDiagNote(uint8_t section, uint32_t us);  // track worst loop stalls; 1Hz report

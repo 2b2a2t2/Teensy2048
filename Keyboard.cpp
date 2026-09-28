@@ -29,6 +29,26 @@ static uint8_t pendingLen[SEQ_CH_COUNT] = {0};
 static uint8_t extHeld[SEQ_CH_COUNT][CHORD_MAX];
 static uint8_t extHeldLen[SEQ_CH_COUNT] = {0};
 
+// per-sequence per-step chord history: what the pending chord was when the
+// playhead last visited each step (written on every feed at the current
+// playhead position, carried forward on step advance).  MONO step activation
+// records this history ("actual or previous chord"): play B while the
+// playhead is at step 1 and G while it is at step 9 -> steps 1-8 get B,
+// steps 9-16 get G, regardless of the latest chord in the buffer
+static uint8_t histChord[SEQ_CH_COUNT][STEP_COUNT][CHORD_MAX];
+static uint8_t histLen[SEQ_CH_COUNT][STEP_COUNT];   // statics are zero-init
+
+// record sequence s's pending chord at playhead position p
+static void histAt(uint8_t s, uint8_t p) {
+  if (p >= STEP_COUNT || pendingLen[s] == 0) return;
+  histLen[s][p] = pendingLen[s];
+  for (uint8_t i = 0; i < pendingLen[s] && i < CHORD_MAX; i++)
+    histChord[s][p][i] = pending[s][i];
+}
+
+// feed hooks: keep the history in sync wherever a pending chord is written
+static void histFeed(uint8_t s) { histAt(s, seqCurrentStep()); }
+
 // sequencer edit focus: 0-based channel index (MIDI channel = seqEditCh + 1);
 // the playhead plays EVERY channel's sequence at once, this only selects
 // which channel the step pads display / edit
@@ -39,6 +59,12 @@ static uint8_t seqEditCh = 0;
 static uint8_t seqInCh[SEQ_CH_COUNT] = {1, 2, 3, 4, 5, 6, 7, 8,
                                         9, 10, 11, 12, 13, 14, 15, 16};
 static int16_t inRes = 0;                // leftover encoder counts (ENC5)
+
+// octave shift of each sequence's playback (ENC1 in SEQMODE): +1 = one
+// octave up, applied by the playhead only - recorded notes stay raw so the
+// shift is changeable live.  Clamped to the -2..8 octave convention
+static int8_t  seqOct[SEQ_CH_COUNT] = {0};
+static int16_t octSRes = 0;              // leftover encoder counts (ENC1)
 
 // per-channel per-step stored chord; len 0 = unassigned (plays pending[])
 static uint8_t stepChord[SEQ_CH_COUNT][STEP_COUNT][CHORD_MAX];
@@ -52,7 +78,68 @@ static bool    assignStarted = false;
 
 // an ACTIVE step was pressed during the current tap (candidate for disable;
 // confirmed only on click, so a hold-to-edit does not clear the step)
-static bool    tapCandidate[STEP_COUNT] = {false};
+static bool tapCandidate[STEP_COUNT] = {false};
+
+// source step on track x for listener position n: the last active step at
+// or before n in the sequence (cyclic - wrapping past step 1 uses the
+// previous loop's chord), so "B at step 1, G at step 9" partitions steps
+// 1-8 / 9-16 exactly.  Returns -1 when the track has no active step
+static int8_t srcStepBack(uint8_t x, uint8_t n) {
+  if (x >= SEQ_CH_COUNT || n >= STEP_COUNT) return -1;
+  for (uint8_t k = 0; k < STEP_COUNT; k++) {
+    uint8_t idx = (n + STEP_COUNT - k) % STEP_COUNT;
+    if (stepChordLen[x][idx] > 0) return (int8_t)idx;
+  }
+  return -1;
+}
+
+// clamp a sequence's octave shift so every stored note + 12*shift stays in
+// 0..127 (the -2..8 octave convention spans notes 0..127): range derived
+// from the stored min/max note - notes at C3 (60) give -5..+5, exactly the
+// convention example; empty sequence -> keyboard octave as reference
+static void seqOctClamp(uint8_t s) {
+  int mn = -1, mx = -1;
+  for (uint8_t st = 0; st < STEP_COUNT; st++) {
+    uint8_t *ch = stepChord[s][st];
+    for (uint8_t i = 0; i < stepChordLen[s][st]; i++) {
+      if (mn < 0 || ch[i] < mn) mn = ch[i];
+      if (mx < 0 || ch[i] > mx) mx = ch[i];
+    }
+  }
+  if (mn < 0) mn = mx = 12 * keyOctave() + 24;   // empty: keyboard's C
+  int lo = -(mn / 12);                           // mn + 12*lo >= 0
+  int hi = (127 - mx) / 12;                      // mx + 12*hi <= 127
+  if (lo > hi) lo = hi = 0;
+  if (seqOct[s] < lo) seqOct[s] = (int8_t)lo;
+  if (seqOct[s] > hi) seqOct[s] = (int8_t)hi;
+}
+
+// timeline adaptation: when track x's step chords are written, every MONO
+// sequence listening to x's channel (input channel = x+1) re-derives its
+// ACTIVE steps from x's timeline - each takes the last chord at or before
+// its position, so ch3 follows "the last played chord in the sequence",
+// never the global last-played buffer while x has chords.  Content only:
+// the listener's active/inactive state is untouched ("keeping the same
+// active steps") and no-source steps keep their content.  Single level:
+// copies do not re-trigger, so input-channel cycles cannot recurse
+static void stepSyncFrom(uint8_t x) {
+  if (x >= SEQ_CH_COUNT) return;
+  for (uint8_t y = 0; y < SEQ_CH_COUNT; y++) {
+    if (y == x || seqInCh[y] != x + 1) continue;
+    if (seqTrackOf(y) != SEQ_TRACK_MONO) continue;
+    bool changed = false;
+    for (uint8_t n = 0; n < STEP_COUNT; n++) {
+      if (stepChordLen[y][n] == 0) continue;   // never creates active steps
+      int8_t idx = srcStepBack(x, n);
+      if (idx < 0) continue;                   // no source: keep as-is
+      for (uint8_t i = 0; i < CHORD_MAX; i++)
+        stepChord[y][n][i] = stepChord[x][idx][i];
+      stepChordLen[y][n] = stepChordLen[x][idx];
+      changed = true;
+    }
+    if (changed) seqOctClamp(y);               // content changed -> re-clamp
+  }
+}
 
 // external MIDI state replaced by per-sequence pending buffers (above)
 
@@ -69,12 +156,18 @@ static uint8_t noteFor(uint8_t k, int8_t oct) {
 }
 
 // keyboard gesture = snapshot of all currently held keys into the pending
-// chord of the sequence the keyboard channel (KEY3) currently selects
+// chord of every sequence the keyboard channel (KEY3) reaches: its own
+// sequence N (keyboard channel N feeds sequence N) plus every sequence
+// whose input channel listens to N (input-channel propagation, so a
+// keyboard chord recorded on ch2 also feeds ch3 when ch3 input = ch2)
 static void updatePending() {
-  uint8_t k = keyCh - 1;
-  pendingLen[k] = 0;
-  for (uint8_t i = 0; i < 12 && pendingLen[k] < CHORD_MAX; i++) {
-    if (keyActive[i]) pending[k][pendingLen[k]++] = keyNote[i];
+  for (uint8_t s = 0; s < SEQ_CH_COUNT; s++) {
+    if (s + 1 != keyCh && seqInCh[s] != keyCh) continue;
+    pendingLen[s] = 0;
+    for (uint8_t i = 0; i < 12 && pendingLen[s] < CHORD_MAX; i++) {
+      if (keyActive[i]) pending[s][pendingLen[s]++] = keyNote[i];
+    }
+    histFeed(s);
   }
 }
 
@@ -107,6 +200,8 @@ int keyPadPress(uint8_t idx) {
     }
     if (stepChordLen[assignCh][assignStep] < CHORD_MAX)
       stepChord[assignCh][assignStep][stepChordLen[assignCh][assignStep]++] = keyNote[idx];
+    seqOctClamp(assignCh);
+    stepSyncFrom(assignCh);
   }
   return keyNote[idx];
 }
@@ -144,14 +239,34 @@ int stepChordPress(uint8_t step) {
     return -1;
   }
   tapCandidate[step] = false;
-  // pressing an unassigned step RECORDS this sequence's pending chord into
-  // it - silently: the chord is only sent when the playhead (green dot)
-  // reads the step during playback
-  if (pendingLen[seqEditCh] == 0) return 0;
-  for (uint8_t i = 0; i < pendingLen[seqEditCh] && i < CHORD_MAX; i++)
-    stepChord[seqEditCh][step][i] = pending[seqEditCh][i];
-  stepChordLen[seqEditCh][step] = pendingLen[seqEditCh];
-  return pendingLen[seqEditCh];
+  // pressing an unassigned step RECORDS a chord into it - silently: the
+  // chord is only sent when the playhead (green dot) reads the step during
+  // playback.  POLY records the latest pending chord.  MONO records, in
+  // order of priority: the input track's timeline chord (last recorded
+  // step at or before this position - "the last played chord in the
+  // sequence", B at step 1 / G at step 9 partitions 1-8 / 9-16), then the
+  // step history (live-played while ch2 has no recorded chords), then the
+  // latest pending chord
+  const uint8_t *src = pending[seqEditCh];
+  uint8_t n = pendingLen[seqEditCh];
+  if (seqTrack() == SEQ_TRACK_MONO) {
+    uint8_t x = seqInCh[seqEditCh] - 1;          // track this seq listens to
+    int8_t idx = (x < SEQ_CH_COUNT && x != seqEditCh) ? srcStepBack(x, step) : -1;
+    if (idx >= 0) {
+      src = stepChord[x][idx];
+      n = stepChordLen[x][idx];
+    } else if (histLen[seqEditCh][step] > 0) {
+      src = histChord[seqEditCh][step];
+      n = histLen[seqEditCh][step];
+    }
+  }
+  if (n == 0) return 0;
+  for (uint8_t i = 0; i < n && i < CHORD_MAX; i++)
+    stepChord[seqEditCh][step][i] = src[i];
+  stepChordLen[seqEditCh][step] = n;
+  seqOctClamp(seqEditCh);
+  stepSyncFrom(seqEditCh);
+  return n;
 }
 
 void stepAssignSet(int8_t step) {
@@ -170,6 +285,7 @@ int stepChordClick(uint8_t step) {
   tapCandidate[step] = false;
   if (stepChordLen[seqEditCh][step] == 0) return -1;
   stepChordLen[seqEditCh][step] = 0;
+  seqOctClamp(seqEditCh);     // content shrank: shift range may have grown
   return 0;
 }
 
@@ -191,6 +307,54 @@ bool stepIsActive(uint8_t step) {
 static uint8_t seqNotes[SEQ_CH_COUNT][CHORD_MAX];
 static uint8_t seqLen[SEQ_CH_COUNT] = {0};
 
+// ARP phase per sequence (MONO/ARP playback); reset on transport stop
+static uint8_t arpIdx[SEQ_CH_COUNT] = {0};
+
+// chord-root detection: try each chord note as candidate root (lowest
+// first), accept when every interval above it (mod 12) fits a known chord
+// template; fallback = lowest note
+static uint8_t rootOf(const uint8_t *ch, uint8_t n) {
+  static const uint8_t t0[] = {0,4,7}, t1[] = {0,3,7}, t2[] = {0,3,6},
+                       t3[] = {0,4,6}, t4[] = {0,5,7}, t5[] = {0,2,7},
+                       t6[] = {0,7},   t7[] = {0,4,7,11}, t8[] = {0,3,7,10},
+                       t9[] = {0,4,7,10}, t10[] = {0,4,7,9}, t11[] = {0,3,7,9};
+  static const uint8_t *tpl[12] = {t0,t1,t2,t3,t4,t5,t6,t7,t8,t9,t10,t11};
+  static const uint8_t tlen[12] = {3,3,3,3,3,3,2,4,4,4,4,4};
+
+  uint8_t lo = ch[0];
+  for (uint8_t i = 1; i < n; i++) if (ch[i] < lo) lo = ch[i];
+
+  // candidates in ascending pitch order (root position matches first)
+  uint8_t cand[CHORD_MAX];
+  for (uint8_t i = 0; i < n; i++) cand[i] = ch[i];
+  for (uint8_t i = 1; i < n; i++) {
+    uint8_t v = cand[i], j = i;
+    while (j > 0 && cand[j - 1] > v) { cand[j] = cand[j - 1]; j--; }
+    cand[j] = v;
+  }
+
+  for (uint8_t ci = 0; ci < n; ci++) {
+    uint8_t iv[CHORD_MAX], in = 0;
+    for (uint8_t i = 0; i < n; i++) {
+      int d = (int)ch[i] - (int)cand[ci];
+      uint8_t v = (uint8_t)(((d % 12) + 12) % 12);
+      bool dup = false;
+      for (uint8_t j = 0; j < in; j++) if (iv[j] == v) dup = true;
+      if (!dup) iv[in++] = v;
+    }
+    for (uint8_t t = 0; t < 12; t++) {
+      bool fits = true;
+      for (uint8_t i = 0; i < in && fits; i++) {
+        bool hit = false;
+        for (uint8_t j = 0; j < tlen[t]; j++) if (iv[i] == tpl[t][j]) hit = true;
+        if (!hit) fits = false;
+      }
+      if (fits) return cand[ci];
+    }
+  }
+  return lo;
+}
+
 static void seqRelease() {
   for (uint8_t c = 0; c < SEQ_CH_COUNT; c++) {
     for (uint8_t i = 0; i < seqLen[c]; i++)
@@ -199,22 +363,62 @@ static void seqRelease() {
   }
 }
 
+// playback note = stored note + 12 * the sequence's octave shift, kept in
+// 0..127 (seqOctClamp keeps the shift inside the -2..8 convention anyway)
+static uint8_t shNote(uint8_t n, int8_t sh) {
+  int v = (int)n + 12 * (int)sh;
+  if (v < 0) v = 0;
+  if (v > 127) v = 127;
+  return (uint8_t)v;
+}
+
 // playhead reached a step: every channel with a chord here plays at once
 // (on its own MIDI channel), so channel 1 keeps running while another
-// channel is being edited
+// channel is being edited.  MONO sequences transform their chord at
+// playback (ROOT = root note, BASS = lowest note, ARP = next chord note),
+// then every channel applies its own octave shift (ENC1)
 void seqStepAdvance(uint8_t step) {
   seqRelease();
   if (step >= STEP_COUNT) return;
+  // carry the current pending chords forward into the new position: the
+  // chord played during steps 1-8 is the "actual chord" of step 8 even
+  // though it was fed while the playhead sat on step 1
+  for (uint8_t c = 0; c < SEQ_CH_COUNT; c++) histAt(c, step);
   for (uint8_t c = 0; c < SEQ_CH_COUNT; c++) {
-    for (uint8_t i = 0; i < stepChordLen[c][step] && i < CHORD_MAX; i++) {
-      seqNotes[c][seqLen[c]] = stepChord[c][step][i];
-      usbMIDI.sendNoteOn(seqNotes[c][seqLen[c]], KEY_VEL, c + 1);
-      seqLen[c]++;
+    uint8_t len = stepChordLen[c][step];
+    if (!len) continue;              // ARP phase also stays put on empty steps
+    uint8_t *ch = stepChord[c][step];
+    int8_t sh = seqOct[c];
+    if (seqTrackOf(c) == SEQ_TRACK_MONO) {
+      uint8_t note;
+      if (seqMonoTypeOf(c) == SEQ_MONO_BASS) {
+        note = ch[0];
+        for (uint8_t i = 1; i < len; i++) if (ch[i] < note) note = ch[i];
+      } else if (seqMonoTypeOf(c) == SEQ_MONO_ARP) {
+        note = ch[arpIdx[c] % len];
+        arpIdx[c]++;
+      } else {
+        note = rootOf(ch, len);      // SEQ_MONO_ROOT
+      }
+      note = shNote(note, sh);
+      seqNotes[c][0] = note;
+      seqLen[c] = 1;
+      usbMIDI.sendNoteOn(note, KEY_VEL, c + 1);
+    } else {
+      for (uint8_t i = 0; i < len && i < CHORD_MAX; i++) {
+        uint8_t note = shNote(ch[i], sh);
+        seqNotes[c][seqLen[c]] = note;
+        usbMIDI.sendNoteOn(note, KEY_VEL, c + 1);
+        seqLen[c]++;
+      }
     }
   }
 }
 
-void seqStepStop() { seqRelease(); }
+void seqStepStop() {
+  seqRelease();
+  for (uint8_t c = 0; c < SEQ_CH_COUNT; c++) arpIdx[c] = 0;
+}
 
 uint8_t seqEditChannel() { return seqEditCh + 1; }
 
@@ -224,9 +428,30 @@ void seqSetEditChannel(uint8_t ch) {
   if (ch < 1 || ch > SEQ_CH_COUNT || ch == seqEditCh + 1) return;
   seqEditCh = ch - 1;
   inRes = 0;     // partial ENC5 turn belongs to the previous focus
+  octSRes = 0;   // partial ENC1 turn belongs to the previous focus
 }
 
 uint8_t seqInputChannel() { return seqInCh[seqEditCh]; }
+
+// ENC1 in SEQMODE: octave shift of the edit sequence's playback, 4 counts
+// = 1 octave, clamped to the -2..8 convention, no wrap.  The range is
+// recalculated from the stored notes on every content change (notes at C3
+// -> -5..+5), so the displayed range always fits the convention
+void seqOctaveShiftAdjust(int16_t counts) {
+  octSRes += counts;
+  int16_t st = 0;
+  while (octSRes >= 4) { octSRes -= 4; st++; }
+  while (octSRes <= -4) { octSRes += 4; st--; }
+  if (!st) return;
+  seqOctClamp(seqEditCh);            // current content bounds first
+  int v = (int)seqOct[seqEditCh] + st;
+  if (v < -60) v = -60;              // keep the cast safe; clamp decides
+  if (v > 60) v = 60;
+  seqOct[seqEditCh] = (int8_t)v;
+  seqOctClamp(seqEditCh);
+}
+
+int seqOctaveShift() { return seqOct[seqEditCh]; }
 
 // ENC5 in SEQMODE3: input channel of the edit sequence, 4 counts = 1 step,
 // clamped 1..16, no wrap
@@ -240,6 +465,16 @@ void seqInputChannelAdjust(int16_t counts) {
   if (v < 1) v = 1;
   if (v > 16) v = 16;
   seqInCh[seqEditCh] = (uint8_t)v;
+  // backfill: now listening to channel v -> inherit the pending chord of
+  // track v (e.g. set ch3 input = ch2 after recording track2: ch3 gets
+  // track2's chord, so its steps can be activated right away)
+  uint8_t src = (uint8_t)v - 1;
+  pendingLen[seqEditCh] = pendingLen[src];
+  for (uint8_t i = 0; i < pendingLen[src] && i < CHORD_MAX; i++)
+    pending[seqEditCh][i] = pending[src][i];
+  // the input source just changed: drop stale step history so MONO
+  // activation falls back to the backfilled chord, not an old run's chords
+  for (uint8_t st = 0; st < STEP_COUNT; st++) histLen[seqEditCh][st] = 0;
 }
 
 // external MIDI input: a note feeds EVERY sequence whose input channel
@@ -256,6 +491,7 @@ void extNoteOn(uint8_t ch, uint8_t note) {
     if (extHeldLen[s] == 0) pendingLen[s] = 0;   // fresh gesture = new chord
     if (extHeldLen[s] < CHORD_MAX) extHeld[s][extHeldLen[s]++] = note;
     if (pendingLen[s] < CHORD_MAX) pending[s][pendingLen[s]++] = note;
+    histFeed(s);
     // holding a step = assign mode: input also appends to the edit step
     if (assignStep >= 0 && s == seqEditCh) {
       if (!assignStarted) {
@@ -264,6 +500,8 @@ void extNoteOn(uint8_t ch, uint8_t note) {
       }
       if (stepChordLen[assignCh][assignStep] < CHORD_MAX)
         stepChord[assignCh][assignStep][stepChordLen[assignCh][assignStep]++] = note;
+      seqOctClamp(assignCh);
+      stepSyncFrom(assignCh);
     }
   }
 }
@@ -316,11 +554,15 @@ int stepDrumToggle(uint8_t step) {
     if (ch[i] != drumPart) continue;
     for (uint8_t j = i; j + 1 < len; j++) ch[j] = ch[j + 1];
     stepChordLen[seqEditCh][step] = len - 1;
+    seqOctClamp(seqEditCh);
+    stepSyncFrom(seqEditCh);
     return -2;                         // part removed
   }
   if (len >= CHORD_MAX) return -1;
   ch[len] = drumPart;
   stepChordLen[seqEditCh][step] = len + 1;
+  seqOctClamp(seqEditCh);
+  stepSyncFrom(seqEditCh);
   return drumPart;
 }
 
