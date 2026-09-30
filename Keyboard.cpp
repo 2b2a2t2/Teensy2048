@@ -2,6 +2,8 @@
 #include "SeqClock.h"   // seqTrack() - step view follows the TRACK type
 #include "Modes.h"      // keyBehaviorVariant() - KEYMODE2 = chord mode
 #include "Chords.h"     // chord engine + scale filter state
+#include "Events.h"     // prob clipboard accessors (SEQ save/load)
+#include <EEPROM.h>
 
 #define KEY_OCT_MIN   (-2)
 #define KEY_OCT_MAX    8
@@ -15,10 +17,22 @@
 
 static int8_t  octave = KEY_OCT_DEF;
 static int16_t octRes = 0;              // leftover encoder counts
-static uint8_t keyCh = 1;               // keyboard MIDI channel (1..16)
+static uint8_t keyCh = 2;               // keyboard MIDI channel (1..16); boot
+                                        // default ch2 (ch1 is a DRUM track)
 static bool    keyActive[12] = {false}; // key currently held
 static bool    keySounding[12] = {false}; // key has its OWN note out (single mode)
 static uint8_t keyNote[12] = {0};       // note sounding on that key
+
+// live keyboard voice through the keyboard channel's MONO track (engine
+// further down): while engaged the raw notes are suppressed and the mono
+// voice sounds instead (ROOT/BASS follow the held gesture, ARP is driven
+// by the playhead); polled every loop and on every gesture
+static bool monoEng = false;            // mono voice owns the keyboard sound
+static bool monoOn = false;             // the live voice (or arp note) is out
+static uint8_t monoNote = 0;
+static uint8_t monoLastT = 255;         // TYPE the voice was built for
+static void monoApply();
+static void monoVoiceOff();
 
 // pending chord per sequence: fed by external notes on that sequence's
 // input channel (EVERY sequence listening to the channel is fed, so ch2's
@@ -55,7 +69,8 @@ static void histFeed(uint8_t s) { histAt(s, seqCurrentStep()); }
 // sequencer edit focus: 0-based channel index (MIDI channel = seqEditCh + 1);
 // the playhead plays EVERY channel's sequence at once, this only selects
 // which channel the step pads display / edit
-static uint8_t seqEditCh = 0;
+static uint8_t seqEditCh = 1;           // boot default = ch2 (step sequence 2
+                                        // selected, matching the keyboard)
 
 // input (listen) channel per sequence: notes arriving there feed the record
 // workflow; default sequence N listens to channel N
@@ -68,6 +83,8 @@ static int16_t inRes = 0;                // leftover encoder counts (ENC5)
 // shift is changeable live.  Clamped to the -2..8 octave convention
 static int8_t  seqOct[SEQ_CH_COUNT] = {0};
 static int16_t octSRes = 0;              // leftover encoder counts (ENC1)
+static int16_t gateSRes = 0;             // leftover encoder counts (ENC5 gate)
+static int16_t velSRes = 0;              // leftover encoder counts (ENC6 vel)
 
 // per-channel per-step stored chord; len 0 = unassigned (plays pending[])
 static uint8_t stepChord[SEQ_CH_COUNT][STEP_COUNT][CHORD_MAX];
@@ -82,6 +99,39 @@ static bool    assignStarted = false;
 // an ACTIVE step was pressed during the current tap (candidate for disable;
 // confirmed only on click, so a hold-to-edit does not clear the step)
 static bool tapCandidate[STEP_COUNT] = {false};
+
+// --- step-edit attributes (SEQMODE radio on a MONO track) -------------------
+// per-step flags (zero-init = none); probability stored as 100-value so
+// zero-init means 100% (no boot init needed).  Track note shaping:
+// seqVel = default velocity (boot 100, accent step = 127), seqGate = gate
+// time in % of one step (100 = hold until the next step = today's behavior)
+static uint8_t stepAtt[SEQ_CH_COUNT][STEP_COUNT];
+static uint8_t stepProbInv[SEQ_CH_COUNT][STEP_COUNT];   // 100 - prob %
+// DRUM tracks split accent/probability PER VOICE: mask bits say which of
+// the 16 parts (notes 36..51) is accented / probability-gated in a step,
+// the values hold each part's own 100-prob.  Zero-init: no accents, no
+// probability gates (mask bit = attribute present, so 100% still reads as
+// "armed" while always playing)
+static uint8_t drumAccent[SEQ_CH_COUNT][STEP_COUNT];
+static uint8_t drumProbOn[SEQ_CH_COUNT][STEP_COUNT];
+static uint8_t drumProbInv[SEQ_CH_COUNT][STEP_COUNT][16];
+static uint8_t seqVel[SEQ_CH_COUNT] = {90,90,90,90,90,90,90,90,
+                                       90,90,90,90,90,90,90,90};
+static uint8_t seqGate[SEQ_CH_COUNT] = {100,100,100,100,100,100,100,100,
+                                        100,100,100,100,100,100,100,100};
+static uint32_t gateOffAt[SEQ_CH_COUNT] = {0};   // 0 = no pending note-off
+static uint8_t advPrev = 0xFF;   // step of the previous advance (tie/glide)
+static uint8_t fBlinkMask = 0;   // edit-channel attrs read by the playhead
+
+// a step's attributes live and die with its content (both the MONO flags
+// and the DRUM per-voice accent/probability masks)
+static void stepAttClear(uint8_t ch, uint8_t st) {
+  stepAtt[ch][st] = 0;
+  stepProbInv[ch][st] = 0;       // back to 100%
+  drumAccent[ch][st] = 0;
+  drumProbOn[ch][st] = 0;
+  for (uint8_t v = 0; v < 16; v++) drumProbInv[ch][st][v] = 0;
+}
 
 // source step on track x for listener position n: the last active step at
 // or before n in the sequence (cyclic - wrapping past step 1 uses the
@@ -118,8 +168,8 @@ static void seqOctClamp(uint8_t s) {
 }
 
 // timeline adaptation: when track x's step chords are written, every MONO
-// sequence listening to x's channel (input channel = x+1) re-derives its
-// ACTIVE steps from x's timeline - each takes the last chord at or before
+// or POLY sequence listening to x's channel (input channel = x+1) re-derives
+// its ACTIVE steps from x's timeline - each takes the last chord at or before
 // its position, so ch3 follows "the last played chord in the sequence",
 // never the global last-played buffer while x has chords.  Content only:
 // the listener's active/inactive state is untouched ("keeping the same
@@ -129,7 +179,8 @@ static void stepSyncFrom(uint8_t x) {
   if (x >= SEQ_CH_COUNT) return;
   for (uint8_t y = 0; y < SEQ_CH_COUNT; y++) {
     if (y == x || seqInCh[y] != x + 1) continue;
-    if (seqTrackOf(y) != SEQ_TRACK_MONO) continue;
+    uint8_t ltr = seqTrackOf(y);
+    if (ltr != SEQ_TRACK_MONO && ltr != SEQ_TRACK_POLY) continue;  // DRUM never follows
     bool changed = false;
     for (uint8_t n = 0; n < STEP_COUNT; n++) {
       if (stepChordLen[y][n] == 0) continue;   // never creates active steps
@@ -181,6 +232,7 @@ static void updatePending() {
     }
     histFeed(s);
   }
+  monoApply();   // the held gesture changed: re-voice the MONO track
 }
 
 void keyPendingRefresh() { updatePending(); }
@@ -196,13 +248,19 @@ static void setOctave(int8_t o) {
     chordShift(delta);
     return;
   }
-  // re-trigger every sounding key so no note is stranded in the old octave
+  // re-trigger every sounding key so no note is stranded in the old octave;
+  // keys held under the mono voice stay silent (their keyNote follows so
+  // the voice and the pending chord track the octave change)
   for (uint8_t k = 0; k < 12; k++) {
-    if (!keySounding[k]) continue;
-    usbMIDI.sendNoteOff(keyNote[k], 0, keyCh);
-    keyNote[k] = noteFor(k, octave);
-    usbMIDI.sendNoteOn(keyNote[k], KEY_VEL, keyCh);
+    if (keySounding[k]) {
+      usbMIDI.sendNoteOff(keyNote[k], 0, keyCh);
+      keyNote[k] = noteFor(k, octave);
+      usbMIDI.sendNoteOn(keyNote[k], KEY_VEL, keyCh);
+    } else if (keyActive[k]) {
+      keyNote[k] = noteFor(k, octave);
+    }
   }
+  monoApply();   // ROOT/BASS voice re-voices with the octave change
 }
 
 // holding a step = assign mode: every note of this gesture replaces that
@@ -211,6 +269,7 @@ static void assignAppend(const uint8_t *notes, uint8_t n) {
   if (assignStep < 0 || n == 0) return;
   if (!assignStarted) {
     stepChordLen[assignCh][assignStep] = 0;
+    stepAttClear(assignCh, assignStep);
     assignStarted = true;
   }
   for (uint8_t i = 0; i < n && stepChordLen[assignCh][assignStep] < CHORD_MAX; i++)
@@ -221,8 +280,10 @@ static void assignAppend(const uint8_t *notes, uint8_t n) {
 
 int keyPadPress(uint8_t idx) {
   if (idx >= 12) return -1;
+  monoApply();   // reconcile with the keyboard channel's track first
   // KEYMODE2: the chord engine owns the gesture (quality/diatonic chords,
   // latch, KeyLock) - it sends its own notes and feeds the pending chord
+  // (muted while the mono voice is engaged; the state still builds)
   if (keyBehaviorVariant() == 2) {
     keyNote[idx] = noteFor(idx, octave);
     keyActive[idx] = true;
@@ -235,12 +296,16 @@ int keyPadPress(uint8_t idx) {
   // bypasses it); Chromatic (the default) has every key in scale = no change
   if (keyScale() != 0 && !chordKeyLock() && !keyIsInScale(idx)) return -1;
   keyNote[idx] = noteFor(idx, octave);
-  usbMIDI.sendNoteOn(keyNote[idx], KEY_VEL, keyCh);
-  keySounding[idx] = true;
+  // MONO track engaged: no raw note - the root/bass voice or the playhead
+  // arp sounds instead (updatePending below re-voices it)
+  if (!monoEng) {
+    usbMIDI.sendNoteOn(keyNote[idx], KEY_VEL, keyCh);
+    keySounding[idx] = true;
+  }
   keyActive[idx] = true;
   updatePending();
   assignAppend(&keyNote[idx], 1);
-  return keyNote[idx];
+  return monoEng ? -1 : keyNote[idx];
 }
 
 int keyPadRelease(uint8_t idx) {
@@ -260,6 +325,7 @@ int keyPadRelease(uint8_t idx) {
     for (uint8_t k = 0; k < 12; k++) any = any || keyActive[k];
     if (!any && extHeldLen[assignCh] == 0) assignStarted = false;
   }
+  monoApply();   // the held gesture shrank: re-voice / release the voice
   return keyNote[idx];
 }
 
@@ -272,6 +338,30 @@ void keyOctaveAdjust(int16_t counts) {
 }
 
 int keyOctave() { return octave; }
+
+// chord currently HELD for sequence s - the live gesture, never the
+// kept-after-release pending buffer: the keyboard when its channel reaches
+// s (held keys in single mode; sounding chord incl. latch in KEYMODE2),
+// else external notes still held on s's input channel.  Returns 0 when
+// nothing is held (or the held chord is empty), *out then undefined
+static uint8_t liveHeldChord(uint8_t s, const uint8_t **out) {
+  if (keyCh == s + 1 || seqInCh[s] == keyCh) {
+    if (keyBehaviorVariant() == 2) {
+      if (chordSounding()) {
+        *out = chordNotes();
+        return chordCount();
+      }
+    } else {
+      static uint8_t live[CHORD_MAX];   // static: pointer handed to caller
+      uint8_t n = 0;
+      for (uint8_t k = 0; k < 12 && n < CHORD_MAX; k++)
+        if (keyActive[k]) live[n++] = keyNote[k];
+      if (n > 0) { *out = live; return n; }
+    }
+  }
+  if (extHeldLen[s] > 0) { *out = extHeld[s]; return extHeldLen[s]; }
+  return 0;
+}
 
 int stepChordPress(uint8_t step) {
   if (step >= STEP_COUNT) return -1;
@@ -289,7 +379,10 @@ int stepChordPress(uint8_t step) {
   // step at or before this position - "the last played chord in the
   // sequence", B at step 1 / G at step 9 partitions 1-8 / 9-16), then the
   // step history (live-played while ch2 has no recorded chords), then the
-  // latest pending chord
+  // latest pending chord.  POLY fed from another channel (input != own)
+  // mirrors that chain but a gesture still HELD (keyboard keys, latched
+  // chord, external notes) wins over the timeline, so holding a chord and
+  // pressing the step inserts it
   const uint8_t *src = pending[seqEditCh];
   uint8_t n = pendingLen[seqEditCh];
   if (seqTrack() == SEQ_TRACK_MONO) {
@@ -302,11 +395,31 @@ int stepChordPress(uint8_t step) {
       src = histChord[seqEditCh][step];
       n = histLen[seqEditCh][step];
     }
+  } else if (seqTrack() == SEQ_TRACK_POLY &&
+             seqInCh[seqEditCh] != seqEditCh + 1) {
+    const uint8_t *held;
+    uint8_t hn = liveHeldChord(seqEditCh, &held);
+    if (hn > 0) {
+      src = held;                     // held/latched chord insert
+      n = hn;
+    } else {
+      uint8_t x = seqInCh[seqEditCh] - 1;        // the INPUT track
+      int8_t idx = srcStepBack(x, step);
+      if (idx >= 0) {
+        src = stepChord[x][idx];
+        n = stepChordLen[x][idx];
+      } else if (histLen[seqEditCh][step] > 0) {
+        src = histChord[seqEditCh][step];
+        n = histLen[seqEditCh][step];
+      }
+      // else: input track empty - keep pending (last gesture), like MONO
+    }
   }
   if (n == 0) return 0;
   for (uint8_t i = 0; i < n && i < CHORD_MAX; i++)
     stepChord[seqEditCh][step][i] = src[i];
   stepChordLen[seqEditCh][step] = n;
+  stepAttClear(seqEditCh, step);   // fresh content starts attribute-free
   seqOctClamp(seqEditCh);
   stepSyncFrom(seqEditCh);
   return n;
@@ -328,6 +441,7 @@ int stepChordClick(uint8_t step) {
   tapCandidate[step] = false;
   if (stepChordLen[seqEditCh][step] == 0) return -1;
   stepChordLen[seqEditCh][step] = 0;
+  stepAttClear(seqEditCh, step);   // a dead step carries no tie/prob over
   seqOctClamp(seqEditCh);     // content shrank: shift range may have grown
   return 0;
 }
@@ -346,12 +460,72 @@ bool stepIsActive(uint8_t step) {
   return stepChordLen[seqEditCh][step] > 0;
 }
 
+// toggle an attribute on the EDIT channel's step.  MONO tracks use the
+// per-step flags (a PROB toggle-on stores the clipboard value, inverted);
+// DRUM tracks toggle it for the SELECTED PART only - each voice carries
+// its own accent and probability.  Returns the new state so the caller
+// can show "14 kick acc on" feedback
+bool stepAttrToggle(uint8_t step, uint8_t att, uint8_t probVal) {
+  if (step >= STEP_COUNT || !att) return false;
+  if (seqTrack() == SEQ_TRACK_DRUM) {
+    uint8_t v = drumPart;              // 36..51 -> voice index 0..15
+    if (v < 36 || v >= 52) return false;
+    uint8_t bit = (uint8_t)(1 << (v - 36));
+    if (att & SEQ_ATT_ACCENT) {
+      drumAccent[seqEditCh][step] ^= bit;
+      return (drumAccent[seqEditCh][step] & bit) != 0;
+    }
+    if (att & SEQ_ATT_PROB) {
+      if (drumProbOn[seqEditCh][step] & bit) {
+        drumProbOn[seqEditCh][step] &= (uint8_t)~bit;
+        drumProbInv[seqEditCh][step][v - 36] = 0;
+        return false;
+      }
+      if (probVal > 100) probVal = 100;
+      drumProbOn[seqEditCh][step] |= bit;
+      drumProbInv[seqEditCh][step][v - 36] = 100 - probVal;
+      return true;
+    }
+    return false;                      // TIE/GLIDE never apply to drums
+  }
+  uint8_t *a = &stepAtt[seqEditCh][step];
+  if (*a & att) {
+    *a &= (uint8_t)~att;
+    return false;
+  }
+  *a |= att;
+  if (att & SEQ_ATT_PROB) {
+    if (probVal > 100) probVal = 100;
+    stepProbInv[seqEditCh][step] = 100 - probVal;
+  }
+  return true;
+}
+
+// attribute mask of the EDIT channel's step (step LED pulse / display).
+// On DRUM tracks the view follows the SELECTED PART: its accent / its own
+// probability - switching the part select re-maps the yellow pulse live
+uint8_t stepAttrs(uint8_t step) {
+  if (step >= STEP_COUNT) return 0;
+  if (seqTrack() == SEQ_TRACK_DRUM) {
+    uint8_t v = drumPart;
+    if (v < 36 || v >= 52) return 0;
+    uint8_t bit = (uint8_t)(1 << (v - 36));
+    uint8_t m = 0;
+    if (drumAccent[seqEditCh][step] & bit) m |= SEQ_ATT_ACCENT;
+    if (drumProbOn[seqEditCh][step] & bit) m |= SEQ_ATT_PROB;
+    return m;
+  }
+  return stepAtt[seqEditCh][step];
+}
+
 // notes the sequencer (playhead) currently has sounding, per channel
 static uint8_t seqNotes[SEQ_CH_COUNT][CHORD_MAX];
 static uint8_t seqLen[SEQ_CH_COUNT] = {0};
 
 // ARP phase per sequence (MONO/ARP playback); reset on transport stop
 static uint8_t arpIdx[SEQ_CH_COUNT] = {0};
+// ARP phase of the LIVE keyboard voice (MONO+ARP on the keyboard channel)
+static uint8_t liveArpIdx = 0;
 
 // chord-root detection: try each chord note as candidate root (lowest
 // first), accept when every interval above it (mod 12) fits a known chord
@@ -398,12 +572,115 @@ static uint8_t rootOf(const uint8_t *ch, uint8_t n) {
   return lo;
 }
 
-static void seqRelease() {
-  for (uint8_t c = 0; c < SEQ_CH_COUNT; c++) {
-    for (uint8_t i = 0; i < seqLen[c]; i++)
-      usbMIDI.sendNoteOff(seqNotes[c][i], 0, c + 1);
-    seqLen[c] = 0;
+// ---------------------------------------------------------------------------
+// live keyboard voice: the keyboard channel's MONO track processes what you
+// play in real time (ROOT = root note, BASS = lowest, ARP = next chord note
+// per playhead step); raw notes stay suppressed while engaged.  Recording is
+// untouched - the gesture still fills the pending chord of every listener
+// ---------------------------------------------------------------------------
+
+static bool monoEngaged() { return seqTrackOf(keyCh - 1) == SEQ_TRACK_MONO; }
+static uint8_t monoType() { return seqMonoTypeOf(keyCh - 1); }
+
+// held gesture as the voice source: KEYMODE2 uses the chord engine's
+// sounding notes (latch included), single mode the held keys (ascending)
+static uint8_t monoSrc(const uint8_t **out) {
+  if (keyBehaviorVariant() == 2) {
+    if (chordSounding()) { *out = chordNotes(); return chordCount(); }
+    return 0;
   }
+  static uint8_t buf[12];   // static: pointer handed to the caller
+  uint8_t n = 0;
+  for (uint8_t k = 0; k < 12; k++)
+    if (keyActive[k]) buf[n++] = keyNote[k];
+  if (!n) return 0;
+  *out = buf;
+  return n;
+}
+
+static void monoVoiceOff() {
+  if (monoOn) {
+    usbMIDI.sendNoteOff(monoNote, 0, keyCh);
+    monoOn = false;
+  }
+}
+
+// POLY -> MONO while keys are held: the raw notes stop...
+static void cutRaw() {
+  for (uint8_t k = 0; k < 12; k++)
+    if (keySounding[k]) {
+      usbMIDI.sendNoteOff(keyNote[k], 0, keyCh);
+      keySounding[k] = false;
+    }
+}
+
+// ...and MONO -> POLY while keys are held: they sound raw again (single
+// mode only - in KEYMODE2 the chord engine re-sends via chordMute(false))
+static void strikeRaw() {
+  if (keyBehaviorVariant() == 2) return;
+  for (uint8_t k = 0; k < 12; k++)
+    if (keyActive[k]) {
+      keyNote[k] = noteFor(k, octave);
+      usbMIDI.sendNoteOn(keyNote[k], KEY_VEL, keyCh);
+      keySounding[k] = true;
+    }
+}
+
+static void monoLiveUpdate() {
+  if (!monoEng) return;
+  uint8_t t = monoType();
+  if (t != monoLastT) {          // TYPE knob turned mid-hold: drop the voice
+    monoVoiceOff();
+    monoLastT = t;
+  }
+  if (t == SEQ_MONO_ARP) return; // the playhead advances the arp note only
+  const uint8_t *src;
+  uint8_t n = monoSrc(&src);
+  if (!n) { monoVoiceOff(); return; }
+  uint8_t want;
+  if (t == SEQ_MONO_BASS) {
+    want = src[0];
+    for (uint8_t i = 1; i < n; i++) if (src[i] < want) want = src[i];
+  } else {
+    want = rootOf(src, n);       // SEQ_MONO_ROOT
+  }
+  if (monoOn && monoNote == want) return;   // gesture kept the same note
+  monoVoiceOff();
+  usbMIDI.sendNoteOn(want, KEY_VEL, keyCh);
+  monoNote = want;
+  monoOn = true;
+}
+
+// reconcile the voice with the keyboard channel's TRACK/TYPE and the held
+// gesture; called from the loop poll, every gesture and every octave change
+static void monoApply() {
+  bool eng = monoEngaged();
+  if (eng != monoEng) {
+    monoEng = eng;
+    if (eng) {
+      cutRaw();
+      chordMute(true);
+    } else {
+      monoVoiceOff();
+      chordMute(false);
+      strikeRaw();
+    }
+  }
+  if (eng) monoLiveUpdate();
+}
+
+void keyMonoPoll() { monoApply(); }
+
+// release one sequence's sounding notes and cancel its gate timer
+static void releaseCh(uint8_t c) {
+  for (uint8_t i = 0; i < seqLen[c]; i++)
+    usbMIDI.sendNoteOff(seqNotes[c][i], 0, c + 1);
+  seqLen[c] = 0;
+  gateOffAt[c] = 0;
+}
+
+static void seqRelease() {
+  for (uint8_t c = 0; c < SEQ_CH_COUNT; c++) releaseCh(c);
 }
 
 // playback note = stored note + 12 * the sequence's octave shift, kept in
@@ -419,20 +696,63 @@ static uint8_t shNote(uint8_t n, int8_t sh) {
 // (on its own MIDI channel), so channel 1 keeps running while another
 // channel is being edited.  MONO sequences transform their chord at
 // playback (ROOT = root note, BASS = lowest note, ARP = next chord note),
-// then every channel applies its own octave shift (ENC1)
+// then every channel applies its own octave shift (ENC1) - and honors the
+// step-edit attributes: TIE bridges into the next step, GLIDE overlaps the
+// notes (legato), ACCENT plays 127, PROB gates by its stored chance, the
+// track's gate time cuts the note mid-step
 void seqStepAdvance(uint8_t step) {
-  seqRelease();
-  if (step >= STEP_COUNT) return;
+  if (step >= STEP_COUNT) {
+    seqRelease();
+    advPrev = 0xFF;
+    fBlinkMask = 0;
+    return;
+  }
+  uint32_t now = millis();
+  // gate length is a % of ONE step: measure the gap between advances so
+  // tempo changes and the external clock are followed live
+  static uint32_t lastAdvMs = 0;
+  uint32_t stepDur = 0;
+  if (lastAdvMs) {
+    stepDur = now - lastAdvMs;
+    if (stepDur > 2000) stepDur = 2000;   // paused transport gap
+  }
+  lastAdvMs = now;
+  // per-channel release honoring the previous step's attributes: TIE keeps
+  // the note sounding (no release, and the retrigger below is skipped),
+  // GLIDE defers its note-off until after the new note-on
+  bool tied[SEQ_CH_COUNT], defer[SEQ_CH_COUNT];
+  bool prevValid = (advPrev < STEP_COUNT);
+  for (uint8_t c = 0; c < SEQ_CH_COUNT; c++) {
+    tied[c] = defer[c] = false;
+    uint8_t pf = (prevValid && seqTrackOf(c) == SEQ_TRACK_MONO)
+                   ? stepAtt[c][advPrev] : 0;
+    if (pf & SEQ_ATT_TIE) { tied[c] = true; continue; }
+    if (pf & SEQ_ATT_GLIDE) { defer[c] = true; continue; }
+    releaseCh(c);
+  }
   // carry the current pending chords forward into the new position: the
   // chord played during steps 1-8 is the "actual chord" of step 8 even
   // though it was fed while the playhead sat on step 1
   for (uint8_t c = 0; c < SEQ_CH_COUNT; c++) histAt(c, step);
   for (uint8_t c = 0; c < SEQ_CH_COUNT; c++) {
+    if (tied[c]) continue;              // merged note keeps sounding
     uint8_t len = stepChordLen[c][step];
-    if (!len) continue;              // ARP phase also stays put on empty steps
+    bool mono = (seqTrackOf(c) == SEQ_TRACK_MONO);
+    bool drumTrack = (seqTrackOf(c) == SEQ_TRACK_DRUM);
+    // MONO uses the per-step flags; DRUM rolls accent/probability per voice
+    uint8_t att = mono ? stepAtt[c][step] : 0;
+    bool plays = (len > 0) && !seqIsMuted(c);
+    // probability gate (MONO only): a miss silences the step this pass
+    if (plays && (att & SEQ_ATT_PROB) &&
+        (uint8_t)random(100) >= (uint8_t)(100 - stepProbInv[c][step]))
+      plays = false;
+    if (!plays) {
+      releaseCh(c);                     // also ends a deferred glide
+      continue;
+    }
     uint8_t *ch = stepChord[c][step];
     int8_t sh = seqOct[c];
-    if (seqTrackOf(c) == SEQ_TRACK_MONO) {
+    if (mono) {
       uint8_t note;
       if (seqMonoTypeOf(c) == SEQ_MONO_BASS) {
         note = ch[0];
@@ -441,27 +761,106 @@ void seqStepAdvance(uint8_t step) {
         note = ch[arpIdx[c] % len];
         arpIdx[c]++;
       } else {
-        note = rootOf(ch, len);      // SEQ_MONO_ROOT
+        note = rootOf(ch, len);         // SEQ_MONO_ROOT
       }
       note = shNote(note, sh);
+      uint8_t vel = (att & SEQ_ATT_ACCENT) ? 127 : seqVel[c];
+      if (defer[c]) {
+        // GLIDE: new note-on BEFORE the old note-off (legato overlap)
+        usbMIDI.sendNoteOn(note, vel, c + 1);
+        for (uint8_t i = 0; i < seqLen[c]; i++)
+          usbMIDI.sendNoteOff(seqNotes[c][i], 0, c + 1);
+        seqLen[c] = 0;
+        gateOffAt[c] = 0;
+      } else {
+        usbMIDI.sendNoteOn(note, vel, c + 1);
+      }
       seqNotes[c][0] = note;
       seqLen[c] = 1;
-      usbMIDI.sendNoteOn(note, KEY_VEL, c + 1);
+      // gate timer: TIE/GLIDE hold to the boundary by definition
+      if (stepDur && seqGate[c] < 100 && !(att & (SEQ_ATT_TIE | SEQ_ATT_GLIDE)))
+        gateOffAt[c] = now + (stepDur * (uint32_t)seqGate[c]) / 100;
     } else {
+      if (defer[c]) releaseCh(c);       // track flipped mid-play: cut old
       for (uint8_t i = 0; i < len && i < CHORD_MAX; i++) {
-        uint8_t note = shNote(ch[i], sh);
+        uint8_t raw = ch[i];
+        // DRUM voices muted in the ENCMODE overlay stay silent (match the
+        // stored note, like the part select - the octave shift applies after)
+        if (drumTrack && drumVoiceMuted(raw)) continue;
+        uint8_t dvel = KEY_VEL;
+        // per-voice accent + probability (DRUM only; POLY ignores the masks)
+        uint8_t v = (drumTrack && raw >= 36 && raw < 52)
+                      ? (uint8_t)(raw - 36) : 0xFF;
+        if (v != 0xFF) {
+          if ((drumProbOn[c][step] >> v) & 1) {
+            if ((uint8_t)random(100) >=
+                (uint8_t)(100 - drumProbInv[c][step][v]))
+              continue;                 // this voice misses its roll
+          }
+          if ((drumAccent[c][step] >> v) & 1) dvel = 127;
+        }
+        uint8_t note = shNote(raw, sh);
         seqNotes[c][seqLen[c]] = note;
-        usbMIDI.sendNoteOn(note, KEY_VEL, c + 1);
+        usbMIDI.sendNoteOn(note, dvel, c + 1);
         seqLen[c]++;
       }
+    }
+  }
+  // F-row blink: attributes of the edit channel's step the playhead reads
+  // (MONO = the step flags; DRUM = any part carrying accent/probability)
+  uint8_t fTrk = seqTrackOf(seqEditCh);
+  if (fTrk == SEQ_TRACK_MONO) {
+    fBlinkMask = stepChordLen[seqEditCh][step] > 0
+                   ? stepAtt[seqEditCh][step] : 0;
+  } else if (fTrk == SEQ_TRACK_DRUM) {
+    fBlinkMask = 0;
+    if (stepChordLen[seqEditCh][step] > 0) {
+      if (drumAccent[seqEditCh][step]) fBlinkMask |= SEQ_ATT_ACCENT;
+      if (drumProbOn[seqEditCh][step]) fBlinkMask |= SEQ_ATT_PROB;
+    }
+  } else {
+    fBlinkMask = 0;
+  }
+  advPrev = step;
+  // live keyboard arp (MONO+ARP on the keyboard channel): one note of the
+  // held gesture per step, transport-gated - recorded steps above play
+  // independently, the previous arp note is released first
+  if (monoEngaged() && monoType() == SEQ_MONO_ARP) {
+    const uint8_t *src;
+    uint8_t n = monoSrc(&src);
+    monoVoiceOff();
+    if (n > 0) {
+      uint8_t note = src[liveArpIdx++ % n];
+      usbMIDI.sendNoteOn(note, KEY_VEL, keyCh);
+      monoNote = note;
+      monoOn = true;
     }
   }
 }
 
 void seqStepStop() {
   seqRelease();
+  advPrev = 0xFF;                 // no carry-over into the next run
+  fBlinkMask = 0;
+  // the live arp is step-driven: silence it with the transport (the
+  // ROOT/BASS voice follows the keys and keeps sounding)
+  if (monoEngaged() && monoType() == SEQ_MONO_ARP) monoVoiceOff();
+  liveArpIdx = 0;
   for (uint8_t c = 0; c < SEQ_CH_COUNT; c++) arpIdx[c] = 0;
 }
+
+// gate timers fire from loop context (never the ISR): note-off once the
+// track's gate time (a % of the measured step) has elapsed
+void seqGatePoll() {
+  uint32_t now = millis();
+  for (uint8_t c = 0; c < SEQ_CH_COUNT; c++) {
+    if (gateOffAt[c] && (int32_t)(now - gateOffAt[c]) >= 0) releaseCh(c);
+  }
+}
+
+// attributes the playhead is reading on the edit channel right now
+// (F-row blink mask; zero on non-MONO tracks or between attributed steps)
+uint8_t seqFMask() { return fBlinkMask; }
 
 uint8_t seqSoundingCount(uint8_t ch) {
   if (ch < 1 || ch > SEQ_CH_COUNT) return 0;
@@ -482,6 +881,8 @@ void seqSetEditChannel(uint8_t ch) {
   seqEditCh = ch - 1;
   inRes = 0;     // partial ENC5 turn belongs to the previous focus
   octSRes = 0;   // partial ENC1 turn belongs to the previous focus
+  gateSRes = 0;
+  velSRes = 0;
 }
 
 uint8_t seqInputChannel() { return seqInCh[seqEditCh]; }
@@ -505,6 +906,39 @@ void seqOctaveShiftAdjust(int16_t counts) {
 }
 
 int seqOctaveShift() { return seqOct[seqEditCh]; }
+
+// ENC5 in SEQMODE (MONO + step-edit): gate time of the edit sequence as a
+// % of one measured step, 4 counts = 5%, clamped 10..100 (100 = hold until
+// the next step).  Track parameters survive an erase (like seqOct)
+void seqGateAdjust(int16_t counts) {
+  gateSRes += counts;
+  int16_t st = 0;
+  while (gateSRes >= 4) { gateSRes -= 4; st++; }
+  while (gateSRes <= -4) { gateSRes += 4; st--; }
+  if (!st) return;
+  int v = (int)seqGate[seqEditCh] + st * 5;
+  if (v < 10) v = 10;
+  if (v > 100) v = 100;
+  seqGate[seqEditCh] = (uint8_t)v;
+}
+
+int seqGatePct() { return seqGate[seqEditCh]; }
+
+// ENC6 in SEQMODE (MONO + step-edit): default note velocity of the edit
+// sequence, 4 counts = 1, clamped 1..127 (accent steps stay 127)
+void seqVelocityAdjust(int16_t counts) {
+  velSRes += counts;
+  int16_t st = 0;
+  while (velSRes >= 4) { velSRes -= 4; st++; }
+  while (velSRes <= -4) { velSRes += 4; st--; }
+  if (!st) return;
+  int v = (int)seqVel[seqEditCh] + st;
+  if (v < 1) v = 1;
+  if (v > 127) v = 127;
+  seqVel[seqEditCh] = (uint8_t)v;
+}
+
+int seqVelocity() { return seqVel[seqEditCh]; }
 
 // ENC5 in SEQMODE3: input channel of the edit sequence, 4 counts = 1 step,
 // clamped 1..16, no wrap
@@ -578,7 +1012,150 @@ void extNoteOff(uint8_t ch, uint8_t note) {
   }
 }
 
+// --- ENC mode output mute (hold M2) ----------------------------------------
+static bool encMuteSel = false;                 // M2 held while in ENCMODE
+static bool seqMute[SEQ_CH_COUNT] = {false};    // playback output gated
+
+void encMuteHold(bool on) { encMuteSel = on; }
+
+// composite: the raw flag can outlive a mid-hold mode switch - only the
+// ENC mode shows the overlay (modeOnEvent clears the flag on a mode change)
+bool encMuteActive() { return encMuteSel && modeBase == MODE_ENC; }
+
+bool seqIsMuted(uint8_t seq) { return seq < SEQ_CH_COUNT && seqMute[seq]; }
+
+// pad press: mute = cut that sequence's sounding notes at once; unmute =
+// playback resumes with the next step.  Editing state is never touched
+void seqMuteToggle(uint8_t seq) {
+  if (seq >= SEQ_CH_COUNT) return;
+  if (seqMute[seq]) {
+    seqMute[seq] = false;
+    return;
+  }
+  seqMute[seq] = true;
+  for (uint8_t i = 0; i < seqLen[seq]; i++)
+    usbMIDI.sendNoteOff(seqNotes[seq][i], 0, seq + 1);
+  seqLen[seq] = 0;
+  arpIdx[seq] = 0;
+}
+
+// --- SEQMODE3 erase --------------------------------------------------------
+// cut first so a running transport never re-sends erased notes; the step
+// history goes too - otherwise the recording chains would resurrect old
+// chords.  Listener sequences keep their own copy (stepSyncFrom never
+// propagates an empty source), so "erase all" loops every track
+static void seqEraseNotes(uint8_t s) {
+  for (uint8_t i = 0; i < seqLen[s]; i++)
+    usbMIDI.sendNoteOff(seqNotes[s][i], 0, s + 1);
+  seqLen[s] = 0;
+  arpIdx[s] = 0;
+}
+
+void seqErase(uint8_t s) {
+  if (s >= SEQ_CH_COUNT) return;
+  seqEraseNotes(s);
+  for (uint8_t st = 0; st < STEP_COUNT; st++) {
+    stepChordLen[s][st] = 0;
+    histLen[s][st] = 0;
+    stepAttClear(s, st);        // empty steps carry no attributes
+  }
+  gateOffAt[s] = 0;
+  seqOctClamp(s);               // content gone: shift range re-derives
+}
+
+void seqEraseAll() {
+  for (uint8_t s = 0; s < SEQ_CH_COUNT; s++) seqErase(s);
+}
+
+// --- EEPROM persistence (SEQMODE4 + REC saves, boot loads) ----------------
+// Settings only - the note patterns themselves stay RAM.  Layout at address
+// 160 (after the 131-byte CC block): magic | editCh | prob | oct[16] |
+// inCh[16] | vel[16] | gate[16] | mute[16] | track[16] | mono[16] |
+// checksum = 116 bytes; blank or corrupt keeps the defaults
+static const uint8_t  SEQ_EE_MAGIC = 0x53;
+static const uint16_t SEQ_EE_ADDR = 160;
+static const uint16_t SEQ_EE_LEN = 116;
+
+void seqCfgSave() {
+  uint8_t b[SEQ_EE_LEN];
+  b[0] = SEQ_EE_MAGIC;
+  b[1] = seqEditCh + 1;
+  b[2] = stepProbValue();
+  for (uint8_t i = 0; i < SEQ_CH_COUNT; i++) {
+    b[3 + i] = (uint8_t)seqOct[i];
+    b[19 + i] = seqInCh[i];
+    b[35 + i] = seqVel[i];
+    b[51 + i] = seqGate[i];
+    b[67 + i] = seqMute[i] ? 1 : 0;
+    b[83 + i] = seqTrackOf(i);
+    b[99 + i] = seqMonoTypeOf(i);
+  }
+  uint8_t sum = 0;
+  for (uint16_t i = 0; i < SEQ_EE_LEN - 1; i++) sum += b[i];
+  b[SEQ_EE_LEN - 1] = sum;
+  EEPROM.put(SEQ_EE_ADDR, b);   // put() writes only the bytes that changed
+}
+
+void seqCfgLoad() {
+  uint8_t b[SEQ_EE_LEN];
+  EEPROM.get(SEQ_EE_ADDR, b);
+  uint8_t sum = 0;
+  for (uint16_t i = 0; i < SEQ_EE_LEN - 1; i++) sum += b[i];
+  if (b[0] != SEQ_EE_MAGIC || sum != b[SEQ_EE_LEN - 1]) return;
+  for (uint8_t i = 0; i < SEQ_CH_COUNT; i++) {
+    int v = (int8_t)b[3 + i];            // octave: keep the cast signed
+    if (v < -60) v = -60;
+    if (v > 60) v = 60;
+    seqOct[i] = (int8_t)v;
+    v = b[19 + i];
+    if (v < 1) v = 1;
+    if (v > 16) v = 16;
+    seqInCh[i] = (uint8_t)v;
+    v = b[35 + i];
+    if (v < 1) v = 1;
+    if (v > 127) v = 127;
+    seqVel[i] = (uint8_t)v;
+    v = b[51 + i];
+    if (v < 10) v = 10;
+    if (v > 100) v = 100;
+    seqGate[i] = (uint8_t)v;
+    seqMute[i] = (b[67 + i] != 0);
+    seqSetTrackType(i, b[83 + i]);
+    seqSetMonoType(i, b[99 + i]);
+    seqOctClamp(i);                      // content bounds (empty = convention)
+  }
+  stepProbSet(b[2]);                     // clamped inside
+  seqSetEditChannel(b[1]);               // validates 1..16, keeps focus sane
+}
+
 // --- DRUM track: per-voice (part) sequencing -----------------------------
+static bool drumMuteSel = false;              // M1 held while in ENCMODE
+static bool drumVoiceMute[16] = {false};      // drum notes 36..51 muted
+
+void drumMuteHold(bool on) { drumMuteSel = on; }
+
+// composite: only the ENC mode shows the overlay (modeOnEvent clears the
+// flag on a mode change)
+bool drumVoiceMuteActive() { return drumMuteSel && modeBase == MODE_ENC; }
+
+bool drumVoiceMuted(uint8_t note) {
+  return note >= 36 && note <= 51 && drumVoiceMute[note - 36];
+}
+
+// overlay pad press: mute/unmute that drum voice for EVERY drum-track
+// sequence; state persists until toggled back
+void drumVoiceMuteToggle(uint8_t note) {
+  if (note >= 36 && note <= 51) drumVoiceMute[note - 36] = !drumVoiceMute[note - 36];
+}
+
+const char* drumVoiceName(uint8_t note) {
+  static const char* nn[12] = {"C","C#","D","D#","E","F","F#","G","G#","A","A#","B"};
+  static char buf[4];
+  uint8_t n = note - 24;
+  snprintf(buf, sizeof(buf), "%s%u", nn[n % 12], n / 12);
+  return buf;
+}
+
 void drumPartSelectHold(bool on) { drumPartSel = on; }
 bool drumPartSelectActive() { return drumPartSel; }
 
@@ -589,13 +1166,7 @@ void drumPartSet(uint8_t idx) {
 
 uint8_t drumPartNote() { return drumPart; }
 
-const char* drumPartName() {
-  static const char* nn[12] = {"C","C#","D","D#","E","F","F#","G","G#","A","A#","B"};
-  static char buf[4];
-  uint8_t n = drumPart - 24;
-  snprintf(buf, sizeof(buf), "%s%u", nn[n % 12], n / 12);
-  return buf;
-}
+const char* drumPartName() { return drumVoiceName(drumPart); }
 
 // toggle the selected part at a step of the edit sequence: add or remove -
 // no sound here either, the playhead plays the pattern
@@ -623,14 +1194,32 @@ uint8_t keyChannel() { return keyCh; }
 
 void keySetChannel(uint8_t ch) {
   if (ch < 1 || ch > 16 || ch == keyCh) return;
+  monoVoiceOff();                  // live mono/arp voice, still OLD channel
   // cut every keyboard note sounding on the OLD channel first: prevents
   // stuck notes (held pads release later -> harmless off on the new channel)
   for (uint8_t k = 0; k < 12; k++)
-    if (keySounding[k]) usbMIDI.sendNoteOff(keyNote[k], 0, keyCh);
+    if (keySounding[k]) {
+      usbMIDI.sendNoteOff(keyNote[k], 0, keyCh);
+      keySounding[k] = false;
+    }
   chordCut();                     // chord engine notes, old channel
   keyCh = ch;
-  // keys still held re-strike on the new channel (same idea as octave change)
-  for (uint8_t k = 0; k < 12; k++)
-    if (keySounding[k]) usbMIDI.sendNoteOn(keyNote[k], KEY_VEL, keyCh);
-  chordRestore();                 // chord engine notes, new channel
+  if (monoEngaged()) {
+    // new channel is a MONO track: held keys stay silent, the chord engine
+    // stays muted (chordMute(true) is a no-op if it already was) - the
+    // monoApply() below starts the voice
+    chordMute(true);
+  } else {
+    // was POLY before the switch: held keys re-strike raw here (a MONO->
+    // POLY switch restores them instead via monoApply's strikeRaw, so the
+    // two never double-send)
+    if (!monoEng && keyBehaviorVariant() != 2)
+      for (uint8_t k = 0; k < 12; k++)
+        if (keyActive[k]) {
+          usbMIDI.sendNoteOn(keyNote[k], KEY_VEL, keyCh);
+          keySounding[k] = true;
+        }
+    chordRestore();               // chord engine notes, new channel
+  }
+  monoApply();                    // re-sync engage state + voice for ch
 }

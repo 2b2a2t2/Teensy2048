@@ -14,6 +14,7 @@ Modules: Buttons, TouchChips, Display, Encoders, Modes
 #include "Modes.h"
 #include "Events.h"
 #include "SeqClock.h"
+#include "Keyboard.h"
 
 void setup() {
   Serial.begin(115200);
@@ -23,6 +24,8 @@ void setup() {
   Wire.setClock(400000);
 
   initButtons();
+  encCcLoad();      // BEFORE initDisplay: the first draw reads the knobs
+  seqCfgLoad();     // SEQ settings restore with them (patterns stay RAM)
   initDisplay();
   initEncoders();
   initModes();

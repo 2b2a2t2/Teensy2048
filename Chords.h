@@ -58,4 +58,6 @@ const char*    chordName();    // "GMaj7" for the header ("" before first chord)
 void chordShift(int semitones);  // octave shift of the held/sounding chord
 void chordCut();                 // note-offs on the current channel
 void chordRestore();             // re-send what chordCut() silenced
+void chordMute(bool on);         // live MONO-track voice: state kept, sound
+                                 // muted (off re-sends whatever sounds now)
 void chordStopAll();             // silence + reset gesture (leave KEYMODE2)

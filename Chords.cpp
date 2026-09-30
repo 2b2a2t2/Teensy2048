@@ -109,6 +109,7 @@ static uint8_t  sCount = 0;
 static int16_t  sPlayedRoot = -1;         // root of the built chord (name)
 static uint8_t  sPlayed = CHORD_Q_NONE;   // quality actually built
 static bool     sCut = false;             // silenced by chordCut()
+static bool     sMute = false;            // live MONO-track voice owns sound
 
 static uint16_t rotPattern() {
   uint16_t p = kScalePat[sScale];
@@ -224,12 +225,14 @@ static uint8_t keylockQuality(int deg) {
 // ---------------------------------------------------------------------------
 
 static void stopNotes() {
-  for (uint8_t i = 0; i < sCount; i++)
-    usbMIDI.sendNoteOff(sNotes[i], 0, keyChannel());
+  if (!sMute)                            // muted: the notes never went out
+    for (uint8_t i = 0; i < sCount; i++)
+      usbMIDI.sendNoteOff(sNotes[i], 0, keyChannel());
   sCount = 0;
 }
 
 static void sendOut() {
+  if (sMute) return;
   for (uint8_t i = 0; i < sCount; i++)
     usbMIDI.sendNoteOn(sNotes[i], CHORD_VEL, keyChannel());
 }
@@ -514,6 +517,7 @@ void chordShift(int semitones) {
 }
 
 void chordCut() {
+  if (sMute) { sCut = true; return; }   // muted: nothing is out to cut
   if (sCount == 0) return;
   for (uint8_t i = 0; i < sCount; i++)
     usbMIDI.sendNoteOff(sNotes[i], 0, keyChannel());
@@ -524,6 +528,24 @@ void chordRestore() {
   if (!sCut) return;
   sCut = false;
   sendOut();
+}
+
+// live keyboard through a MONO track: keep building the gesture chord
+// (pending, LEDs, recording all see it) but silence the engine - the mono
+// voice (ROOT/BASS/ARP) sounds on the same channel instead
+void chordMute(bool on) {
+  if (on == sMute) return;
+  sMute = on;
+  if (on) {
+    if (!sCut) {                         // fresh engage: cut what is out
+      for (uint8_t i = 0; i < sCount; i++)
+        usbMIDI.sendNoteOff(sNotes[i], 0, keyChannel());
+      sCut = true;
+    }
+  } else {
+    sCut = false;
+    sendOut();                           // re-send whatever sounds now
+  }
 }
 
 void chordStopAll() {

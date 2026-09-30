@@ -2,6 +2,7 @@
 #include "Modes.h"
 #include "Buttons.h"
 #include "Keyboard.h"
+#include "Events.h"     // encCcIncoming - DAW CC feedback syncs ENCMODE knobs
 #include <uClock.h>
 
 #define STEPS_COUNT 16
@@ -72,6 +73,13 @@ static void midiNoteOff(uint8_t ch, uint8_t note, uint8_t vel) {
   extNoteOff(ch, note);
 }
 
+// incoming CC feedback (loop context via seqPumpMidi): keeps the ENCMODE
+// knob positions in step with the DAW so a knob turn never starts from a
+// stale value
+static void midiControlChange(uint8_t ch, uint8_t cc, uint8_t val) {
+  encCcIncoming(ch, cc, val);
+}
+
 // green playhead in every mode (SEQMODE owns it, all modes inherit);
 // active (recorded) steps = dimmed green, empty steps = dimmed dark blue
 static void drawSteps() {
@@ -84,6 +92,8 @@ static void drawSteps() {
   if (modeBase == MODE_SEQ && modeVariant != 3 &&
       drumPartSelectActive() && seqTrack() == SEQ_TRACK_DRUM)
     return;
+  // ENC mute overlays (hold M2 / M1) also own the step LEDs
+  if (encMuteActive() || drumVoiceMuteActive()) return;
   uint8_t s = playStep;
   bool changed = false;
   for (uint8_t i = 0; i < STEPS_COUNT; i++) {
@@ -120,6 +130,7 @@ void initSeqClock() {
   usbMIDI.setHandleContinue(midiContinue);
   usbMIDI.setHandleNoteOn(midiNoteOn);
   usbMIDI.setHandleNoteOff(midiNoteOff);
+  usbMIDI.setHandleControlChange(midiControlChange);
 }
 
 void seqPumpMidi() {
@@ -138,6 +149,8 @@ void pollSeqClock() {
   interrupts();
   if (st) seqStepStop();       // transport stopped: let every note go
   else if (sAdv != 255) seqStepAdvance(sAdv);
+  keyMonoPoll();               // live MONO-track keyboard voice (TRACK/TYPE)
+  seqGatePoll();               // track gate note-offs (MONO step-edit)
 
   // redraw when playhead moved or mode changed — no dirty-flag race
   static ModeBase lastBase = modeBase;
@@ -210,6 +223,12 @@ uint8_t seqTrackOf(uint8_t idx) {
   return (idx < 16) ? trackType[idx] : SEQ_TRACK_POLY;
 }
 
+void seqSetTrackType(uint8_t idx, uint8_t t) {
+  if (idx >= 16) return;
+  if (t > SEQ_TRACK_POLY) t = SEQ_TRACK_POLY;
+  trackType[idx] = t;
+}
+
 // SEQMODE3 TYPE (ENC7): per-channel mono transform (default ROOT = 0)
 static uint8_t monoType[16] = {0};
 static int16_t monoRes = 0;             // leftover encoder counts
@@ -235,6 +254,12 @@ const char* seqMonoTypeName() {
 
 uint8_t seqMonoTypeOf(uint8_t idx) {
   return (idx < 16) ? monoType[idx] : SEQ_MONO_ROOT;
+}
+
+void seqSetMonoType(uint8_t idx, uint8_t m) {
+  if (idx >= 16) return;
+  if (m > SEQ_MONO_ARP) m = SEQ_MONO_ARP;
+  monoType[idx] = m;
 }
 
 // System Real-Time Start (0xFA): with SYNC=INT also launch the internal

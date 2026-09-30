@@ -29,6 +29,7 @@ void seqTrackAdjust(int16_t counts);
 uint8_t seqTrack();                 // track type of the edit sequence
 const char* seqTrackName();         // "DRUM" / "MONO" / "POLY"
 uint8_t seqTrackOf(uint8_t idx);    // track type of sequence idx 0..15
+void seqSetTrackType(uint8_t idx, uint8_t t);  // raw set (EEPROM load), clamped
 
 // SEQMODE3 TYPE (ENC7): mono transform of a MONO sequence, applied at
 // playback (steps keep storing the full incoming chord).
@@ -40,4 +41,5 @@ void seqMonoTypeAdjust(int16_t counts);  // edit channel; 4 counts = 1 step, no 
 uint8_t seqMonoType();                   // edit channel
 const char* seqMonoTypeName();           // "ROOT" / "BASS" / "ARP"
 uint8_t seqMonoTypeOf(uint8_t idx);      // sequence idx 0..15
+void seqSetMonoType(uint8_t idx, uint8_t m);   // raw set (EEPROM load), clamped
 void seqDiagNote(uint8_t section, uint32_t us);  // track worst loop stalls; 1Hz report

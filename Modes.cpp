@@ -6,6 +6,7 @@
 #include "Encoders.h"
 #include "Bindings.h"
 #include "Chords.h"
+#include "Events.h"
 
 ModeBase modeBase = MODE_NONE;
 uint8_t modeVariant = 0;
@@ -40,6 +41,10 @@ static uint8_t familyMem[4] = { 0, 1, 1, 1 };
 // while the playhead sounds notes on the keyboard channel, their pitch
 // classes flash dim green on the keys (blink wins over the idle colors)
 static bool kbBlinkOn = false;
+
+// same driver for the F-row: while the playhead reads an attributed step
+// of the MONO edit channel, the F1-F4 LEDs flash dim green
+static bool fBlinkOn = false;
 
 // is the playhead currently playing this pitch class on the keyboard channel?
 static bool kbSeqPlays(uint8_t pc) {
@@ -96,6 +101,21 @@ static CRGB modeLedHook(uint8_t pad, bool isTouched, CRGB defaultColor) {
   // green, empty steps dimmed dark blue
   if (led >= 0 && led < 16) {
     if (isTouched) return CRGB::White;
+    // ENC mute overlay (hold M2): pad N = output channel N+1, dim
+    // orange-red = playing, bright orange-red = muted (wins over the
+    // variant-3 channel selector while the overlay is up)
+    if (encMuteActive()) {
+      CRGB c = CRGB::OrangeRed;
+      if (!seqIsMuted((uint8_t)led)) c.nscale8(32);
+      return c;
+    }
+    // ENCMODE drum-voice mute (hold M1): pad N = drum note 36+N, dim
+    // orange-red = voice playing, bright = muted (all drum channels)
+    if (drumVoiceMuteActive()) {
+      CRGB c = CRGB::OrangeRed;
+      if (!drumVoiceMuted((uint8_t)(36 + led))) c.nscale8(32);
+      return c;
+    }
     // variant-3 channel overlays: the 16 steps become the MIDI channel
     // selector - dimmed yellow background, selected channel in bright yellow
     // (KEY = keyboard output, SEQ = sequencer edit, ENC = encoder CCs)
@@ -120,8 +140,19 @@ static CRGB modeLedHook(uint8_t pad, bool isTouched, CRGB defaultColor) {
     if (led == groupSteps[seqCurrentStep()]) return CRGB::Green;
     CRGB c;
     if (stepIsActive((uint8_t)led)) {
-      c = CRGB::Green;
-      c.nscale8(64);
+      // selected-attribute pulse: while an attribute target is engaged,
+      // the steps carrying it breathe YELLOW instead of dim static green
+      if (stepEditActive() &&
+          (stepAttrs((uint8_t)led) &
+           (uint8_t)(1 << (stepEditSel() - 1)))) {
+        uint8_t s = sin8((uint32_t)millis() * 256UL / PULSE_PERIOD_MS);
+        uint8_t b = 48 + scale8(s, 120);           // 48..168 breathing
+        c = CRGB::Yellow;
+        c.nscale8(b);
+      } else {
+        c = CRGB::Green;
+        c.nscale8(64);
+      }
     } else {
       c = CRGB::DarkBlue;
       c.nscale8(STEP_DIM);
@@ -164,6 +195,38 @@ static CRGB modeLedHook(uint8_t pad, bool isTouched, CRGB defaultColor) {
     c.nscale8(KEY_DIM);
     return c;
   }
+  // SEQMODE + MONO step-edit radio: M1 and F1-F4 leave their normal control
+  // colors - selected target bright white, blink-bright white, unselected
+  // dark blue; F1-F4 flash dim green while the playhead reads an attributed
+  // step of the edit channel (touch wins over everything).  DRUM tracks
+  // only style F3/F4 (accent/probability) while their radio is engaged
+  bool seqMonoRadio = (modeBase == MODE_SEQ && modeVariant != 3 &&
+                       seqTrack() == SEQ_TRACK_MONO);
+  bool seqDrumRadio = stepEditActive() && seqTrack() == SEQ_TRACK_DRUM;
+  if ((seqMonoRadio &&
+       (led == groupControls[2] ||
+        (led >= groupControls[5] && led <= groupControls[8]))) ||
+      (seqDrumRadio && led >= groupControls[5] + 2 &&
+       led <= groupControls[5] + 3)) {
+    if (isTouched) return CRGB::White;
+    if (led >= groupControls[5] && fBlinkOn &&
+        (seqFMask() & (uint8_t)(1 << (led - groupControls[5])))) {
+      CRGB g = CRGB::Green;
+      g.nscale8(64);
+      return g;
+    }
+    if (stepEditIsOn() &&
+        ((stepEditSel() == 0 && led == groupControls[2]) ||
+         (stepEditSel() != 0 &&
+          stepEditSel() == (uint8_t)(led - groupControls[5] + 1)))) {
+      CRGB s = CRGB::White;
+      s.nscale8(80);
+      return s;
+    }
+    CRGB d = CRGB::DarkBlue;
+    d.nscale8(32);
+    return d;
+  }
   return defaultColor;
 }
 
@@ -196,6 +259,38 @@ void pollModeLeds() {
   if (kbActive && (long)(millis() - kbFlip) >= 0) {
     kbFlip = millis() + BLINK_MS;
     kbBlinkOn = !kbBlinkOn;
+    refreshAllLeds();
+  }
+
+  // F-row attribute blink driver (same cadence as the keyboard blink):
+  // mask comes from the playhead, edge on/off repaints immediately so a
+  // finished attributed step never keeps its green
+  static bool fActive = false;
+  static unsigned long fFlip = 0;
+  bool fNow = (seqFMask() != 0);
+  if (fNow != fActive) {
+    fActive = fNow;
+    if (!fActive) fBlinkOn = false;
+    refreshAllLeds();
+  }
+  if (fActive && (long)(millis() - fFlip) >= 0) {
+    fFlip = millis() + BLINK_MS;
+    fBlinkOn = !fBlinkOn;
+    refreshAllLeds();
+  }
+
+  // attribute-step pulse driver: while an attribute target is engaged,
+  // repaint at ~30 fps so the marked steps breathe (edge restores static
+  // colors when the radio closes or the target goes back to STEPS)
+  static bool attrActive = false;
+  static unsigned long attrFlip = 0;
+  bool attrNow = stepEditActive();
+  if (attrNow != attrActive) {
+    attrActive = attrNow;
+    refreshAllLeds();
+  }
+  if (attrActive && (long)(millis() - attrFlip) >= 0) {
+    attrFlip = millis() + 30;
     refreshAllLeds();
   }
 
@@ -282,6 +377,8 @@ void modeOnEvent(uint8_t pad, uint8_t ev) {
   // momentary - it never outlives the binding it remaps
   if (keyBehaviorVariant() != 2) chordStopAll();
   clearOverlay(G_ENC);
+  encMuteHold(false);       // the M2 mute overlay never outlives the ENC mode
+  drumMuteHold(false);      // nor the M1 drum-voice mute overlay
 
   applyModeLeds();
   headerSetLeft(modeName());
