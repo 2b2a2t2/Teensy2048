@@ -52,6 +52,7 @@ void seqPatLenAdjust(int16_t counts);    // edit channel; 4 counts = 1 step
 int  seqPatLen(void);                    // length of the edit sequence
 uint8_t seqPatLenOf(uint8_t ch);         // length of sequence ch 0..15
 void seqPlayRange(uint8_t ch, uint8_t *lo, uint8_t *hi);  // playback window
+bool seqLoopOn(uint8_t ch);           // that track's bar loop is armed
 uint8_t seqBarPress(uint8_t bar);        // 0 = page set, 1 = loop on, 2 = off
 uint8_t seqStepViewBase(void);           // first step of the edit window
 uint8_t seqStepPage(void);               // edit window 0..3

@@ -163,6 +163,10 @@ uint8_t seqStepPlayPad();            // playhead pad 0..15 of the edit window,
                                      // 0xFF when another bar plays / silent
 uint8_t seqStepPlayGhost();          // head's bar-relative pad 0..15 (dark-blue
                                      // ghost while another bar is shown)
+// live record (SEQMODE REC button): 0 = off, 1 = armed, 2 = recording
+uint8_t seqRecState();
+uint8_t seqRecToggle();     // 0 = refused (kbd ch mismatch), 1 = armed, 2 = off
+bool   seqRecTakeDone();    // true once when a pass finished by itself
 uint8_t seqPlayBar();                // bar 0..3 the playhead reads (0xFF =
                                      // silent) - SEQ3 bar LED pulse
 

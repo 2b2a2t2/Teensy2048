@@ -15,6 +15,7 @@ uint8_t modeVariant = 0;
 static ModeBase heldPrevBase = MODE_NONE;
 static uint8_t heldPrevVariant = 0;
 static bool heldActive = false;
+static uint8_t heldPad = 255;        // which mode button is being held
 
 static const uint8_t modeLeds[3] = { 32, 33, 34 };  // ENC, SEQ, KEY
 static const ModeBase modeOfLed[3] = { MODE_ENC, MODE_SEQ, MODE_KEY };
@@ -266,6 +267,15 @@ static CRGB modeLedHook(uint8_t pad, bool isTouched, CRGB defaultColor) {
     d.nscale8(32);
     return d;
   }
+  // REC transport pad: dim dark red = idle, bright red = live record armed
+  // / running (a touch always wins)
+  if (led == groupTransport[1]) {
+    if (isTouched) return CRGB::White;
+    if (seqRecState()) return CRGB::Red;
+    CRGB r = CRGB::Red;
+    r.nscale8(48);
+    return r;
+  }
   return defaultColor;
 }
 
@@ -317,6 +327,16 @@ void pollModeLeds() {
     fBlinkOn = !fBlinkOn;
     refreshAllLeds();
   }
+
+  // live-record edge: repaint the REC LED on every state change and show
+  // the one-shot message when a record pass finished by itself
+  static uint8_t recLast = 0;
+  uint8_t recNow = seqRecState();
+  if (recNow != recLast) {
+    recLast = recNow;
+    refreshAllLeds();
+  }
+  if (seqRecTakeDone()) headerShow("rec done");
 
   // attribute-step pulse driver: while an attribute target is engaged,
   // repaint at ~30 fps so the marked steps breathe (edge restores static
@@ -392,14 +412,23 @@ void modeOnEvent(uint8_t pad, uint8_t ev) {
   if (b == MODE_NONE) return;
 
   if (ev == EV_RELEASED) {
-    // releasing the held mode button returns to the previous mode
-    if (heldActive && modeBase == b && modeVariant == 3) {
-      modeBase = heldPrevBase;
-      modeVariant = heldPrevVariant;
+    // releasing the held mode button ends the hold.  ENCMODE3 always exits
+    // INTO ENCMODE: a hold started inside the ENCMODE family restores that
+    // variant, a hold started anywhere else lands on ENCMODE variant 1
+    if (heldActive && pad == heldPad) {
       heldActive = false;
-      applyModeLeds();
-      headerSetLeft(modeName());
-      refreshMainScreen();   // labels/values belong to the restored binding
+      if (modeBase == b && modeVariant == 3) {
+        if (b == MODE_ENC) {
+          modeBase = MODE_ENC;
+          modeVariant = (heldPrevBase == MODE_ENC) ? heldPrevVariant : 1;
+        } else {
+          modeBase = heldPrevBase;         // SEQ3 / KEY3: back where we were
+          modeVariant = heldPrevVariant;
+        }
+        applyModeLeds();
+        headerSetLeft(modeName());
+        refreshMainScreen();   // labels/values belong to the restored binding
+      }
     }
     return;
   }
@@ -409,6 +438,7 @@ void modeOnEvent(uint8_t pad, uint8_t ev) {
       heldPrevBase = modeBase;
       heldPrevVariant = modeVariant;
       heldActive = true;
+      heldPad = pad;
     }
     modeVariant = 3;
   } else if (ev == EV_DOUBLE) {

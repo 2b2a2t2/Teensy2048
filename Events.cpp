@@ -392,6 +392,22 @@ void handleButtonEvents() {
       if (logRoom(48)) Serial.println("  seq config saved to eeprom");
     }
 
+    // SEQMODE1/2 + REC: live record - arm one pass over the edit track's
+    // pattern from its next 1st bar (auto-off after one pass; the keyboard
+    // channel must match the edit track or arming is refused)
+    if (ev == EV_PRESSED && ledForPad[pad] == groupTransport[1] &&
+        modeBase == MODE_SEQ && (modeVariant == 1 || modeVariant == 2)) {
+      uint8_t r = seqRecToggle();
+      if (r == 0) headerShow("kbd ch mismatch");
+      else if (r == 1) headerShow("rec armed");
+      else headerShow("rec off");
+      refreshAllLeds();
+      if (logRoom(48)) {
+        Serial.print("  rec ");
+        Serial.println(r == 0 ? "refused (kbd ch)" : (r == 1 ? "armed" : "off"));
+      }
+    }
+
     // KEYMODE2 chord buttons (momentary): M1/M2/M3/NEXT select the quality
     // Maj/Min/Dim/Sus, F1..F4 the extensions 6/m7/M7/9 - press sets,
     // release clears, a sounding chord re-triggers.  M1 keeps its DRUM

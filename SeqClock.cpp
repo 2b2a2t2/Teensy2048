@@ -319,6 +319,8 @@ void seqPlayRange(uint8_t ch, uint8_t *lo, uint8_t *hi) {
   }
 }
 
+bool seqLoopOn(uint8_t ch) { return ch < 16 && loopOn[ch]; }
+
 // bar press on the edit channel: another bar selects its window, the
 // SELECTED bar toggles its loop (single loop slot per track)
 uint8_t seqBarPress(uint8_t bar) {

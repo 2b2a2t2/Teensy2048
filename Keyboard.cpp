@@ -60,6 +60,13 @@ static uint8_t histLen[SEQ_CH_COUNT][STEP_MAX];   // statics are zero-init
 // pattern length / bar loop, so lengths may differ (polymeter)
 static uint8_t chStep[SEQ_CH_COUNT] = {0};
 
+// shadow position: advances continuously as if no loop were active,
+// used to resume at the correct global position when a loop is disabled
+static uint8_t chStepShadow[SEQ_CH_COUNT] = {0};
+
+// previous loop state per channel, to detect when a loop is disabled
+static bool loopWasOn[SEQ_CH_COUNT] = {false};
+
 // record sequence s's pending chord at playhead position p
 static void histAt(uint8_t s, uint8_t p) {
   if (p >= STEP_MAX || pendingLen[s] == 0) return;
@@ -129,6 +136,14 @@ static uint8_t advPrev[SEQ_CH_COUNT] = {          // per-track step of the
   0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,  // previous advance
   0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}; // (TIE/GLIDE carry)
 static uint8_t fBlinkMask = 0;   // edit-channel attrs read by the playhead
+
+// live record (SEQMODE REC button): 0 = off, 1 = armed (waiting for the
+// edit track's range head), 2 = recording (the one-pass run)
+static uint8_t recState = 0;
+static uint8_t recCh = 0;        // track captured when armed
+static uint8_t recLeft = 0;      // steps left in the record pass
+static bool    recStarted = false;  // current gesture already wrote the step
+static bool    recDone = false;  // one-shot: a pass finished by itself
 
 // a step's attributes live and die with its content (both the MONO flags
 // and the DRUM per-voice accent/probability masks)
@@ -296,6 +311,64 @@ static void assignAppend(const uint8_t *notes, uint8_t n) {
   stepSyncFrom(assignCh);
 }
 
+// live record state query for the LED hook / event edge drivers
+uint8_t seqRecState() { return recState; }
+
+// one-shot: true exactly once after a pass finished by itself (header msg)
+bool seqRecTakeDone() {
+  bool d = recDone;
+  recDone = false;
+  return d;
+}
+
+// SEQMODE REC button: arm one pass or cancel the current one.  The
+// keyboard channel must already match the edit track - arming refuses
+// with 0 until the channel is set (header shows the warning)
+uint8_t seqRecToggle() {
+  if (recState) {
+    recState = 0;
+    recStarted = false;
+    return 2;
+  }
+  if (keyCh != (uint8_t)(seqEditCh + 1)) return 0;
+  recCh = seqEditCh;
+  recLeft = 0;
+  recStarted = false;
+  recState = 1;
+  return 1;
+}
+
+// live record: the keyboard gesture lands on the step the playhead sits
+// on.  POLY/MONO = replace (the first note of a fresh gesture clears the
+// step and its attributes), DRUM = overdub (notes are added, never
+// removed); the octave pre-compensation mirrors the hold-to-assign record
+static void liveRecAppend(const uint8_t *notes, uint8_t n) {
+  if (recState != 2 || n == 0) return;
+  if (assignStep >= 0) return;               // a held step pad owns the write
+  if (keyCh != (uint8_t)(recCh + 1)) return; // defensive (disarm on switch)
+  uint8_t st = chStep[recCh];
+  if (st >= STEP_MAX) return;
+  bool drum = (seqTrackOf(recCh) == SEQ_TRACK_DRUM);
+  if (!drum && !recStarted) {
+    stepChordLen[recCh][st] = 0;   // fresh gesture replaces the stored chord
+    stepAttClear(recCh, st);       // ...and starts attribute-free
+    recStarted = true;
+  }
+  int pre = -12 * (int)seqOct[recCh];
+  for (uint8_t i = 0; i < n && stepChordLen[recCh][st] < CHORD_MAX; i++) {
+    int v = (int)notes[i] + pre;
+    if (v < 0) v = 0;
+    else if (v > 127) v = 127;
+    uint8_t note = (uint8_t)v;
+    bool dup = false;             // never store the same note twice
+    for (uint8_t j = 0; j < stepChordLen[recCh][st]; j++)
+      if (stepChord[recCh][st][j] == note) dup = true;
+    if (!dup) stepChord[recCh][st][stepChordLen[recCh][st]++] = note;
+  }
+  seqOctClamp(recCh);
+  stepSyncFrom(recCh);
+}
+
 int keyPadPress(uint8_t idx) {
   if (idx >= 12) return -1;
   monoApply();   // reconcile with the keyboard channel's track first
@@ -308,6 +381,7 @@ int keyPadPress(uint8_t idx) {
     keySounding[idx] = false;   // the chord engine, not us, sends the sound
     int r = chordPadPress(idx, keyNote[idx]);
     assignAppend(chordNotes(), chordCount());
+    liveRecAppend(chordNotes(), chordCount());
     return r;
   }
   // scale filter: an out-of-scale key is silent and untracked (KeyLock
@@ -323,6 +397,7 @@ int keyPadPress(uint8_t idx) {
   keyActive[idx] = true;
   updatePending();
   assignAppend(&keyNote[idx], 1);
+  liveRecAppend(&keyNote[idx], 1);
   return monoEng ? -1 : keyNote[idx];
 }
 
@@ -337,12 +412,12 @@ int keyPadRelease(uint8_t idx) {
   }
   if (keyBehaviorVariant() == 2) chordPadRelease(idx);
   // all keys up while assigning = that chord is finished; the next press
-  // starts a fresh replacement instead of appending
-  if (assignStep >= 0) {
-    bool any = false;
-    for (uint8_t k = 0; k < 12; k++) any = any || keyActive[k];
-    if (!any && extHeldLen[assignCh] == 0) assignStarted = false;
-  }
+  // starts a fresh replacement instead of appending (live record: next
+  // gesture replaces too, DRUM overdubs regardless)
+  bool anyUp = false;
+  for (uint8_t k = 0; k < 12; k++) anyUp = anyUp || keyActive[k];
+  if (assignStep >= 0 && !anyUp && extHeldLen[assignCh] == 0) assignStarted = false;
+  if (!anyUp) recStarted = false;
   monoApply();   // the held gesture shrank: re-voice / release the voice
   return keyNote[idx];
 }
@@ -710,6 +785,18 @@ static uint8_t shNote(uint8_t n, int8_t sh) {
   return (uint8_t)v;
 }
 
+// does the head at position p sound?  inside its pattern, plus (while a bar
+// loop is armed) inside the looped bar - the head may walk its pattern
+// toward a loop that starts later, and it may sit beyond the pattern
+// inside a looped bar
+static bool headSounds(uint8_t ch, uint8_t p) {
+  if (p < seqPatLenOf(ch)) return true;
+  if (!seqLoopOn(ch)) return false;
+  uint8_t lo, hi;
+  seqPlayRange(ch, &lo, &hi);
+  return p >= lo && p < hi;
+}
+
 // playhead tick: every track steps its OWN position (its pattern length or
 // its looped bar), so lengths may differ (polymeter).  start = transport
 // (re)start: every track snaps to its range head first.  MONO sequences
@@ -729,19 +816,61 @@ void seqStepAdvance(bool start) {
     if (stepDur > 2000) stepDur = 2000;   // paused transport gap
   }
   lastAdvMs = now;
-  // position of every track for this tick (own window: pattern length, or
-  // the looped bar), plus whether it is inside it (= allowed to sound)
+  // position of every track for this tick: it walks its own pattern toward
+  // an armed bar loop.  Activating a loop TELEPORTS the playhead directly
+  // to the looped bar (immediate loop).  A looped bar wraps at its own
+  // end, a loop beyond the pattern falls in right away.  Disabling a loop
+  // resumes at the global position (shadow).  inRng = allowed to
+  // sound (pattern OR looped bar)
   uint8_t lo[SEQ_CH_COUNT], hi[SEQ_CH_COUNT];
   bool inRng[SEQ_CH_COUNT];
   for (uint8_t c = 0; c < SEQ_CH_COUNT; c++) {
     seqPlayRange(c, &lo[c], &hi[c]);
-    if (start || chStep[c] < lo[c] || chStep[c] >= hi[c]) {
-      chStep[c] = lo[c];                  // start, or length/loop changed
+    uint8_t phi = seqPatLenOf(c);
+    bool lp = seqLoopOn(c);
+    if (start) {
+      chStep[c] = lo[c];                  // start honors an armed loop
+      chStepShadow[c] = lo[c];            // shadow starts at same position
     } else {
-      chStep[c]++;                        // one step forward inside range
-      if (chStep[c] >= hi[c]) chStep[c] = lo[c];   // wrap at its own end
+      // advance shadow position: always follows pattern length (no loop wrapping)
+      // this tracks where the playhead WOULD be without any loop
+      chStepShadow[c]++;
+      if (phi == 0 || chStepShadow[c] >= phi) chStepShadow[c] = 0;
+
+      // detect loop activation: was off, now on -> teleport to loop start
+      if (!loopWasOn[c] && lp) {
+        chStep[c] = lo[c];                // jump directly to looped bar
+      }
+      // detect loop disable: was looping, now not looping
+      else if (loopWasOn[c] && !lp) {
+        chStep[c] = chStepShadow[c];      // resume at global position
+      }
+
+      if (lp && chStep[c] >= lo[c] && chStep[c] < hi[c]) {
+        chStep[c]++;                        // inside the looped bar
+        if (chStep[c] >= hi[c]) chStep[c] = lo[c];   // wrap at the bar's end
+      } else {
+        chStep[c]++;                        // walking the pattern toward it
+        if (lp && lo[c] >= phi) chStep[c] = lo[c];   // bar beyond pattern: fall in
+        else if (phi == 0 || chStep[c] >= phi) chStep[c] = 0;  // pattern wrap
+      }
     }
-    inRng[c] = (hi[c] > lo[c]) && chStep[c] >= lo[c] && chStep[c] < hi[c];
+    loopWasOn[c] = lp;                    // remember for next tick
+    inRng[c] = headSounds(c, chStep[c]);
+  }
+  // live record: one pass over the edit track's play range - armed waits
+  // for its range head (the pattern's 1st bar, or the looped bar's head),
+  // the run then covers the whole range and switches the mode off
+  if (recState) {
+    if (recState == 1) {
+      if (chStep[recCh] == lo[recCh] && hi[recCh] > lo[recCh]) {
+        recState = 2;
+        recLeft = (uint8_t)(hi[recCh] - lo[recCh]);
+      }
+    } else if (recLeft > 0 && --recLeft == 0) {
+      recState = 0;
+      recDone = true;
+    }
   }
   // per-channel release honoring the previous step's attributes: TIE keeps
   // the note sounding (no release, and the retrigger below is skipped),
@@ -781,12 +910,19 @@ void seqStepAdvance(bool start) {
         len = stepChordLen[fx][fstp];
         if (len == 0) {
           // empty feeder step: hold its LAST chord/note - scan backward,
-          // cyclic inside the feeder's play range (a looped bar only
-          // reads its own tail), until content shows up
-          uint8_t N = (uint8_t)(hi[fx] - lo[fx]);
-          uint8_t n = (uint8_t)(fstp - lo[fx]);
+          // cyclic inside the domain the feeder is reading right now (its
+          // looped bar while engaged, its pattern while walking toward an
+          // armed loop), until content shows up
+          uint8_t slo, shi;
+          if (seqLoopOn(fx) && chStep[fx] >= lo[fx] && chStep[fx] < hi[fx]) {
+            slo = lo[fx]; shi = hi[fx];    // inside its looped bar
+          } else {
+            slo = 0; shi = seqPatLenOf(fx);   // walking its pattern
+          }
+          uint8_t N = (uint8_t)(shi - slo);
+          uint8_t n = (uint8_t)(fstp - slo);
           for (uint8_t k = 1; k < N && len == 0; k++) {
-            uint8_t j = (uint8_t)(lo[fx] + (n + N - k) % N);
+            uint8_t j = (uint8_t)(slo + (n + N - k) % N);
             if (stepChordLen[fx][j] > 0) {
               fstp = j;
               len = stepChordLen[fx][j];
@@ -904,6 +1040,8 @@ void seqStepStop() {
   for (uint8_t c = 0; c < SEQ_CH_COUNT; c++)
     advPrev[c] = 0xFF;               // no carry-over into the next run
   fBlinkMask = 0;
+  if (recState == 2) recState = 1;   // interrupted pass re-arms for the next run
+  recStarted = false;
   // the live arp is step-driven: silence it with the transport (the
   // ROOT/BASS voice follows the keys and keeps sounding)
   if (monoEngaged() && monoType() == SEQ_MONO_ARP) monoVoiceOff();
@@ -913,12 +1051,10 @@ void seqStepStop() {
 
 // playhead pad of the edit WINDOW (0..15): the edit track's head mapped
 // into the 16-step bar shown on the pads - 0xFF when the head is outside
-// that bar (another bar playing) or outside its play range (silent)
+// that bar (another bar playing) or silent (no pattern, no armed loop)
 uint8_t seqStepPlayPad(void) {
-  uint8_t lo, hi;
-  seqPlayRange(seqEditCh, &lo, &hi);
   uint8_t p = chStep[seqEditCh];
-  if (hi <= lo || p < lo || p >= hi) return 0xFF;
+  if (!headSounds(seqEditCh, p)) return 0xFF;
   uint8_t base = seqStepViewBase();
   if (p < base || p >= (uint8_t)(base + STEP_COUNT)) return 0xFF;
   return (uint8_t)(p - base);
@@ -928,21 +1064,17 @@ uint8_t seqStepPlayPad(void) {
 // pads even while another bar is shown - the hooks paint it dark blue so
 // time keeps marching while you edit a bar the playback is not reading
 uint8_t seqStepPlayGhost(void) {
-  uint8_t lo, hi;
-  seqPlayRange(seqEditCh, &lo, &hi);
   uint8_t p = chStep[seqEditCh];
-  if (hi <= lo || p < lo || p >= hi) return 0xFF;
+  if (!headSounds(seqEditCh, p)) return 0xFF;
   return (uint8_t)(p % STEP_COUNT);
 }
 
 // bar (0..3) the edit track's playhead currently reads, 0xFF when it is
-// outside its window (silent track) - the SEQ3 bar LEDs pulse on it so the
-// dot walks C D E F as playback crosses the bars
+// silent - the SEQ3 bar LEDs pulse on it so the dot walks C D E F as
+// playback crosses the bars, also while an armed loop still waits ahead
 uint8_t seqPlayBar(void) {
-  uint8_t lo, hi;
-  seqPlayRange(seqEditCh, &lo, &hi);
   uint8_t p = chStep[seqEditCh];
-  if (hi <= lo || p < lo || p >= hi) return 0xFF;
+  if (!headSounds(seqEditCh, p)) return 0xFF;
   return (uint8_t)(p / STEP_COUNT);
 }
 
@@ -1291,6 +1423,10 @@ uint8_t keyChannel() { return keyCh; }
 
 void keySetChannel(uint8_t ch) {
   if (ch < 1 || ch > 16 || ch == keyCh) return;
+  if (recState && ch != (uint8_t)(recCh + 1)) {   // keyboard left the record track
+    recState = 0;
+    recStarted = false;
+  }
   monoVoiceOff();                  // live mono/arp voice, still OLD channel
   // cut every keyboard note sounding on the OLD channel first: prevents
   // stuck notes (held pads release later -> harmless off on the new channel)
