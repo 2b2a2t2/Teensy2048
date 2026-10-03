@@ -150,14 +150,21 @@ uint8_t seqFMask();                   // attributes the playhead reads this step
 //            step's chord (first key starts the new chord)
 int  stepChordPress(uint8_t step);   // notes recorded; -1 = silent (active/bad)
 int  stepChordClick(uint8_t step);   // EV_CLICKED: 0 = step disabled
-void stepAssignSet(int8_t step);     // step = 0..15 to arm, -1 to disarm
+void stepAssignSet(int8_t step);     // step = 0..63 to arm, -1 to disarm
 
 // sequencing (called from loop context, never from the clock ISR):
 // press on an unassigned step records a chord into it (see above);
-// seqStepAdvance runs each time the playhead reaches a step
+// seqStepAdvance runs each time the playhead reaches a step - every
+// track carries its OWN position (independent pattern length / bar loop)
 bool stepIsActive(uint8_t step);     // step has a recorded chord
-void seqStepAdvance(uint8_t step);   // release previous step, play this one
+void seqStepAdvance(bool start);   // transport step; start snaps to range heads
 void seqStepStop();                  // transport stopped: release notes
+uint8_t seqStepPlayPad();            // playhead pad 0..15 of the edit window,
+                                     // 0xFF when another bar plays / silent
+uint8_t seqStepPlayGhost();          // head's bar-relative pad 0..15 (dark-blue
+                                     // ghost while another bar is shown)
+uint8_t seqPlayBar();                // bar 0..3 the playhead reads (0xFF =
+                                     // silent) - SEQ3 bar LED pulse
 
 // notes the playhead currently has sounding on MIDI channel (1..16):
 // the keyboard LEDs blink these pitch classes while they play on the

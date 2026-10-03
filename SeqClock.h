@@ -42,4 +42,21 @@ uint8_t seqMonoType();                   // edit channel
 const char* seqMonoTypeName();           // "ROOT" / "BASS" / "ARP"
 uint8_t seqMonoTypeOf(uint8_t idx);      // sequence idx 0..15
 void seqSetMonoType(uint8_t idx, uint8_t m);   // raw set (EEPROM load), clamped
+
+// SEQMODE3 pattern setup: ENC2 = pattern length of the edit sequence
+// (0..64 steps, boot default 16, independent per track); the C D E F
+// keyboard bars pick the 16-step edit window (shown/edited by the step
+// pads in the other variants) and pressing the SELECTED bar again loops
+// playback on that bar only.
+void seqPatLenAdjust(int16_t counts);    // edit channel; 4 counts = 1 step
+int  seqPatLen(void);                    // length of the edit sequence
+uint8_t seqPatLenOf(uint8_t ch);         // length of sequence ch 0..15
+void seqPlayRange(uint8_t ch, uint8_t *lo, uint8_t *hi);  // playback window
+uint8_t seqBarPress(uint8_t bar);        // 0 = page set, 1 = loop on, 2 = off
+uint8_t seqStepViewBase(void);           // first step of the edit window
+uint8_t seqStepPage(void);               // edit window 0..3
+bool seqBarLooped(uint8_t page);         // bar of the edit sequence looping
+bool seqFollow();                        // ENC3: edit track follows its feeder
+bool seqFollowOf(uint8_t ch);            // follow state of sequence ch 0..15
+void seqFollowSet(bool on);              // edit track (4 counts = state, CW=ON)
 void seqDiagNote(uint8_t section, uint32_t us);  // track worst loop stalls; 1Hz report

@@ -126,6 +126,9 @@ void handleButtonEvents() {
       // edit off: the step pads are inert on a MONO track (no accidental
       // recording; release still runs for defensive cleanup)
       bool editLocked = stepEditCtx() && !stepEditOn;
+      // pads address the edit WINDOW (one bar of 16): map pad -> absolute
+      // step of the sequence (overlays above keep using the raw pad index)
+      uint8_t stp = (uint8_t)(sidx + seqStepViewBase());
       if (encMute) {
         if (ev == EV_PRESSED) {
           seqMuteToggle(sidx);
@@ -180,21 +183,21 @@ void handleButtonEvents() {
                               ev == EV_HOLD)) {
         // attribute edit: a tap on an ACTIVE step toggles the selected
         // attribute; empty steps, clicks and holds do nothing here
-        if (ev == EV_PRESSED && stepIsActive(sidx)) {
+        if (ev == EV_PRESSED && stepIsActive(stp)) {
           static const uint8_t attOf[4] = { SEQ_ATT_TIE, SEQ_ATT_GLIDE,
                                             SEQ_ATT_ACCENT, SEQ_ATT_PROB };
           static const char *const nmOf[4] = { "tie", "glide", "accent",
                                                "prob" };
           uint8_t att = attOf[stepEditTarget - 1];
-          bool on = stepAttrToggle(sidx, att, editProbVal);
+          bool on = stepAttrToggle(stp, att, editProbVal);
           char ab[24];
           if (seqTrack() == SEQ_TRACK_DRUM) {
             // per voice: name the SELECTED PART and its short attribute
-            snprintf(ab, sizeof(ab), "%u %s %s %s", sidx + 1,
+            snprintf(ab, sizeof(ab), "%u %s %s %s", stp + 1,
                      drumPartName(), att == SEQ_ATT_ACCENT ? "acc" : "prb",
                      on ? "on" : "off");
           } else {
-            snprintf(ab, sizeof(ab), "%u %s %s", sidx + 1,
+            snprintf(ab, sizeof(ab), "%u %s %s", stp + 1,
                      nmOf[stepEditTarget - 1], on ? "on" : "off");
           }
           headerShow(ab);
@@ -210,7 +213,7 @@ void handleButtonEvents() {
           Serial.println("  step edit off");
       } else if (ev == EV_PRESSED) {
         if (drum) {
-          int r = stepDrumToggle(sidx);
+          int r = stepDrumToggle(stp);
           if (r == -2 && logRoom(48)) {
             Serial.println("  part off");
           } else if (r >= 0 && logRoom(48)) {
@@ -218,21 +221,21 @@ void handleButtonEvents() {
             Serial.println(drumPartName());
           }
         } else {
-          int n = stepChordPress(sidx);
+          int n = stepChordPress(stp);
           if (n > 0 && logRoom(48)) {
             Serial.print("  step record notes=");
             Serial.println(n);
           }
         }
       } else if (ev == EV_CLICKED) {
-        if (!drum && stepChordClick(sidx) == 0 && logRoom(48))
+        if (!drum && stepChordClick(stp) == 0 && logRoom(48))
           Serial.println("  step disabled");
       } else if (ev == EV_HOLD) {
         if (!drum) {           // DRUM steps are toggles, no assign mode
-          stepAssignSet((int8_t)sidx);
+          stepAssignSet((int8_t)stp);
           if (logRoom(48)) {
             Serial.print("  step assign ");
-            Serial.println(sidx + 1);
+            Serial.println(stp + 1);
           }
         }
       } else if (ev == EV_RELEASED) {
@@ -456,9 +459,32 @@ void handleButtonEvents() {
 
     // keyboard pads -> MIDI notes in every mode (behavior defined by KEYMODE,
     // inherited by SEQMODE/ENCMODE); release always clears the key state
-    // (even if the mode changed while it was held: no stuck notes)
+    // (even if the mode changed while it was held: no stuck notes).
+    // SEQMODE3 intercepts C D E F first: they pick the edit window (bar)
+    // and press the selected bar again to loop it - swallowed presses are
+    // remembered so the matching release never sends a stray note-off
     if (kidx != 255) {
-      if (ev == EV_PRESSED) {
+      static uint8_t barHeld = 0;          // kidx bits eaten as pattern bars
+      bool isBar = (ev == EV_PRESSED && modeBase == MODE_SEQ &&
+                    modeVariant == 3 && kl >= 25 && kl <= 28);
+      if (isBar) {
+        uint8_t bar = (uint8_t)(kl - 25);  // 25,26,27,28 -> bar 0..3
+        barHeld |= (uint8_t)(1 << kidx);
+        uint8_t r = seqBarPress(bar);
+        char bb[20];
+        if (r == 0)
+          snprintf(bb, sizeof(bb), "steps %u-%u",
+                   bar * 16 + 1, bar * 16 + 16);
+        else if (r == 1)
+          snprintf(bb, sizeof(bb), "loop %u-%u", bar * 16 + 1, bar * 16 + 16);
+        else
+          snprintf(bb, sizeof(bb), "loop off");
+        headerShow(bb);
+        if (logRoom(48)) {
+          Serial.print("  bar ");
+          Serial.println(bb);
+        }
+      } else if (ev == EV_PRESSED) {
         int n = keyPadPress(kidx);
         if (n >= 0 && logRoom(48)) {
           Serial.print("  note on ");
@@ -468,7 +494,8 @@ void handleButtonEvents() {
         if (n >= 0 && keyBehaviorVariant() == 2 && chordName()[0])
           headerShow(chordName());
       } else if (ev == EV_RELEASED) {
-        keyPadRelease(kidx);
+        if (barHeld & (1 << kidx)) barHeld &= (uint8_t)~(1 << kidx);
+        else keyPadRelease(kidx);
       }
       refreshAllLeds();   // first assign key can activate the held step's LED
     }
@@ -559,20 +586,25 @@ void handleEncoderEvents() {
       any = true;
     }
 
-    // KEYMODE2: ENC3 = root, ENC4..ENC7 = voicing/bass/spread/density,
-    // ENC8 = latch.  With PREV held the row remaps: ENC4 = latch,
-    // ENC5 = KeyLock, ENC6 = Perf (state only)
-    if (modeBase == MODE_KEY && modeVariant == 2 && ed != 0) {
+    // KEYMODE1/2: ENC3 = KEY (the key/root) - shared by both variants: it
+    // roots the scale mask in KEYMODE1 and the chord engine in KEYMODE2
+    if (modeBase == MODE_KEY && (modeVariant == 1 || modeVariant == 2) &&
+        ei == 2 && ed != 0) {
+      keyRootAdjust(ed);
+      refreshAllLeds();           // the scale mask is rooted here too
+      if (logRoom(48)) {
+        Serial.print("  root ");
+        Serial.println(keyRootName());
+      }
+      any = true;
+    }
+
+    // KEYMODE2: ENC4..ENC7 = voicing/bass/spread/density, ENC8 = latch.
+    // With PREV held the row remaps: ENC4 = latch, ENC5 = KeyLock,
+    // ENC6 = Perf (state only)
+    if (modeBase == MODE_KEY && modeVariant == 2 && ei != 2 && ed != 0) {
       ModeBinding b = currentBinding();
-      if (ei == 2) {
-        keyRootAdjust(ed);
-        refreshAllLeds();           // the scale mask is rooted here too
-        if (logRoom(48)) {
-          Serial.print("  root ");
-          Serial.println(keyRootName());
-        }
-        any = true;
-      } else if (b.enc == ENC_KEY2_PREV) {
+      if (b.enc == ENC_KEY2_PREV) {
         if (ei == 3) chordLatchAdjust(ed);
         else if (ei == 4) chordKeyLockAdjust(ed);
         else if (ei == 5) chordPerfAdjust(ed);
@@ -676,6 +708,29 @@ void handleEncoderEvents() {
             }
           }
         }
+      } else if (ei == 1 && ed != 0) {
+        // SEQMODE3: ENC2 = pattern length of the edit sequence (0..64
+        // steps, boot default 16; 0 = silent track; per-track RAM only)
+        seqPatLenAdjust(ed);
+        refreshAllLeds();       // playhead / step view follows the length
+        if (logRoom(48)) {
+          Serial.print("  len ");
+          Serial.println(seqPatLen());
+        }
+        any = true;
+      } else if (ei == 2 && ed != 0) {
+        // SEQMODE3: ENC3 = FOLLOW, two-state (CW = ON, CCW = OFF): the
+        // track's active steps gate playback, the notes come live from
+        // the feeding track's current bar (own pattern length unchanged)
+        bool want = (ed > 0);
+        if (want != seqFollow()) {
+          seqFollowSet(want);
+          if (logRoom(48)) {
+            Serial.print("  follow ");
+            Serial.println(want ? "ON" : "OFF");
+          }
+        }
+        any = true;
       } else if (ei == 7 && ed != 0) {
         long bpm = (long)seqTempo() + ed;
         if (bpm < 40) bpm = 40;

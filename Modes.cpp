@@ -137,13 +137,23 @@ static CRGB modeLedHook(uint8_t pad, bool isTouched, CRGB defaultColor) {
       o.nscale8(16);
       return o;
     }
-    if (led == groupSteps[seqCurrentStep()]) return CRGB::Green;
+    {
+      // playhead of the edit window (the pads show one 16-step bar at a
+      // time; the sequence itself may run up to 64 steps): green when the
+      // bar on the pads is the one being read, dark-blue ghost at the same
+      // beat position while playback runs in another bar
+      uint8_t ph = seqStepPlayPad();
+      if (ph < 16 && led == groupSteps[ph]) return CRGB::Green;
+      uint8_t gh = seqStepPlayGhost();
+      if (gh < 16 && led == groupSteps[gh]) return CRGB::DarkBlue;
+    }
     CRGB c;
-    if (stepIsActive((uint8_t)led)) {
+    uint8_t vst = (uint8_t)(led + seqStepViewBase());
+    if (stepIsActive(vst)) {
       // selected-attribute pulse: while an attribute target is engaged,
       // the steps carrying it breathe YELLOW instead of dim static green
       if (stepEditActive() &&
-          (stepAttrs((uint8_t)led) &
+          (stepAttrs(vst) &
            (uint8_t)(1 << (stepEditSel() - 1)))) {
         uint8_t s = sin8((uint32_t)millis() * 256UL / PULSE_PERIOD_MS);
         uint8_t b = 48 + scale8(s, 120);           // 48..168 breathing
@@ -163,6 +173,35 @@ static CRGB modeLedHook(uint8_t pad, bool isTouched, CRGB defaultColor) {
   // mode (behavior inherited); color follows the KEY family variant —
   // current variant while in KEYMODE, last latched KEY variant elsewhere
   if ((led >= 25 && led <= 31) || (led >= 37 && led <= 41)) {
+    // SEQMODE3: the keyboard is not an instrument here - C D E F become
+    // the pattern bars (C = steps 1-16 ... F = 49-64): dim blue background
+    // with the EDITED bar bright; the bar the playhead reads breathes
+    // white (follows playback across bars, patterns > 16 steps only) and a
+    // looping bar breathes green - the keys still play, just invisible
+    if (modeBase == MODE_SEQ && modeVariant == 3) {
+      if (isTouched) return CRGB::White;
+      int8_t bar = (led == 25) ? 0 : (led == 26) ? 1 :
+                   (led == 27) ? 2 : (led == 28) ? 3 : -1;
+      if (bar < 0) return CRGB::Black;
+      uint8_t s = sin8((uint32_t)millis() * 256UL / PULSE_PERIOD_MS);
+      if (seqBarLooped((uint8_t)bar)) {
+        CRGB g = CRGB::Green;         // looping bar: breathing green
+        g.nscale8((uint8_t)(48 + scale8(s, 192)));
+        return g;
+      }
+      // one-bar patterns never cross a bar edge: keep the LED static
+      uint8_t pb = (seqPatLen() > 16) ? seqPlayBar() : 0xFF;
+      if (bar == (int8_t)pb && seqIsRunning()) {
+        CRGB w = CRGB::White;         // played bar: breathing white
+        w.nscale8((uint8_t)(48 + scale8(s, 192)));
+        return w;
+      }
+      if (bar == (int8_t)seqStepPage())
+        return CRGB::DarkBlue;        // edited bar: full bright
+      CRGB c = CRGB::DarkBlue;        // the other bars recede
+      c.nscale8(32);
+      return c;
+    }
     int8_t k = kbPitchIdx[led - 25];          // -1 for non-key LEDs in range
     uint8_t kv = keyBehaviorVariant();
     bool inScale = (keyScale() == 0) || keyIsInScale((uint8_t)k);
@@ -291,6 +330,20 @@ void pollModeLeds() {
   }
   if (attrActive && (long)(millis() - attrFlip) >= 0) {
     attrFlip = millis() + 30;
+    refreshAllLeds();
+  }
+
+  // SEQMODE3 pattern-bar pulse: while SEQ3 is up, repaint at ~30 fps so
+  // the played / looping bars breathe (edge restores static colors)
+  static bool barActive = false;
+  static unsigned long barFlip = 0;
+  bool barNow = (modeBase == MODE_SEQ && modeVariant == 3);
+  if (barNow != barActive) {
+    barActive = barNow;
+    refreshAllLeds();
+  }
+  if (barActive && (long)(millis() - barFlip) >= 0) {
+    barFlip = millis() + 30;
     refreshAllLeds();
   }
 

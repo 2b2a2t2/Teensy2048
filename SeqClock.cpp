@@ -14,6 +14,7 @@ static volatile bool clockRun = false;
 // ISR -> loop handoff: sequenced notes are sent from loop, never the ISR
 static volatile uint8_t pendingStep = 255;   // 255 = nothing pending
 static volatile bool pendingStop = false;
+static volatile bool pendingStart = false;   // transport (re)start: reset heads
 
 // SEQMODE3 sync state: EXT (default, follow incoming clock) or INT (master)
 static bool syncInternal = false;
@@ -33,7 +34,8 @@ static void onStepCallback(uint32_t step) {
 static void onClockStartCb() {
   playStep = 0;
   clockRun = true;
-  pendingStep = 0;              // play step 1 as soon as the loop wakes
+  pendingStart = true;            // loop resets every track's position
+  pendingStep = 0;                // play step 1 as soon as the loop wakes
 }
 
 static void onClockStopCb() {
@@ -94,15 +96,19 @@ static void drawSteps() {
     return;
   // ENC mute overlays (hold M2 / M1) also own the step LEDs
   if (encMuteActive() || drumVoiceMuteActive()) return;
-  uint8_t s = playStep;
+  uint8_t base = seqStepViewBase();        // 16-step window of the edit track
+  uint8_t ph = seqStepPlayPad();           // its playhead inside that window
+  uint8_t gh = seqStepPlayGhost();         // ghost when it runs in another bar
   bool changed = false;
   for (uint8_t i = 0; i < STEPS_COUNT; i++) {
     uint8_t led = groupSteps[i];
     if (leds[led] == CRGB(CRGB::White)) continue;  // pad currently touched
     CRGB c;
-    if (i == s) {
+    if (i == ph) {
       c = CRGB::Green;
-    } else if (stepIsActive(i)) {
+    } else if (i == gh) {
+      c = CRGB::DarkBlue;   // bar on the pads is not the one being read
+    } else if (stepIsActive(base + i)) {
       c = CRGB::Green;
       c.nscale8(64);    // dimmed green = active step
     } else {
@@ -146,18 +152,30 @@ void pollSeqClock() {
   noInterrupts();
   uint8_t sAdv = pendingStep;  pendingStep = 255;
   bool st = pendingStop;       pendingStop = false;
+  bool sn = pendingStart;      pendingStart = false;
   interrupts();
-  if (st) seqStepStop();       // transport stopped: let every note go
-  else if (sAdv != 255) seqStepAdvance(sAdv);
+  if (st) seqStepStop();             // transport stopped: let every note go
+  else if (sn) seqStepAdvance(true);       // start: every track back to its head
+  else if (sAdv != 255) seqStepAdvance(false);
   keyMonoPoll();               // live MONO-track keyboard voice (TRACK/TYPE)
   seqGatePoll();               // track gate note-offs (MONO step-edit)
 
-  // redraw when playhead moved or mode changed — no dirty-flag race
+  // redraw when the displayed position moved or the mode changed.  The
+  // trigger must include the DOT's own source (edit track head): playStep
+  // is written by the uClock timer ISR and can bump between the dispatch
+  // and this check, burning a trigger and leaving the dot one step behind
+  // until it jumped over the missed position
   static ModeBase lastBase = modeBase;
   static uint8_t lastDrawn = 255;
+  static uint8_t lastPh = 255;
+  static uint8_t lastGh = 255;
   uint8_t s = playStep;
-  if (s != lastDrawn || modeBase != lastBase) {
+  uint8_t ph = seqStepPlayPad();
+  uint8_t gh = seqStepPlayGhost();
+  if (s != lastDrawn || ph != lastPh || gh != lastGh || modeBase != lastBase) {
     lastDrawn = s;
+    lastPh = ph;
+    lastGh = gh;
     lastBase = modeBase;
     drawSteps();
   }
@@ -261,6 +279,80 @@ void seqSetMonoType(uint8_t idx, uint8_t m) {
   if (m > SEQ_MONO_ARP) m = SEQ_MONO_ARP;
   monoType[idx] = m;
 }
+
+// SEQMODE3 pattern setup, per track: length (ENC2, 0..64 steps, boot 16),
+// the 16-step edit window picked by the C D E F bars, and which bar loops
+// playback on itself.  Independent per track - every playhead wraps at its
+// own length (polymeter); a looped bar plays regardless of the length
+static uint8_t patLen[16] = {16, 16, 16, 16, 16, 16, 16, 16,
+                             16, 16, 16, 16, 16, 16, 16, 16};
+static int16_t patRes = 0;               // leftover encoder counts (ENC2)
+static uint8_t seqPage[16] = {0};        // edit window 0..3 (zero = steps 1-16)
+static uint8_t loopPage[16] = {0};       // bar looped by its own press
+static bool    loopOn[16] = {false};
+
+void seqPatLenAdjust(int16_t counts) {
+  patRes += counts;
+  int8_t step = 0;
+  while (patRes >= 4)  { patRes -= 4;  step++; }
+  while (patRes <= -4) { patRes += 4;  step--; }
+  if (!step) return;
+  uint8_t ch = seqEditChannel() - 1;
+  int v = (int)patLen[ch] + step;
+  if (v < 0) v = 0;
+  if (v > 64) v = 64;
+  patLen[ch] = (uint8_t)v;
+}
+
+int seqPatLen() { return patLen[seqEditChannel() - 1]; }
+
+uint8_t seqPatLenOf(uint8_t ch) { return (ch < 16) ? patLen[ch] : 16; }
+
+void seqPlayRange(uint8_t ch, uint8_t *lo, uint8_t *hi) {
+  if (ch >= 16) { *lo = 0; *hi = STEPS_COUNT; return; }
+  if (loopOn[ch]) {                        // a looped bar plays by itself
+    *lo = (uint8_t)(loopPage[ch] * STEPS_COUNT);
+    *hi = (uint8_t)(*lo + STEPS_COUNT);
+  } else {
+    *lo = 0;
+    *hi = patLen[ch];                      // 0 = silent track
+  }
+}
+
+// bar press on the edit channel: another bar selects its window, the
+// SELECTED bar toggles its loop (single loop slot per track)
+uint8_t seqBarPress(uint8_t bar) {
+  if (bar > 3) return 0;
+  uint8_t ch = seqEditChannel() - 1;
+  if (seqPage[ch] != bar) { seqPage[ch] = bar; return 0; }
+  if (loopOn[ch] && loopPage[ch] == bar) { loopOn[ch] = false; return 2; }
+  loopOn[ch] = true;
+  loopPage[ch] = bar;
+  return 1;
+}
+
+uint8_t seqStepViewBase() {
+  return (uint8_t)(seqPage[seqEditChannel() - 1] * STEPS_COUNT);
+}
+
+uint8_t seqStepPage() { return seqPage[seqEditChannel() - 1]; }
+
+bool seqBarLooped(uint8_t page) {
+  uint8_t ch = seqEditChannel() - 1;
+  return loopOn[ch] && loopPage[ch] == page;
+}
+
+// SEQMODE3 FOLLOW (ENC3): ON = the track keeps its own pattern length and
+// its active steps as the rhythm mask, but its NOTES are read live from
+// the feeding track (input channel's track) at the feeder's playhead - a
+// 16-step track then mirrors a 64-step feeder bar by bar; an empty feeder
+// step holds the feeder's last chord/note.  RAM only, boot OFF; meaningful
+// for MONO/POLY listeners pointing at another track
+static bool followOn[16] = {false};
+
+bool seqFollow() { return followOn[seqEditChannel() - 1]; }
+bool seqFollowOf(uint8_t ch) { return ch < 16 && followOn[ch]; }
+void seqFollowSet(bool on) { followOn[seqEditChannel() - 1] = on; }
 
 // System Real-Time Start (0xFA): with SYNC=INT also launch the internal
 // transport so Clock ticks flow to the DAW; with SYNC=EXT just emit Start.

@@ -107,6 +107,10 @@ void refreshMainScreen() {
     u8g2.drawStr(x, 22, encLabel(b.enc, c));
     if (modeBase == MODE_SEQ && c == 0) {
       snprintf(val, sizeof(val), "%d", seqOctaveShift()); // ENC1 = octave shift
+    } else if (seq3 && c == 1) {
+      snprintf(val, sizeof(val), "%d", seqPatLen());      // ENC2 = steps
+    } else if (seq3 && c == 2) {
+      snprintf(val, sizeof(val), "%s", seqFollow() ? "ON" : "OFF");
     } else if (seq3 && c == 3) {
       snprintf(val, sizeof(val), "%s", seqIsSyncInternal() ? "INT" : "EXT");
     } else if (modeBase == MODE_KEY && c == 0) {

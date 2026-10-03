@@ -11,7 +11,8 @@
 #define KEY_VEL      100
 #define KEY_COUNTS_OCT 4      // encoder counts per octave step
 
-#define STEP_COUNT     16
+#define STEP_COUNT     16     // step pads = one edit window (one bar)
+#define STEP_MAX       64     // steps stored per track (4 bars of 16)
 #define CHORD_MAX      8      // notes stored per chord
 #define SEQ_CH_COUNT   16     // one sequence per MIDI channel (1..16)
 
@@ -52,19 +53,23 @@ static uint8_t extHeldLen[SEQ_CH_COUNT] = {0};
 // records this history ("actual or previous chord"): play B while the
 // playhead is at step 1 and G while it is at step 9 -> steps 1-8 get B,
 // steps 9-16 get G, regardless of the latest chord in the buffer
-static uint8_t histChord[SEQ_CH_COUNT][STEP_COUNT][CHORD_MAX];
-static uint8_t histLen[SEQ_CH_COUNT][STEP_COUNT];   // statics are zero-init
+static uint8_t histChord[SEQ_CH_COUNT][STEP_MAX][CHORD_MAX];
+static uint8_t histLen[SEQ_CH_COUNT][STEP_MAX];   // statics are zero-init
+
+// per-track playhead position (0..63): every track advances on its own
+// pattern length / bar loop, so lengths may differ (polymeter)
+static uint8_t chStep[SEQ_CH_COUNT] = {0};
 
 // record sequence s's pending chord at playhead position p
 static void histAt(uint8_t s, uint8_t p) {
-  if (p >= STEP_COUNT || pendingLen[s] == 0) return;
+  if (p >= STEP_MAX || pendingLen[s] == 0) return;
   histLen[s][p] = pendingLen[s];
   for (uint8_t i = 0; i < pendingLen[s] && i < CHORD_MAX; i++)
     histChord[s][p][i] = pending[s][i];
 }
 
 // feed hooks: keep the history in sync wherever a pending chord is written
-static void histFeed(uint8_t s) { histAt(s, seqCurrentStep()); }
+static void histFeed(uint8_t s) { histAt(s, chStep[s]); }
 
 // sequencer edit focus: 0-based channel index (MIDI channel = seqEditCh + 1);
 // the playhead plays EVERY channel's sequence at once, this only selects
@@ -87,8 +92,8 @@ static int16_t gateSRes = 0;             // leftover encoder counts (ENC5 gate)
 static int16_t velSRes = 0;              // leftover encoder counts (ENC6 vel)
 
 // per-channel per-step stored chord; len 0 = unassigned (plays pending[])
-static uint8_t stepChord[SEQ_CH_COUNT][STEP_COUNT][CHORD_MAX];
-static uint8_t stepChordLen[SEQ_CH_COUNT][STEP_COUNT];
+static uint8_t stepChord[SEQ_CH_COUNT][STEP_MAX][CHORD_MAX];
+static uint8_t stepChordLen[SEQ_CH_COUNT][STEP_MAX];
 
 // step held for assignment; first key press clears the stored chord
 // (assignCh = edit channel captured when the hold started)
@@ -98,29 +103,31 @@ static bool    assignStarted = false;
 
 // an ACTIVE step was pressed during the current tap (candidate for disable;
 // confirmed only on click, so a hold-to-edit does not clear the step)
-static bool tapCandidate[STEP_COUNT] = {false};
+static bool tapCandidate[STEP_MAX] = {false};
 
 // --- step-edit attributes (SEQMODE radio on a MONO track) -------------------
 // per-step flags (zero-init = none); probability stored as 100-value so
 // zero-init means 100% (no boot init needed).  Track note shaping:
 // seqVel = default velocity (boot 100, accent step = 127), seqGate = gate
 // time in % of one step (100 = hold until the next step = today's behavior)
-static uint8_t stepAtt[SEQ_CH_COUNT][STEP_COUNT];
-static uint8_t stepProbInv[SEQ_CH_COUNT][STEP_COUNT];   // 100 - prob %
+static uint8_t stepAtt[SEQ_CH_COUNT][STEP_MAX];
+static uint8_t stepProbInv[SEQ_CH_COUNT][STEP_MAX];   // 100 - prob %
 // DRUM tracks split accent/probability PER VOICE: mask bits say which of
 // the 16 parts (notes 36..51) is accented / probability-gated in a step,
 // the values hold each part's own 100-prob.  Zero-init: no accents, no
 // probability gates (mask bit = attribute present, so 100% still reads as
 // "armed" while always playing)
-static uint8_t drumAccent[SEQ_CH_COUNT][STEP_COUNT];
-static uint8_t drumProbOn[SEQ_CH_COUNT][STEP_COUNT];
-static uint8_t drumProbInv[SEQ_CH_COUNT][STEP_COUNT][16];
+static uint8_t drumAccent[SEQ_CH_COUNT][STEP_MAX];
+static uint8_t drumProbOn[SEQ_CH_COUNT][STEP_MAX];
+static uint8_t drumProbInv[SEQ_CH_COUNT][STEP_MAX][16];
 static uint8_t seqVel[SEQ_CH_COUNT] = {90,90,90,90,90,90,90,90,
                                        90,90,90,90,90,90,90,90};
 static uint8_t seqGate[SEQ_CH_COUNT] = {100,100,100,100,100,100,100,100,
                                         100,100,100,100,100,100,100,100};
 static uint32_t gateOffAt[SEQ_CH_COUNT] = {0};   // 0 = no pending note-off
-static uint8_t advPrev = 0xFF;   // step of the previous advance (tie/glide)
+static uint8_t advPrev[SEQ_CH_COUNT] = {          // per-track step of the
+  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,  // previous advance
+  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}; // (TIE/GLIDE carry)
 static uint8_t fBlinkMask = 0;   // edit-channel attrs read by the playhead
 
 // a step's attributes live and die with its content (both the MONO flags
@@ -134,13 +141,16 @@ static void stepAttClear(uint8_t ch, uint8_t st) {
 }
 
 // source step on track x for listener position n: the last active step at
-// or before n in the sequence (cyclic - wrapping past step 1 uses the
-// previous loop's chord), so "B at step 1, G at step 9" partitions steps
-// 1-8 / 9-16 exactly.  Returns -1 when the track has no active step
+// or before n within x's pattern (cyclic over its length, so wrapping past
+// the end uses the previous loop's chord), so "B at step 1, G at step 9"
+// partitions the timeline exactly.  Returns -1 when no active step exists
 static int8_t srcStepBack(uint8_t x, uint8_t n) {
-  if (x >= SEQ_CH_COUNT || n >= STEP_COUNT) return -1;
-  for (uint8_t k = 0; k < STEP_COUNT; k++) {
-    uint8_t idx = (n + STEP_COUNT - k) % STEP_COUNT;
+  if (x >= SEQ_CH_COUNT || n >= STEP_MAX) return -1;
+  uint8_t L = seqPatLenOf(x);
+  if (L == 0) return -1;
+  if (n >= L) n = (uint8_t)(n % L);        // listener past the end -> mapped
+  for (uint8_t k = 0; k < L; k++) {
+    uint8_t idx = (uint8_t)((n + L - k) % L);
     if (stepChordLen[x][idx] > 0) return (int8_t)idx;
   }
   return -1;
@@ -152,7 +162,7 @@ static int8_t srcStepBack(uint8_t x, uint8_t n) {
 // convention example; empty sequence -> keyboard octave as reference
 static void seqOctClamp(uint8_t s) {
   int mn = -1, mx = -1;
-  for (uint8_t st = 0; st < STEP_COUNT; st++) {
+  for (uint8_t st = 0; st < STEP_MAX; st++) {
     uint8_t *ch = stepChord[s][st];
     for (uint8_t i = 0; i < stepChordLen[s][st]; i++) {
       if (mn < 0 || ch[i] < mn) mn = ch[i];
@@ -182,7 +192,7 @@ static void stepSyncFrom(uint8_t x) {
     uint8_t ltr = seqTrackOf(y);
     if (ltr != SEQ_TRACK_MONO && ltr != SEQ_TRACK_POLY) continue;  // DRUM never follows
     bool changed = false;
-    for (uint8_t n = 0; n < STEP_COUNT; n++) {
+    for (uint8_t n = 0; n < STEP_MAX; n++) {
       if (stepChordLen[y][n] == 0) continue;   // never creates active steps
       int8_t idx = srcStepBack(x, n);
       if (idx < 0) continue;                   // no source: keep as-is
@@ -272,8 +282,16 @@ static void assignAppend(const uint8_t *notes, uint8_t n) {
     stepAttClear(assignCh, assignStep);
     assignStarted = true;
   }
-  for (uint8_t i = 0; i < n && stepChordLen[assignCh][assignStep] < CHORD_MAX; i++)
-    stepChord[assignCh][assignStep][stepChordLen[assignCh][assignStep]++] = notes[i];
+  // the live gesture lands pre-compensated for the sequence's octave shift,
+  // so the step sounds exactly the note pressed; incoming (ext) and
+  // tap-recorded content stays raw and is transposed at playback as usual
+  int pre = -12 * (int)seqOct[assignCh];
+  for (uint8_t i = 0; i < n && stepChordLen[assignCh][assignStep] < CHORD_MAX; i++) {
+    int v = (int)notes[i] + pre;
+    if (v < 0) v = 0;
+    else if (v > 127) v = 127;
+    stepChord[assignCh][assignStep][stepChordLen[assignCh][assignStep]++] = (uint8_t)v;
+  }
   seqOctClamp(assignCh);
   stepSyncFrom(assignCh);
 }
@@ -364,7 +382,7 @@ static uint8_t liveHeldChord(uint8_t s, const uint8_t **out) {
 }
 
 int stepChordPress(uint8_t step) {
-  if (step >= STEP_COUNT) return -1;
+  if (step >= STEP_MAX) return -1;
   // pressing an ACTIVE step makes no sound yet: if the tap completes as a
   // click it is disabled; if it turns into a hold it means "edit", not off
   if (stepChordLen[seqEditCh][step] > 0) {
@@ -427,7 +445,7 @@ int stepChordPress(uint8_t step) {
 
 void stepAssignSet(int8_t step) {
   // a hold means "edit", never "disable": drop the tap candidate
-  if (step >= 0 && step < STEP_COUNT) {
+  if (step >= 0 && step < STEP_MAX) {
     tapCandidate[step] = false;
     assignCh = seqEditCh;    // the channel being edited when the hold began
   }
@@ -437,7 +455,7 @@ void stepAssignSet(int8_t step) {
 
 // tap on an active step completed (EV_CLICKED): disable it now
 int stepChordClick(uint8_t step) {
-  if (step >= STEP_COUNT || !tapCandidate[step]) return -1;
+  if (step >= STEP_MAX || !tapCandidate[step]) return -1;
   tapCandidate[step] = false;
   if (stepChordLen[seqEditCh][step] == 0) return -1;
   stepChordLen[seqEditCh][step] = 0;
@@ -447,7 +465,7 @@ int stepChordClick(uint8_t step) {
 }
 
 bool stepIsActive(uint8_t step) {
-  if (step >= STEP_COUNT) return false;
+  if (step >= STEP_MAX) return false;
   // DRUM track: the step view shows the SELECTED part's pattern (does this
   // step contain the chosen voice?), not the union of all parts - otherwise
   // selecting another part would still display part 1's sequence
@@ -466,7 +484,7 @@ bool stepIsActive(uint8_t step) {
 // its own accent and probability.  Returns the new state so the caller
 // can show "14 kick acc on" feedback
 bool stepAttrToggle(uint8_t step, uint8_t att, uint8_t probVal) {
-  if (step >= STEP_COUNT || !att) return false;
+  if (step >= STEP_MAX || !att) return false;
   if (seqTrack() == SEQ_TRACK_DRUM) {
     uint8_t v = drumPart;              // 36..51 -> voice index 0..15
     if (v < 36 || v >= 52) return false;
@@ -505,7 +523,7 @@ bool stepAttrToggle(uint8_t step, uint8_t att, uint8_t probVal) {
 // On DRUM tracks the view follows the SELECTED PART: its accent / its own
 // probability - switching the part select re-maps the yellow pulse live
 uint8_t stepAttrs(uint8_t step) {
-  if (step >= STEP_COUNT) return 0;
+  if (step >= STEP_MAX) return 0;
   if (seqTrack() == SEQ_TRACK_DRUM) {
     uint8_t v = drumPart;
     if (v < 36 || v >= 52) return 0;
@@ -692,21 +710,15 @@ static uint8_t shNote(uint8_t n, int8_t sh) {
   return (uint8_t)v;
 }
 
-// playhead reached a step: every channel with a chord here plays at once
-// (on its own MIDI channel), so channel 1 keeps running while another
-// channel is being edited.  MONO sequences transform their chord at
-// playback (ROOT = root note, BASS = lowest note, ARP = next chord note),
-// then every channel applies its own octave shift (ENC1) - and honors the
-// step-edit attributes: TIE bridges into the next step, GLIDE overlaps the
-// notes (legato), ACCENT plays 127, PROB gates by its stored chance, the
-// track's gate time cuts the note mid-step
-void seqStepAdvance(uint8_t step) {
-  if (step >= STEP_COUNT) {
-    seqRelease();
-    advPrev = 0xFF;
-    fBlinkMask = 0;
-    return;
-  }
+// playhead tick: every track steps its OWN position (its pattern length or
+// its looped bar), so lengths may differ (polymeter).  start = transport
+// (re)start: every track snaps to its range head first.  MONO sequences
+// transform their chord at playback (ROOT = root note, BASS = lowest note,
+// ARP = next chord note), then every channel applies its own octave shift
+// (ENC1) - and honors the step-edit attributes: TIE bridges into the next
+// step, GLIDE overlaps the notes (legato), ACCENT plays 127, PROB gates by
+// its stored chance, the track's gate time cuts the note mid-step
+void seqStepAdvance(bool start) {
   uint32_t now = millis();
   // gate length is a % of ONE step: measure the gap between advances so
   // tempo changes and the external clock are followed live
@@ -717,15 +729,30 @@ void seqStepAdvance(uint8_t step) {
     if (stepDur > 2000) stepDur = 2000;   // paused transport gap
   }
   lastAdvMs = now;
+  // position of every track for this tick (own window: pattern length, or
+  // the looped bar), plus whether it is inside it (= allowed to sound)
+  uint8_t lo[SEQ_CH_COUNT], hi[SEQ_CH_COUNT];
+  bool inRng[SEQ_CH_COUNT];
+  for (uint8_t c = 0; c < SEQ_CH_COUNT; c++) {
+    seqPlayRange(c, &lo[c], &hi[c]);
+    if (start || chStep[c] < lo[c] || chStep[c] >= hi[c]) {
+      chStep[c] = lo[c];                  // start, or length/loop changed
+    } else {
+      chStep[c]++;                        // one step forward inside range
+      if (chStep[c] >= hi[c]) chStep[c] = lo[c];   // wrap at its own end
+    }
+    inRng[c] = (hi[c] > lo[c]) && chStep[c] >= lo[c] && chStep[c] < hi[c];
+  }
   // per-channel release honoring the previous step's attributes: TIE keeps
   // the note sounding (no release, and the retrigger below is skipped),
-  // GLIDE defers its note-off until after the new note-on
+  // GLIDE defers its note-off until after the new note-on; a track that
+  // left its window (length shrunk, loop moved) releases right here
   bool tied[SEQ_CH_COUNT], defer[SEQ_CH_COUNT];
-  bool prevValid = (advPrev < STEP_COUNT);
   for (uint8_t c = 0; c < SEQ_CH_COUNT; c++) {
     tied[c] = defer[c] = false;
-    uint8_t pf = (prevValid && seqTrackOf(c) == SEQ_TRACK_MONO)
-                   ? stepAtt[c][advPrev] : 0;
+    if (!inRng[c]) { releaseCh(c); advPrev[c] = 0xFF; continue; }
+    uint8_t pf = (advPrev[c] < STEP_MAX && seqTrackOf(c) == SEQ_TRACK_MONO)
+                   ? stepAtt[c][advPrev[c]] : 0;
     if (pf & SEQ_ATT_TIE) { tied[c] = true; continue; }
     if (pf & SEQ_ATT_GLIDE) { defer[c] = true; continue; }
     releaseCh(c);
@@ -733,24 +760,56 @@ void seqStepAdvance(uint8_t step) {
   // carry the current pending chords forward into the new position: the
   // chord played during steps 1-8 is the "actual chord" of step 8 even
   // though it was fed while the playhead sat on step 1
-  for (uint8_t c = 0; c < SEQ_CH_COUNT; c++) histAt(c, step);
+  for (uint8_t c = 0; c < SEQ_CH_COUNT; c++) histAt(c, chStep[c]);
   for (uint8_t c = 0; c < SEQ_CH_COUNT; c++) {
+    if (!inRng[c]) continue;              // parked outside its window
     if (tied[c]) continue;              // merged note keeps sounding
-    uint8_t len = stepChordLen[c][step];
+    uint8_t stp = chStep[c];
+    uint8_t len = stepChordLen[c][stp];
+    // FOLLOW: the own active step gates the rhythm, the NOTES are read
+    // from the feeding track's current playhead (MONO/POLY listener with
+    // its input pointing at another track; no feeder / DRUM = unchanged)
+    bool follow = seqFollowOf(c) && seqTrackOf(c) != SEQ_TRACK_DRUM &&
+                  seqInCh[c] != (uint8_t)(c + 1);
+    uint8_t fstp = 0;                  // feeder's step while following
+    if (follow) {
+      uint8_t fx = (uint8_t)(seqInCh[c] - 1);
+      bool own = len > 0;              // activation stays the listener's
+      len = 0;
+      if (own && inRng[fx]) {          // feeder must be inside its range
+        fstp = chStep[fx];
+        len = stepChordLen[fx][fstp];
+        if (len == 0) {
+          // empty feeder step: hold its LAST chord/note - scan backward,
+          // cyclic inside the feeder's play range (a looped bar only
+          // reads its own tail), until content shows up
+          uint8_t N = (uint8_t)(hi[fx] - lo[fx]);
+          uint8_t n = (uint8_t)(fstp - lo[fx]);
+          for (uint8_t k = 1; k < N && len == 0; k++) {
+            uint8_t j = (uint8_t)(lo[fx] + (n + N - k) % N);
+            if (stepChordLen[fx][j] > 0) {
+              fstp = j;
+              len = stepChordLen[fx][j];
+            }
+          }
+        }
+      }
+    }
     bool mono = (seqTrackOf(c) == SEQ_TRACK_MONO);
     bool drumTrack = (seqTrackOf(c) == SEQ_TRACK_DRUM);
     // MONO uses the per-step flags; DRUM rolls accent/probability per voice
-    uint8_t att = mono ? stepAtt[c][step] : 0;
+    uint8_t att = mono ? stepAtt[c][stp] : 0;
     bool plays = (len > 0) && !seqIsMuted(c);
     // probability gate (MONO only): a miss silences the step this pass
     if (plays && (att & SEQ_ATT_PROB) &&
-        (uint8_t)random(100) >= (uint8_t)(100 - stepProbInv[c][step]))
+        (uint8_t)random(100) >= (uint8_t)(100 - stepProbInv[c][stp]))
       plays = false;
     if (!plays) {
       releaseCh(c);                     // also ends a deferred glide
       continue;
     }
-    uint8_t *ch = stepChord[c][step];
+    uint8_t *ch = follow ? stepChord[seqInCh[c] - 1][fstp]
+                         : stepChord[c][stp];
     int8_t sh = seqOct[c];
     if (mono) {
       uint8_t note;
@@ -792,12 +851,12 @@ void seqStepAdvance(uint8_t step) {
         uint8_t v = (drumTrack && raw >= 36 && raw < 52)
                       ? (uint8_t)(raw - 36) : 0xFF;
         if (v != 0xFF) {
-          if ((drumProbOn[c][step] >> v) & 1) {
+          if ((drumProbOn[c][stp] >> v) & 1) {
             if ((uint8_t)random(100) >=
-                (uint8_t)(100 - drumProbInv[c][step][v]))
+                (uint8_t)(100 - drumProbInv[c][stp][v]))
               continue;                 // this voice misses its roll
           }
-          if ((drumAccent[c][step] >> v) & 1) dvel = 127;
+          if ((drumAccent[c][stp] >> v) & 1) dvel = 127;
         }
         uint8_t note = shNote(raw, sh);
         seqNotes[c][seqLen[c]] = note;
@@ -808,20 +867,22 @@ void seqStepAdvance(uint8_t step) {
   }
   // F-row blink: attributes of the edit channel's step the playhead reads
   // (MONO = the step flags; DRUM = any part carrying accent/probability)
-  uint8_t fTrk = seqTrackOf(seqEditCh);
-  if (fTrk == SEQ_TRACK_MONO) {
-    fBlinkMask = stepChordLen[seqEditCh][step] > 0
-                   ? stepAtt[seqEditCh][step] : 0;
-  } else if (fTrk == SEQ_TRACK_DRUM) {
-    fBlinkMask = 0;
-    if (stepChordLen[seqEditCh][step] > 0) {
-      if (drumAccent[seqEditCh][step]) fBlinkMask |= SEQ_ATT_ACCENT;
-      if (drumProbOn[seqEditCh][step]) fBlinkMask |= SEQ_ATT_PROB;
+  fBlinkMask = 0;
+  if (inRng[seqEditCh]) {
+    uint8_t fTrk = seqTrackOf(seqEditCh);
+    uint8_t fstp = chStep[seqEditCh];
+    if (fTrk == SEQ_TRACK_MONO) {
+      fBlinkMask = stepChordLen[seqEditCh][fstp] > 0
+                     ? stepAtt[seqEditCh][fstp] : 0;
+    } else if (fTrk == SEQ_TRACK_DRUM) {
+      if (stepChordLen[seqEditCh][fstp] > 0) {
+        if (drumAccent[seqEditCh][fstp]) fBlinkMask |= SEQ_ATT_ACCENT;
+        if (drumProbOn[seqEditCh][fstp]) fBlinkMask |= SEQ_ATT_PROB;
+      }
     }
-  } else {
-    fBlinkMask = 0;
   }
-  advPrev = step;
+  for (uint8_t c = 0; c < SEQ_CH_COUNT; c++)
+    advPrev[c] = inRng[c] ? chStep[c] : 0xFF;
   // live keyboard arp (MONO+ARP on the keyboard channel): one note of the
   // held gesture per step, transport-gated - recorded steps above play
   // independently, the previous arp note is released first
@@ -840,13 +901,49 @@ void seqStepAdvance(uint8_t step) {
 
 void seqStepStop() {
   seqRelease();
-  advPrev = 0xFF;                 // no carry-over into the next run
+  for (uint8_t c = 0; c < SEQ_CH_COUNT; c++)
+    advPrev[c] = 0xFF;               // no carry-over into the next run
   fBlinkMask = 0;
   // the live arp is step-driven: silence it with the transport (the
   // ROOT/BASS voice follows the keys and keeps sounding)
   if (monoEngaged() && monoType() == SEQ_MONO_ARP) monoVoiceOff();
   liveArpIdx = 0;
   for (uint8_t c = 0; c < SEQ_CH_COUNT; c++) arpIdx[c] = 0;
+}
+
+// playhead pad of the edit WINDOW (0..15): the edit track's head mapped
+// into the 16-step bar shown on the pads - 0xFF when the head is outside
+// that bar (another bar playing) or outside its play range (silent)
+uint8_t seqStepPlayPad(void) {
+  uint8_t lo, hi;
+  seqPlayRange(seqEditCh, &lo, &hi);
+  uint8_t p = chStep[seqEditCh];
+  if (hi <= lo || p < lo || p >= hi) return 0xFF;
+  uint8_t base = seqStepViewBase();
+  if (p < base || p >= (uint8_t)(base + STEP_COUNT)) return 0xFF;
+  return (uint8_t)(p - base);
+}
+
+// ghost pad: the head's position WITHIN ITS OWN bar, mirrored onto the
+// pads even while another bar is shown - the hooks paint it dark blue so
+// time keeps marching while you edit a bar the playback is not reading
+uint8_t seqStepPlayGhost(void) {
+  uint8_t lo, hi;
+  seqPlayRange(seqEditCh, &lo, &hi);
+  uint8_t p = chStep[seqEditCh];
+  if (hi <= lo || p < lo || p >= hi) return 0xFF;
+  return (uint8_t)(p % STEP_COUNT);
+}
+
+// bar (0..3) the edit track's playhead currently reads, 0xFF when it is
+// outside its window (silent track) - the SEQ3 bar LEDs pulse on it so the
+// dot walks C D E F as playback crosses the bars
+uint8_t seqPlayBar(void) {
+  uint8_t lo, hi;
+  seqPlayRange(seqEditCh, &lo, &hi);
+  uint8_t p = chStep[seqEditCh];
+  if (hi <= lo || p < lo || p >= hi) return 0xFF;
+  return (uint8_t)(p / STEP_COUNT);
 }
 
 // gate timers fire from loop context (never the ISR): note-off once the
@@ -961,7 +1058,7 @@ void seqInputChannelAdjust(int16_t counts) {
     pending[seqEditCh][i] = pending[src][i];
   // the input source just changed: drop stale step history so MONO
   // activation falls back to the backfilled chord, not an old run's chords
-  for (uint8_t st = 0; st < STEP_COUNT; st++) histLen[seqEditCh][st] = 0;
+  for (uint8_t st = 0; st < STEP_MAX; st++) histLen[seqEditCh][st] = 0;
 }
 
 // external MIDI input: a note feeds EVERY sequence whose input channel
@@ -1054,7 +1151,7 @@ static void seqEraseNotes(uint8_t s) {
 void seqErase(uint8_t s) {
   if (s >= SEQ_CH_COUNT) return;
   seqEraseNotes(s);
-  for (uint8_t st = 0; st < STEP_COUNT; st++) {
+  for (uint8_t st = 0; st < STEP_MAX; st++) {
     stepChordLen[s][st] = 0;
     histLen[s][st] = 0;
     stepAttClear(s, st);        // empty steps carry no attributes
@@ -1171,7 +1268,7 @@ const char* drumPartName() { return drumVoiceName(drumPart); }
 // toggle the selected part at a step of the edit sequence: add or remove -
 // no sound here either, the playhead plays the pattern
 int stepDrumToggle(uint8_t step) {
-  if (step >= STEP_COUNT) return -1;
+  if (step >= STEP_MAX) return -1;
   uint8_t *ch = stepChord[seqEditCh][step];
   uint8_t len = stepChordLen[seqEditCh][step];
   for (uint8_t i = 0; i < len; i++) {
