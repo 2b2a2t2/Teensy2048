@@ -19,5 +19,6 @@ void headerHide();                              // erase temporary right text no
 void clearHeader();                  // erase header region in buffer
 void clearMainScreen();              // erase main region in buffer
 void refreshMainScreen();            // clear + redraw encoder/control grids
+void refreshHeader();                // redraw the top strip (mode/ARP/radio)
 void displayMarkDirty();             // schedule a buffer send
 void displayUpdate();                // call every loop: timeout + send if dirty

@@ -98,6 +98,7 @@ static int16_t octSRes = 0;              // leftover encoder counts (ENC1)
 static int16_t gateSRes = 0;             // leftover encoder counts (ENC5 gate)
 static int16_t velSRes = 0;              // leftover encoder counts (ENC6 vel)
 static int16_t accSRes = 0;              // leftover encoder counts (ENC6 acc)
+static int16_t probSRes = 0;             // leftover encoder counts (ENC8 prob)
 
 // per-channel per-step stored chord; len 0 = unassigned (plays pending[])
 static uint8_t stepChord[SEQ_CH_COUNT][STEP_MAX][CHORD_MAX];
@@ -114,22 +115,22 @@ static bool    assignStarted = false;
 static bool tapCandidate[STEP_MAX] = {false};
 
 // --- step-edit attributes (SEQMODE radio on a MONO track) -------------------
-// per-step flags (zero-init = none); probability stored as 100-value so
-// zero-init means 100% (no boot init needed).  Track note shaping:
+// per-step flags (zero-init = none).  Track note shaping:
 // seqVel = default velocity (boot 100, accent step = 127), seqGate = gate
 // time in % of one step (100 = hold until the next step = today's behavior)
 static uint8_t stepAtt[SEQ_CH_COUNT][STEP_MAX];
-static uint8_t stepProbInv[SEQ_CH_COUNT][STEP_MAX];   // 100 - prob %
 // DRUM tracks split accent/probability PER VOICE: mask bits say which of
-// the 16 parts (notes 36..51) is accented / probability-gated in a step,
-// the values hold each part's own 100-prob.  Zero-init: no accents, no
-// probability gates (mask bit = attribute present, so 100% still reads as
-// "armed" while always playing)
+// the 16 parts (notes 36..51) is accented / probability-gated in a step.
+// Zero-init: no accents, no probability gates (mask bit = attribute present)
 static uint8_t drumAccent[SEQ_CH_COUNT][STEP_MAX];
 static uint8_t drumProbOn[SEQ_CH_COUNT][STEP_MAX];
-static uint8_t drumProbInv[SEQ_CH_COUNT][STEP_MAX][16];
 static uint8_t seqVel[SEQ_CH_COUNT] = {90,90,90,90,90,90,90,90,
                                        90,90,90,90,90,90,90,90};
+// per-track PLAYBACK probability in % (100 = the step always plays).  ENC8
+// edits the edit track and every PROB step of that track feels it live -
+// no per-step copy to re-toggle afterwards
+static uint8_t seqProb[SEQ_CH_COUNT] = {100,100,100,100,100,100,100,100,
+                                        100,100,100,100,100,100,100,100};
 // per-track velocity of an ACCENTED step (127 is the old hard-wire; 101 is
 // the boot default) - F3 held + ENC6 edits it
 static uint8_t seqAccVel[SEQ_CH_COUNT] = {101,101,101,101,101,101,101,101,
@@ -154,10 +155,8 @@ static bool    recDone = false;  // one-shot: a pass finished by itself
 // and the DRUM per-voice accent/probability masks)
 static void stepAttClear(uint8_t ch, uint8_t st) {
   stepAtt[ch][st] = 0;
-  stepProbInv[ch][st] = 0;       // back to 100%
   drumAccent[ch][st] = 0;
   drumProbOn[ch][st] = 0;
-  for (uint8_t v = 0; v < 16; v++) drumProbInv[ch][st][v] = 0;
 }
 
 // source step on track x for listener position n: the last active step at
@@ -559,11 +558,12 @@ bool stepIsActive(uint8_t step) {
 }
 
 // toggle an attribute on the EDIT channel's step.  MONO/POLY use the
-// per-step flags (a PROB toggle-on stores the clipboard value, inverted);
-// DRUM tracks toggle it for the SELECTED PART only - each voice carries
-// its own accent and probability.  Returns the new state so the caller
-// can show "14 kick acc on" feedback
-bool stepAttrToggle(uint8_t step, uint8_t att, uint8_t probVal) {
+// per-step flags; DRUM tracks toggle it for the SELECTED PART only - each
+// voice carries its own accent and can be probability-gated on its own.
+// PROB only arms the gate: the % is the track's own probability (ENC8),
+// so one knob moves every armed step of the track at once.  Returns the
+// new state so the caller can show "14 kick acc on" feedback
+bool stepAttrToggle(uint8_t step, uint8_t att) {
   if (step >= STEP_MAX || !att) return false;
   if (seqTrack() == SEQ_TRACK_DRUM) {
     uint8_t v = drumPart;              // 36..51 -> voice index 0..15
@@ -574,29 +574,14 @@ bool stepAttrToggle(uint8_t step, uint8_t att, uint8_t probVal) {
       return (drumAccent[seqEditCh][step] & bit) != 0;
     }
     if (att & SEQ_ATT_PROB) {
-      if (drumProbOn[seqEditCh][step] & bit) {
-        drumProbOn[seqEditCh][step] &= (uint8_t)~bit;
-        drumProbInv[seqEditCh][step][v - 36] = 0;
-        return false;
-      }
-      if (probVal > 100) probVal = 100;
-      drumProbOn[seqEditCh][step] |= bit;
-      drumProbInv[seqEditCh][step][v - 36] = 100 - probVal;
-      return true;
+      drumProbOn[seqEditCh][step] ^= bit;
+      return (drumProbOn[seqEditCh][step] & bit) != 0;
     }
     return false;                      // TIE/GLIDE never apply to drums
   }
   uint8_t *a = &stepAtt[seqEditCh][step];
-  if (*a & att) {
-    *a &= (uint8_t)~att;
-    return false;
-  }
-  *a |= att;
-  if (att & SEQ_ATT_PROB) {
-    if (probVal > 100) probVal = 100;
-    stepProbInv[seqEditCh][step] = 100 - probVal;
-  }
-  return true;
+  *a ^= att;
+  return (*a & att) != 0;
 }
 
 // attribute mask of the EDIT channel's step (step LED pulse / display).
@@ -624,6 +609,142 @@ static uint8_t seqLen[SEQ_CH_COUNT] = {0};
 static uint8_t arpIdx[SEQ_CH_COUNT] = {0};
 // ARP phase of the LIVE keyboard voice (MONO+ARP on the keyboard channel)
 static uint8_t liveArpIdx = 0;
+
+// --- arp sequence builder (MONO + TYPE=ARP) -------------------------------
+// Both the playhead track and the live keyboard voice read their note from
+// here: the chord is sorted, stretched over the track's SPAN octaves,
+// walked in its MODE order and finally expanded by the INST insert pattern
+// (Arpie's rule set).  idx is the running arp position, the length of the
+// expanded sequence comes back in *outLen (0 = nothing to play).
+#define ARP_SEQ_MAX 64
+
+static uint8_t  arpBuf[ARP_SEQ_MAX];    // expanded sequence (one walker)
+static uint8_t  arpSrc[ARP_SEQ_MAX];    // canonical low-to-high walk
+static uint8_t  arpOrd[ARP_SEQ_MAX];    // that walk in MODE order
+static uint32_t arpPrng = 0x9E3779B9u;
+
+static uint32_t arpRand() {
+  uint32_t x = arpPrng;
+  x ^= x << 13; x ^= x >> 17; x ^= x << 5;
+  arpPrng = x ? x : 0x9E3779B9u;
+  return arpPrng;
+}
+
+// Arpie rerolls the chord once per octave of the walk
+static void arpShuffle(uint8_t *b, uint8_t m) {
+  if (m < 2) return;
+  for (uint16_t i = (uint16_t)m - 1; i > 0; i--) {
+    uint8_t j = (uint8_t)(arpRand() % (i + 1));
+    uint8_t t = b[i]; b[i] = b[j]; b[j] = t;
+  }
+}
+
+// Note insert: OFF passes through, HI/LOW put the extreme note in front of
+// every other note, 3F1B/4F2B walk forward and step back.  Output is
+// capped at ARP_SEQ_MAX; the returned length is what the index wraps on.
+static uint8_t arpExpand(const uint8_t *src, uint8_t len, uint8_t inst,
+                         uint8_t *out) {
+  if (inst == SEQ_INST_HI || inst == SEQ_INST_LOW) {
+    uint8_t ext = src[0];
+    for (uint8_t i = 1; i < len; i++) {
+      if (inst == SEQ_INST_HI) { if (src[i] > ext) ext = src[i]; }
+      else                     { if (src[i] < ext) ext = src[i]; }
+    }
+    uint8_t o = 0;
+    for (uint8_t i = 0; i < len && o + 2 <= ARP_SEQ_MAX; i++) {
+      if (src[i] == ext) continue;
+      out[o++] = ext;
+      out[o++] = src[i];
+    }
+    return o;
+  }
+  if (inst == SEQ_INST_3F1B || inst == SEQ_INST_4F2B) {
+    uint8_t fwd  = (inst == SEQ_INST_3F1B) ? 3 : 4;
+    uint8_t back = (inst == SEQ_INST_3F1B) ? 1 : 2;
+    int16_t i = 0;
+    uint8_t j = 0, o = 0;
+    while (i >= 0 && i < len && o < ARP_SEQ_MAX) {
+      out[o++] = src[i];
+      j++;
+      i = (j % fwd == 0) ? (int16_t)(i - back) : (int16_t)(i + 1);
+    }
+    return o;
+  }
+  uint8_t k = len < ARP_SEQ_MAX ? len : ARP_SEQ_MAX;
+  for (uint8_t i = 0; i < k; i++) out[i] = src[i];
+  return k;
+}
+
+static uint8_t arpNoteAt(const uint8_t *ch, uint8_t n, uint8_t seq,
+                         uint8_t idx, uint8_t *outLen) {
+  *outLen = 0;
+  if (n == 0) return 0;
+  if (n > CHORD_MAX) n = CHORD_MAX;
+  uint8_t span = seqArpSpanOf(seq);
+  if (span < 1) span = 1; else if (span > 4) span = 4;
+  uint8_t mode = seqArpModeOf(seq);
+  uint8_t inst = seqArpInstOf(seq);
+
+  // canonical walk: chord sorted low to high, one copy per octave, with
+  // the extension folded back into the MIDI range (Arpie clamps as well)
+  static uint8_t sorted[CHORD_MAX];
+  for (uint8_t i = 0; i < n; i++) sorted[i] = ch[i];
+  for (uint8_t i = 1; i < n; i++) {            // insertion sort (n <= 8)
+    uint8_t v = sorted[i];
+    uint8_t j = i;
+    while (j > 0 && sorted[j - 1] > v) { sorted[j] = sorted[j - 1]; j--; }
+    sorted[j] = v;
+  }
+  uint8_t L = 0;
+  for (uint8_t o = 0; o < span && L < ARP_SEQ_MAX; o++)
+    for (uint8_t i = 0; i < n && L < ARP_SEQ_MAX; i++) {
+      uint8_t v = (uint8_t)(sorted[i] + 12 * o);
+      while (v > 127) v = (uint8_t)(v - 12);
+      arpSrc[L++] = v;
+    }
+  if (L == 0) return 0;
+
+  for (uint8_t i = 0; i < L; i++) arpOrd[i] = arpSrc[i];
+  uint8_t M = L;                             // length before INST expansion
+
+  if (mode == SEQ_ARP_DOWN) {
+    for (uint8_t i = 0; i < L; i++) arpOrd[i] = arpSrc[L - 1 - i];
+  } else if (mode == SEQ_ARP_UPDOWN) {
+    // up through every octave, back down without repeating either turning
+    // point: 0..L-1, L-2..1, ... (period 2L-2; Arpie skips the top note
+    // on the way down and the bottom one on the way up)
+    if (L > 1) {
+      uint8_t k = 0;
+      for (uint8_t i = 0; i < L; i++) arpOrd[k++] = arpSrc[i];
+      for (uint8_t i = (uint8_t)(L - 2); i > 0; i--) arpOrd[k++] = arpSrc[i];
+      M = k;
+    }
+  } else if (mode == SEQ_ARP_RANDOM || mode == SEQ_ARP_RANDOM2) {
+    // stable shuffle per chord: RANDOM keeps it until the chord changes,
+    // RANDOM2 rerolls every full pass of the sequence (Arpie rebuilds it
+    // on the wrap).  The pass length is order-independent, so it can be
+    // measured on the unshuffled walk first.
+    uint32_t h = 0x811C9DC5u;
+    for (uint8_t i = 0; i < n; i++) { h ^= sorted[i]; h *= 16777619u; }
+    h = h * 2654435761u + span;
+    uint8_t cycle = 0;
+    if (mode == SEQ_ARP_RANDOM2) {
+      uint8_t e0 = arpExpand(arpSrc, L, inst, arpBuf);
+      if (e0) cycle = (uint8_t)((idx / e0) & 0xFF);
+    }
+    for (uint8_t o = 0; o < span; o++) {
+      arpPrng = h ^ (0x9E3779B9u * (uint32_t)(o + 1)) ^
+                        (0x85EBCA6Bu * (uint32_t)(cycle + 1));
+      if (!arpPrng) arpPrng = 0x9E3779B9u;
+      arpShuffle(&arpOrd[o * n], n);
+    }
+  }
+
+  uint8_t E = arpExpand(arpOrd, M, inst, arpBuf);
+  if (E == 0) return 0;
+  *outLen = E;
+  return arpBuf[idx % E];
+}
 
 // chord-root detection: try each chord note as candidate root (lowest
 // first), accept when every interval above it (mod 12) fits a known chord
@@ -959,11 +1080,18 @@ static void seqAdvanceOnce(bool start, const bool *go,
     bool drumTrack = (seqTrackOf(c) == SEQ_TRACK_DRUM);
     uint8_t att = drumTrack ? 0 : stepAtt[c][stp];   // DRUM rolls per voice
     bool plays = (len > 0) && !seqIsMuted(c);
-    // probability gate (MONO/POLY): a miss silences the step this pass
+    // probability gate (MONO/POLY): the track's own %, read live so ENC8
+    // moves every armed step at once; a miss silences the step this pass
     if (plays && (att & SEQ_ATT_PROB) &&
-        (uint8_t)random(100) >= (uint8_t)(100 - stepProbInv[c][stp]))
+        (uint8_t)random(100) >= (uint8_t)seqProb[c])
       plays = false;
     if (!plays) {
+      // ARP SKIP: a rest (or a probability miss) still walks the arp
+      // position, so the sequence keeps running over dead steps instead
+      // of pausing on them
+      if (!seqIsMuted(c) && seqTrackOf(c) == SEQ_TRACK_MONO &&
+          seqMonoTypeOf(c) == SEQ_MONO_ARP && seqArpSkipOf(c))
+        arpIdx[c]++;
       releaseCh(c);                     // also ends a deferred glide
       continue;
     }
@@ -976,7 +1104,9 @@ static void seqAdvanceOnce(bool start, const bool *go,
         note = ch[0];
         for (uint8_t i = 1; i < len; i++) if (ch[i] < note) note = ch[i];
       } else if (seqMonoTypeOf(c) == SEQ_MONO_ARP) {
-        note = ch[arpIdx[c] % len];
+        uint8_t elen = 0;
+        note = arpNoteAt(ch, len, c, arpIdx[c], &elen);
+        if (!elen) note = ch[0];         // degenerate walk: hold the chord
         arpIdx[c]++;
       } else {
         note = rootOf(ch, len);         // SEQ_MONO_ROOT
@@ -1006,13 +1136,14 @@ static void seqAdvanceOnce(bool start, const bool *go,
         // stored note, like the part select - the octave shift applies after)
         if (drumTrack && drumVoiceMuted(raw)) continue;
         uint8_t dvel = (att & SEQ_ATT_ACCENT) ? seqAccVel[c] : KEY_VEL;
-        // per-voice accent + probability (DRUM only; POLY reads stepAtt)
+        // per-voice accent + probability (DRUM only; POLY reads stepAtt).
+        // The mask picks WHICH parts are gated, the track's probability
+        // says HOW OFTEN - both stay live under ENC8
         uint8_t v = (drumTrack && raw >= 36 && raw < 52)
                       ? (uint8_t)(raw - 36) : 0xFF;
         if (v != 0xFF) {
           if ((drumProbOn[c][stp] >> v) & 1) {
-            if ((uint8_t)random(100) >=
-                (uint8_t)(100 - drumProbInv[c][stp][v]))
+            if ((uint8_t)random(100) >= (uint8_t)seqProb[c])
               continue;                 // this voice misses its roll
           }
           if ((drumAccent[c][stp] >> v) & 1) dvel = seqAccVel[c];
@@ -1052,7 +1183,10 @@ static void seqAdvanceOnce(bool start, const bool *go,
     uint8_t n = monoSrc(&src);
     monoVoiceOff();
     if (n > 0) {
-      uint8_t note = src[liveArpIdx++ % n];
+      uint8_t elen = 0;
+      uint8_t note = arpNoteAt(src, n, kc, liveArpIdx, &elen);
+      liveArpIdx++;
+      if (!elen) note = src[0];
       usbMIDI.sendNoteOn(note, KEY_VEL, keyCh);
       monoNote = note;
       monoOn = true;
@@ -1185,6 +1319,7 @@ void seqSetEditChannel(uint8_t ch) {
   octSRes = 0;   // partial ENC1 turn belongs to the previous focus
   gateSRes = 0;
   velSRes = 0;
+  probSRes = 0;
 }
 
 uint8_t seqInputChannel() { return seqInCh[seqEditCh]; }
@@ -1241,6 +1376,24 @@ void seqVelocityAdjust(int16_t counts) {
 }
 
 int seqVelocity() { return seqVel[seqEditCh]; }
+
+// ENC8 in SEQMODE: playback probability of the edit sequence, 4 counts =
+// 1%, clamped 0..100 (100 = every armed step plays).  Nothing is copied
+// into the steps - the playhead re-reads seqProb on every advance, so a
+// turn is audible on the very next hit
+void seqProbAdjust(int16_t counts) {
+  probSRes += counts;
+  int16_t st = 0;
+  while (probSRes >= 4) { probSRes -= 4; st++; }
+  while (probSRes <= -4) { probSRes += 4; st--; }
+  if (!st) return;
+  int v = (int)seqProb[seqEditCh] + st;
+  if (v < 0) v = 0;
+  if (v > 100) v = 100;
+  seqProb[seqEditCh] = (uint8_t)v;
+}
+
+int seqProbPct() { return seqProb[seqEditCh]; }
 
 // F3 held in SEQMODE: ENC6 edits the edit sequence's ACCENT velocity
 // instead of its default one, 4 counts = 1, clamped 1..127 (boot 101)
@@ -1393,20 +1546,22 @@ void seqEraseAll() {
 }
 
 // --- EEPROM persistence (SEQMODE4 + REC saves, boot loads) ----------------
-// Settings only - the note patterns themselves stay RAM.  Layout at address
-// 160 (after the 131-byte CC block): magic | editCh | prob | oct[16] |
-// inCh[16] | vel[16] | gate[16] | mute[16] | track[16] | mono[16] |
-// speed[16] | acc[16] | checksum = 148 bytes; blank or corrupt keeps the
-// defaults
+// Settings only - the note patterns, their contents (steps, tie/glide/
+// accent/probability attributes) and the transport state stay RAM.  Layout
+// at address 160 (after the 131-byte CC block): magic | editCh | reserved |
+// oct[16] | inCh[16] | vel[16] | gate[16] | mute[16] | track[16] | mono[16]
+// | speed[16] | acc[16] | span[16] | arpMode[16] | inst[16] | skip[16] |
+// prob[16] | patLen[16] | follow[16] | checksum = 260 bytes; blank or
+// corrupt keeps the defaults
 static const uint8_t  SEQ_EE_MAGIC = 0x53;
 static const uint16_t SEQ_EE_ADDR = 160;
-static const uint16_t SEQ_EE_LEN = 148;
+static const uint16_t SEQ_EE_LEN = 260;
 
 void seqCfgSave() {
   uint8_t b[SEQ_EE_LEN];
   b[0] = SEQ_EE_MAGIC;
   b[1] = seqEditCh + 1;
-  b[2] = stepProbValue();
+  b[2] = 0;                          // was the shared prob clipboard
   for (uint8_t i = 0; i < SEQ_CH_COUNT; i++) {
     b[3 + i] = (uint8_t)seqOct[i];
     b[19 + i] = seqInCh[i];
@@ -1417,6 +1572,13 @@ void seqCfgSave() {
     b[99 + i] = seqMonoTypeOf(i);
     b[115 + i] = seqSpeedIdxOf((uint8_t)i);   // pattern speed 0..6
     b[131 + i] = seqAccVel[i];                // accent velocity 1..127
+    b[147 + i] = seqArpSpanOf(i);             // arp span 1..4 octaves
+    b[163 + i] = seqArpModeOf(i);             // arp mode 0..4
+    b[179 + i] = seqArpInstOf(i);             // arp insert 0..4
+    b[195 + i] = seqArpSkipOf(i) ? 1 : 0;     // arp skip rests
+    b[211 + i] = seqProb[i];                  // playback probability %
+    b[227 + i] = seqPatLenOf(i);              // pattern length 0..64
+    b[243 + i] = seqFollowOf(i) ? 1 : 0;      // FOLLOW (notes from feeder)
   }
   uint8_t sum = 0;
   for (uint16_t i = 0; i < SEQ_EE_LEN - 1; i++) sum += b[i];
@@ -1452,9 +1614,18 @@ void seqCfgLoad() {
     seqSetMonoType(i, b[99 + i]);
     seqSpeedSetOf(i, b[115 + i]);         // clamped inside (bad -> 4)
     seqSetAccentVelocity(i, b[131 + i]);  // clamped inside (0 -> 1)
+    seqArpSpanSet(i, b[147 + i]);         // clamped inside (bad -> 1)
+    seqArpModeSet(i, b[163 + i]);         // clamped inside (bad -> UP)
+    seqArpInstSet(i, b[179 + i]);         // clamped inside (bad -> OFF)
+    seqArpSkipSet(i, b[195 + i] != 0);
+    v = b[211 + i];
+    if (v < 0) v = 0;
+    if (v > 100) v = 100;
+    seqProb[i] = (uint8_t)v;
+    seqPatLenSetOf(i, b[227 + i]);            // clamped inside (bad -> 64)
+    seqFollowSetOf(i, b[243 + i] != 0);
     seqOctClamp(i);                      // content bounds (empty = convention)
   }
-  stepProbSet(b[2]);                     // clamped inside
   seqSetEditChannel(b[1]);               // validates 1..16, keeps focus sane
 }
 

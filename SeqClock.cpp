@@ -288,6 +288,106 @@ void seqSetMonoType(uint8_t idx, uint8_t m) {
   monoType[idx] = m;
 }
 
+// --- ARP options (SEQMODE M2 page), per track -----------------------------
+// span = octaves extended on top of the chord (Arpie allows 3 more),
+// mode = walk order, inst = Arpie's note-insert patterns, skip = rests
+// still advance the arp position.  All read by the arp engine in
+// Keyboard.cpp (both the playhead track and the live keyboard voice).
+static uint8_t arpSpan[16] = {1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1};
+static uint8_t arpMode[16] = {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0};
+static uint8_t arpInst[16] = {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0};
+static uint8_t arpSkip[16] = {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0};
+static int16_t arpSpanRes = 0, arpModeRes = 0, arpInstRes = 0;
+
+static uint8_t arpEdit() { return seqEditChannel() - 1; }
+
+void seqArpSpanAdjust(int16_t counts) {
+  arpSpanRes += counts;
+  int8_t step = 0;
+  while (arpSpanRes >= 4)  { arpSpanRes -= 4;  step++; }
+  while (arpSpanRes <= -4) { arpSpanRes += 4;  step--; }
+  if (!step) return;
+  int16_t v = (int16_t)arpSpan[arpEdit()] + step;
+  if (v < 1) v = 1;
+  if (v > 4) v = 4;
+  arpSpan[arpEdit()] = (uint8_t)v;
+}
+
+uint8_t seqArpSpanOf(uint8_t idx) { return (idx < 16) ? arpSpan[idx] : 1; }
+
+void seqArpSpanSet(uint8_t idx, uint8_t v) {
+  if (idx >= 16) return;
+  if (v < 1) v = 1;
+  if (v > 4) v = 4;
+  arpSpan[idx] = v;
+}
+
+void seqArpModeAdjust(int16_t counts) {
+  arpModeRes += counts;
+  int8_t step = 0;
+  while (arpModeRes >= 4)  { arpModeRes -= 4;  step++; }
+  while (arpModeRes <= -4) { arpModeRes += 4;  step--; }
+  if (!step) return;
+  int16_t v = (int16_t)arpMode[arpEdit()] + step;
+  if (v < SEQ_ARP_UP)     v = SEQ_ARP_UP;
+  if (v > SEQ_ARP_RANDOM2) v = SEQ_ARP_RANDOM2;   // no wrap
+  arpMode[arpEdit()] = (uint8_t)v;
+}
+
+uint8_t seqArpModeOf(uint8_t idx) {
+  return (idx < 16) ? arpMode[idx] : SEQ_ARP_UP;
+}
+
+void seqArpModeSet(uint8_t idx, uint8_t v) {
+  if (idx >= 16) return;
+  if (v > SEQ_ARP_RANDOM2) v = SEQ_ARP_UP;
+  arpMode[idx] = v;
+}
+
+const char *seqArpModeName(uint8_t v) {
+  static const char *names[5] = { "UP", "DOWN", "UPDOWN", "RANDOM", "RANDOM2" };
+  if (v > SEQ_ARP_RANDOM2) v = SEQ_ARP_UP;
+  return names[v];
+}
+
+void seqArpInstAdjust(int16_t counts) {
+  arpInstRes += counts;
+  int8_t step = 0;
+  while (arpInstRes >= 4)  { arpInstRes -= 4;  step++; }
+  while (arpInstRes <= -4) { arpInstRes += 4;  step--; }
+  if (!step) return;
+  int16_t v = (int16_t)arpInst[arpEdit()] + step;
+  if (v < SEQ_INST_OFF) v = SEQ_INST_OFF;
+  if (v > SEQ_INST_4F2B) v = SEQ_INST_4F2B;       // no wrap
+  arpInst[arpEdit()] = (uint8_t)v;
+}
+
+uint8_t seqArpInstOf(uint8_t idx) {
+  return (idx < 16) ? arpInst[idx] : SEQ_INST_OFF;
+}
+
+void seqArpInstSet(uint8_t idx, uint8_t v) {
+  if (idx >= 16) return;
+  if (v > SEQ_INST_4F2B) v = SEQ_INST_OFF;
+  arpInst[idx] = v;
+}
+
+const char *seqArpInstName(uint8_t v) {
+  static const char *names[5] = { "OFF", "HI", "LOW", "3F1B", "4F2B" };
+  if (v > SEQ_INST_4F2B) v = SEQ_INST_OFF;
+  return names[v];
+}
+
+void seqArpSkipToggle(int16_t counts) {
+  arpSkip[arpEdit()] = (counts > 0) ? 1 : 0;   // CW = ON, CCW = OFF
+}
+
+bool seqArpSkipOf(uint8_t idx) { return idx < 16 && arpSkip[idx]; }
+
+void seqArpSkipSet(uint8_t idx, bool on) {
+  if (idx < 16) arpSkip[idx] = on ? 1 : 0;
+}
+
 // SEQMODE3 pattern setup, per track: length (ENC2, 0..64 steps, boot 16),
 // the 16-step edit window picked by the C D E F bars, and which bar loops
 // playback on itself.  Independent per track - every playhead wraps at its
@@ -315,6 +415,13 @@ void seqPatLenAdjust(int16_t counts) {
 int seqPatLen() { return patLen[seqEditChannel() - 1]; }
 
 uint8_t seqPatLenOf(uint8_t ch) { return (ch < 16) ? patLen[ch] : 16; }
+
+// restore path (seqCfgLoad): same 0..64 clamp as the encoder
+void seqPatLenSetOf(uint8_t ch, uint8_t len) {
+  if (ch >= 16) return;
+  if (len > 64) len = 64;
+  patLen[ch] = len;
+}
 
 // SEQMODE3 ENC4: per-track pattern speed, clamped 0..6 (no wrap).  The
 // ladder doubles each way around the default 4 = normal (one step per
@@ -401,6 +508,11 @@ static bool followOn[16] = {false};
 bool seqFollow() { return followOn[seqEditChannel() - 1]; }
 bool seqFollowOf(uint8_t ch) { return ch < 16 && followOn[ch]; }
 void seqFollowSet(bool on) { followOn[seqEditChannel() - 1] = on; }
+
+// restore path (seqCfgLoad)
+void seqFollowSetOf(uint8_t ch, bool on) {
+  if (ch < 16) followOn[ch] = on;
+}
 
 // System Real-Time Start (0xFA): with SYNC=INT also launch the internal
 // transport so Clock ticks flow to the DAW; with SYNC=EXT just emit Start.

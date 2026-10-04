@@ -149,6 +149,7 @@ Each mode/variant combination selects an `EncSet`, `CtrlSet`, `StepSet`, `KeySet
 - **ENC6**: Track type — **DRUM** / **MONO** / **POLY**
   - Ch1 defaults DRUM, ch2–16 default POLY
 - **ENC7**: MONO transform — **ROOT** (chord root), **BASS** (lowest note), **ARP** (ascending arpeggio)
+  - Selecting **ARP** lights **M2 purple** in SEQMODE 1/2/4 — click it for the [ARP options](#arp-options-seqmode-124-mono-track-with-type--arp)
 - **ENC8**: Tempo 40–240 BPM (INT sync only)
 - **Step-pad channel selector**: while SEQ is held into SEQMODE3 the 16 steps are the edit-channel selector (dim yellow, selected channel bright yellow). **Any encoder movement dismisses it** — the pads immediately show the normal sequencer again (playhead, recorded steps, pattern length) and stay that way until SEQ is held into SEQMODE3 once more
   - **Choosing a channel always returns to step edit**: the edit radio switches back on with **M1 (STEPS)** selected on the newly selected channel, whatever attribute it had on the previous one
@@ -161,13 +162,43 @@ Each mode/variant combination selects an `EncSet`, `CtrlSet`, `StepSet`, `KeySet
 | **POLY** | Full chord per step + sequence octave shift | Records pending chord; if input≠own, prefers **held gesture** (keys/latched chord/ext notes) over timeline |
 
 #### Step Edit Radio (SEQMODE 1/2/4)
-- **M1 (edit)**: off = pads record steps, on = pads edit attributes on ACTIVE steps (PROB stores the ENC8 clipboard, inverted per step)
-  - **MONO**: click cycles OFF → STEPS → OFF; **F1–F4** pick TIE / GLIDE / ACCENT / PROB; ENC5/6 shape gate/velocity  - **DRUM/POLY**: quick M1 tap toggles edit (on reuses ACCENT/PROB, default ACCENT); **F3 = ACCENT, F4 = PROB** (click selected again = off); M1 **hold** on DRUM still opens the part-select; ENC8 = clipboard
+- **M1 (edit)**: off = pads record steps, on = pads edit attributes on ACTIVE steps (PROB arms the gate; ENC8 sets the **track** probability that gate re-reads live every hit)
+  - **MONO**: click cycles OFF → STEPS → OFF; **F1–F4** pick TIE / GLIDE / ACCENT / PROB; ENC5/6 shape gate/velocity  - **DRUM/POLY**: quick M1 tap toggles edit (on reuses ACCENT/PROB, default ACCENT); **F3 = ACCENT, F4 = PROB** (click selected again = off); M1 **hold** on DRUM still opens the part-select; ENC8 = track probability
 - **LED**: M1 bright white while no attribute is selected, selected F-pad white, all radio pads carry a dim dark-blue background (F-pads blink green while the playhead reads an attributed step)
 - **Accent velocity (per track, boot 101, 1–127)**: an accented step sends this instead of a hard-wired 127 — applies to MONO, POLY and the DRUM step/per-voice accent alike (the other notes keep their own velocity)
   - **Hold F3** in SEQMODE 1/2/4: the ENC6 row switches **VEL → ACC** and ENC6 edits the edit track's accent velocity (header shows `ACCENT VEL`); release restores ENC6 to VEL
+- **Probability (per track, boot 100, 0–100%)**: ENC8 edits the edit track's own playback probability. Every step carrying **PROB** re-reads it on each advance, so a turn changes the odds from the very next hit — no re-toggling the attribute. On DRUM the mask still picks *which* parts are gated, only the % is per track
   - Saved/restored with SEQMODE4+REC
   - F1–F4 in SEQMODE are radio keys only — they no longer trigger chord extensions there (DRUM/POLY with the radio off used to leak into the KEY behaviour)
+
+#### ARP Options (SEQMODE 1/2/4, MONO track with TYPE = ARP)
+- **M2** becomes an **ARP** key on such a track: click toggles the ARP encoder page (header shows `ARP` while it is open, the control legend reads `ARP`)
+  - **Auto-off**: changing channel, TRACK away from MONO, TYPE away from ARP, or leaving SEQMODE always closes the page
+- **LED**: M2 burns **purple** whenever the edit track is a MONO arp — dim while the page is closed, bright while it is open (touch still lights it white)
+- **Encoder page** (the four knobs the page owns; everything else keeps its binding):
+
+| Encoder | Name | Values |
+|---------|------|--------|
+| ENC1 | OCT | playback octave shift of the sequence (unchanged) |
+| ENC2 | **SPAN** | 1–4 octaves, default **1** |
+| ENC3 | **SKIP** | ON/OFF, default **OFF** |
+| ENC4 | **MODE** | **UP / DOWN / UPDOWN / RANDOM / RANDOM2**, default **UP** |
+| ENC5 | GATE | step gate % (unchanged) |
+| ENC6 | VEL | default velocity (unchanged) |
+| ENC7 | **INST** | **OFF / HI / LOW / 3F1B / 4F2B**, default **OFF** |
+| ENC8 | PROB | probability of the edit track, 0–100% (default 100), per track and live |
+
+- **SPAN**: the chord is extended over that many octaves (up to 3 more on top of it, octave 1 = the chord itself), notes folded back into the MIDI range when they run high
+- **MODE**: the walk order over the spanned chord
+  - **UP** / **DOWN**: bottom→top or top→bottom of the whole span
+  - **UPDOWN**: up through every octave and back down without repeating either turning point (period 2×span−2)
+  - **RANDOM**: the chord order is shuffled once per octave and stays that way until the chord changes
+  - **RANDOM2**: same, but re-shuffled every full pass of the sequence
+- **INST**: repeats notes inside the sequence (extends its length)
+  - **OFF**: none · **HI**: the highest note goes in front of every other note · **LOW**: the lowest does the same · **3F1B**: 3 steps forward, 1 back · **4F2B**: 4 steps forward, 2 back
+- **SKIP**: on a rest (empty step) **or** a probability miss the arp position **advances anyway** instead of pausing, so the sequence keeps walking over dead steps
+- Both the **playhead track** and the **live keyboard voice** (KEYMODE MONO+ARP) use these settings; the keyboard channel's track owns the live one
+- Saved/restored with SEQMODE4+REC
 
 **Bar Loop (per track, SEQMODE3):**
 - Loop arms on the **selected edit window bar** (0–3, each 16 steps)

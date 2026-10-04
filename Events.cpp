@@ -41,8 +41,6 @@ static bool prevOvActive = false;
 // hold on DRUM).  ENCMODE keeps its CCs, KEYMODE its keys - never there
 static bool    stepEditOn = true;     // boot: pads record (STEPS)
 static uint8_t stepEditTarget = 0;    // 0 = STEPS (normal step recording)
-static int16_t editProbSRes = 0;      // leftover ENC8 counts (4 = 1%)
-static uint8_t editProbVal = 100;     // probability clipboard (ENC8)
 
 // active in SEQMODE variants 1/2/4 while the edit track is MONO
 static bool stepEditCtx() {
@@ -75,6 +73,21 @@ static void stepEditSet(bool on, uint8_t target) {
 bool    stepEditIsOn() { return stepEditOn; }
 uint8_t stepEditSel()  { return stepEditTarget; }
 
+// --- SEQMODE M2 "ARP" page (variants 1/2/4) -------------------------------
+// Clicking M2 rebinds the encoder row while the edit track is a MONO
+// arp.  Like the other overlays the active check is a composite, so a
+// mid-hold channel/TYPE/mode switch can never leave a stale page behind.
+static bool arpPageOn = false;
+
+static bool arpTrackCtx() {
+  return modeBase == MODE_SEQ && modeVariant != 3 &&
+         seqTrack() == SEQ_TRACK_MONO && seqMonoType() == SEQ_MONO_ARP;
+}
+
+void arpPageToggle() { arpPageOn = !arpPageOn; }
+void arpPageDismiss() { arpPageOn = false; }
+bool arpPageActive()  { return arpPageOn && arpTrackCtx(); }
+
 // HOLD F3 in SEQMODE: ENC6 rebinds from the track's default velocity to
 // its ACCENT velocity (the quick tap still picks the ACCENT target)
 static bool f3AccentSel = false;
@@ -85,12 +98,6 @@ void f3AccentHold(bool on) { f3AccentSel = on; }
 // only applies while the panel is still in SEQMODE variants 1/2/4
 bool f3AccentActive() {
   return f3AccentSel && modeBase == MODE_SEQ && modeVariant != 3;
-}
-
-uint8_t stepProbValue(){ return editProbVal; }
-void    stepProbSet(uint8_t v) {
-  if (v > 100) v = 100;
-  editProbVal = v;
 }
 
 void handleButtonEvents() {
@@ -177,7 +184,13 @@ void handleButtonEvents() {
             // a channel switch always lands back in step edit on the new
             // channel: M1 (STEPS target) selected, radio on
             stepEditSet(true, 0);
+            arpPageDismiss();       // the new track may not be an arp
             refreshAllLeds();        // M1 + F-row follow the radio again
+            // the whole grid belongs to the new channel (length, speed,
+            // follow, gate/vel/prob, ...) and the header may have been
+            // showing the ARP page - repaint both right away
+            refreshMainScreen();
+            refreshHeader();
           } else encSetChannel(sidx + 1);
           if (modeBase == MODE_ENC)
             refreshMainScreen();   // CC values belong to the new channel
@@ -216,7 +229,7 @@ void handleButtonEvents() {
           static const char *const nmOf[4] = { "tie", "glide", "accent",
                                                "prob" };
           uint8_t att = attOf[stepEditTarget - 1];
-          bool on = stepAttrToggle(stp, att, editProbVal);
+          bool on = stepAttrToggle(stp, att);
           char ab[24];
           if (seqTrack() == SEQ_TRACK_DRUM) {
             // per voice: name the SELECTED PART and its short attribute
@@ -411,6 +424,16 @@ void handleButtonEvents() {
           Serial.println(eb);
         }
         refreshAllLeds();   // step LEDs dim: that pattern is gone
+      } else if (ev == EV_CLICKED && arpTrackCtx()) {
+        // SEQMODE 1/2/4 + MONO/ARP: M2 clicks the ARP encoder page on/off
+        arpPageToggle();
+        headerShow(arpPageActive() ? "ARP" : "ARP OFF");
+        if (logRoom(48)) {
+          Serial.print("  arp page ");
+          Serial.println(arpPageActive() ? "on" : "off");
+        }
+        refreshAllLeds();
+        refreshMainScreen();
       }
     }
 
@@ -433,9 +456,10 @@ void handleButtonEvents() {
       if (logRoom(48)) Serial.println("  cc values saved to eeprom");
     }
 
-    // SEQMODE4 + REC: save the SEQ settings (track type, mono type, octave,
-    // input channel, velocity, gate, mutes, prob clipboard, edit channel)
-    // - note patterns are NOT stored, they stay RAM
+    // SEQMODE4 + REC: save every SEQ setting (track type, mono type, octave,
+    // input channel, velocity, accent, gate, mutes, probability, pattern
+    // length, FOLLOW, arp options, edit channel).  Notes, step contents and
+    // the tie/glide/accent/prob attributes are NOT stored, they stay RAM
     if (ev == EV_PRESSED && ledForPad[pad] == groupTransport[1] &&
         modeBase == MODE_SEQ && modeVariant == 4) {
       seqCfgSave();
@@ -768,11 +792,45 @@ void handleEncoderEvents() {
         }
         any = true;
       } else if (modeVariant != 3) {
+        // M2 ARP page: ENC2 = span (1..4 octaves), ENC3 = skip rests,
+        // ENC4 = mode, ENC7 = insert mode.  These four are the page's own
+        // knobs; ENC1 (octave), ENC5/6 (gate/vel) and ENC8 (prob) keep the
+        // bindings they had, and a TYPE/channel/mode change drops the page
+        if (ed != 0 && arpPageActive() &&
+            (ei == 1 || ei == 2 || ei == 3 || ei == 6)) {
+          uint8_t seq = (uint8_t)(seqEditChannel() - 1);
+          if (ei == 1) {
+            seqArpSpanAdjust(ed);
+            if (logRoom(48)) {
+              Serial.print("  span ");
+              Serial.print(seqArpSpanOf(seq));
+              Serial.println(" oct");
+            }
+          } else if (ei == 2) {
+            seqArpSkipToggle(ed);
+            if (logRoom(48)) {
+              Serial.print("  skip ");
+              Serial.println(seqArpSkipOf(seq) ? "ON" : "OFF");
+            }
+          } else if (ei == 3) {
+            seqArpModeAdjust(ed);
+            if (logRoom(48)) {
+              Serial.print("  arpmode ");
+              Serial.println(seqArpModeName(seqArpModeOf(seq)));
+            }
+          } else {
+            seqArpInstAdjust(ed);
+            if (logRoom(48)) {
+              Serial.print("  inst ");
+              Serial.println(seqArpInstName(seqArpInstOf(seq)));
+            }
+          }
         // F3 held: ENC6 = ACCENT velocity of the edit track (every track
         // type).  Otherwise the step-edit value encoders: ENC5 = gate %,
-        // ENC6 = default velocity (MONO only), ENC8 = the probability
-        // clipboard both tracks share.  ENC7 stays free
-        if (ei == 5 && ed != 0 && f3AccentActive()) {
+        // ENC6 = default velocity (MONO only), ENC8 = the probability of
+        // the edit track itself - live, so every PROB step of that track
+        // re-rolls at the new rate.  ENC7 stays free
+        } else if (ei == 5 && ed != 0 && f3AccentActive()) {
           seqAccentVelocityAdjust(ed);
           if (logRoom(48)) {
             Serial.print("  accvel ");
@@ -794,19 +852,11 @@ void handleEncoderEvents() {
             }
           } else if (ei == 7 &&
                      (stepEditCtx() || stepEditAccCtx())) {
-            editProbSRes += ed;
-            int16_t st = 0;
-            while (editProbSRes >= 4) { editProbSRes -= 4; st++; }
-            while (editProbSRes <= -4) { editProbSRes += 4; st--; }
-            if (st) {
-              int v = (int)editProbVal + st;
-              if (v < 0) v = 0;
-              if (v > 100) v = 100;
-              editProbVal = (uint8_t)v;
-              if (logRoom(48)) {
-                Serial.print("  prob ");
-                Serial.println(editProbVal);
-              }
+            seqProbAdjust(ed);
+            if (logRoom(48)) {
+              Serial.print("  prob ");
+              Serial.print(seqProbPct());
+              Serial.println("%");
             }
           }
         }
@@ -860,6 +910,7 @@ void handleEncoderEvents() {
         any = true;
       } else if (ei == 5 && ed != 0) {
         seqTrackAdjust(ed);                // TRACK: DRUM/MONO/POLY (no wrap)
+        if (seqTrack() != SEQ_TRACK_MONO) arpPageDismiss();  // no arp left
         refreshAllLeds();                  // the step-edit radio follows the track type
         if (logRoom(48)) {
           Serial.print("  track ");
@@ -868,6 +919,7 @@ void handleEncoderEvents() {
         any = true;
       } else if (ei == 6 && ed != 0 && seqTrack() == SEQ_TRACK_MONO) {
         seqMonoTypeAdjust(ed);             // TYPE: ROOT/BASS/ARP (no wrap)
+        if (seqMonoType() != SEQ_MONO_ARP) arpPageDismiss();
         if (logRoom(48)) {
           Serial.print("  mono ");
           Serial.println(seqMonoTypeName());

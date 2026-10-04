@@ -275,6 +275,23 @@ static CRGB modeLedHook(uint8_t pad, bool isTouched, CRGB defaultColor) {
     d.nscale8(32);
     return d;
   }
+  // SEQMODE M2 on a MONO+ARP track: purple = an arp lives behind that pad,
+  // and while the ARP encoder page is open it BREATHES purple instead of
+  // sitting dim (M2 is otherwise idle in variants 1/2/4, so the color
+  // never fights another pad role)
+  if (modeBase == MODE_SEQ && modeVariant != 3 &&
+      seqTrack() == SEQ_TRACK_MONO && seqMonoType() == SEQ_MONO_ARP &&
+      led == groupControls[3]) {
+    if (isTouched) return CRGB::White;
+    CRGB p = CRGB::Purple;
+    if (arpPageActive()) {
+      uint8_t s = sin8((uint32_t)millis() * 256UL / PULSE_PERIOD_MS);
+      p.nscale8((uint8_t)(48 + scale8(s, 144)));  // 48..192 breathing
+    } else {
+      p.nscale8(48);
+    }
+    return p;
+  }
   // ENCMODE function pads: always show their identity colors even when
   // idle - M1 dim orange, M2 dim orange-red (touch still wins)
   if (modeBase == MODE_ENC &&
@@ -416,6 +433,20 @@ void pollModeLeds() {
     refreshAllLeds();
   }
 
+  // M2 arp-page pulse: while the ARP encoder page is open, repaint at
+  // ~30 fps so that pad breathes purple (edge restores the static dim)
+  static bool arpActive = false;
+  static unsigned long arpFlip = 0;
+  bool arpNow = arpPageActive();
+  if (arpNow != arpActive) {
+    arpActive = arpNow;
+    refreshAllLeds();
+  }
+  if (arpActive && (long)(millis() - arpFlip) >= 0) {
+    arpFlip = millis() + 30;
+    refreshAllLeds();
+  }
+
   int8_t active = activeModeLed();
   if (active < 0) { lastBlink = -1; return; }
 
@@ -522,6 +553,7 @@ void modeOnEvent(uint8_t pad, uint8_t ev) {
   clearOverlay(G_ENC);
   encMuteHold(false);       // the M2 mute overlay never outlives the ENC mode
   drumMuteHold(false);      // nor the M1 drum-voice mute overlay
+  arpPageDismiss();         // nor the M2 arp encoder page
 
   applyModeLeds();
   headerSetLeft(modeName());

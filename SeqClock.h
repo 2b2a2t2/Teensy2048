@@ -43,6 +43,34 @@ const char* seqMonoTypeName();           // "ROOT" / "BASS" / "ARP"
 uint8_t seqMonoTypeOf(uint8_t idx);      // sequence idx 0..15
 void seqSetMonoType(uint8_t idx, uint8_t m);   // raw set (EEPROM load), clamped
 
+// ARP options (SEQMODE M2 page, edit track must be MONO + TYPE=ARP):
+// span = octaves the arp is stretched over (Arpie: up to 3 more octaves on
+// top of the chord), mode = the order they play in, inst = Arpie's note
+// insert patterns, skip = an empty/failed step still advances the arp
+// position instead of pausing it.  Everything is per track.
+enum SeqArpMode : uint8_t {
+  SEQ_ARP_UP = 0, SEQ_ARP_DOWN, SEQ_ARP_UPDOWN,
+  SEQ_ARP_RANDOM, SEQ_ARP_RANDOM2
+};
+enum SeqArpInst : uint8_t {
+  SEQ_INST_OFF = 0, SEQ_INST_HI, SEQ_INST_LOW,
+  SEQ_INST_3F1B, SEQ_INST_4F2B
+};
+void        seqArpSpanAdjust(int16_t counts);  // edit channel; 4 counts = 1
+uint8_t     seqArpSpanOf(uint8_t idx);         // 1..4 octaves
+void        seqArpSpanSet(uint8_t idx, uint8_t v);
+void        seqArpModeAdjust(int16_t counts);  // edit channel; 4 counts = 1
+uint8_t     seqArpModeOf(uint8_t idx);
+void        seqArpModeSet(uint8_t idx, uint8_t v);
+const char *seqArpModeName(uint8_t v);         // "UP" ... "RANDOM2" (OLED)
+void        seqArpInstAdjust(int16_t counts);  // edit channel; 4 counts = 1
+uint8_t     seqArpInstOf(uint8_t idx);
+void        seqArpInstSet(uint8_t idx, uint8_t v);
+const char *seqArpInstName(uint8_t v);         // "OFF" ... "4F2B" (OLED)
+void        seqArpSkipToggle(int16_t counts);  // CW = ON, CCW = OFF
+bool        seqArpSkipOf(uint8_t idx);
+void        seqArpSkipSet(uint8_t idx, bool on);
+
 // SEQMODE3 pattern setup: ENC2 = pattern length of the edit sequence
 // (0..64 steps, boot default 16, independent per track); the C D E F
 // keyboard bars pick the 16-step edit window (shown/edited by the step
@@ -51,6 +79,7 @@ void seqSetMonoType(uint8_t idx, uint8_t m);   // raw set (EEPROM load), clamped
 void seqPatLenAdjust(int16_t counts);    // edit channel; 4 counts = 1 step
 int  seqPatLen(void);                    // length of the edit sequence
 uint8_t seqPatLenOf(uint8_t ch);         // length of sequence ch 0..15
+void    seqPatLenSetOf(uint8_t ch, uint8_t len);  // restore (seqCfgLoad)
 // SEQMODE3 ENC4: per-track pattern SPEED - that sequence's step rate
 // relative to the master clock.  Ladder of 7, index 4 = normal (one step
 // per 16th note, the boot default): 1/16, 1/8, 1/4, 1/2, 1, 2, 4
@@ -69,4 +98,5 @@ bool seqBarLooped(uint8_t page);         // bar of the edit sequence looping
 bool seqFollow();                        // ENC3: edit track follows its feeder
 bool seqFollowOf(uint8_t ch);            // follow state of sequence ch 0..15
 void seqFollowSet(bool on);              // edit track (4 counts = state, CW=ON)
+void seqFollowSetOf(uint8_t ch, bool on);      // restore (seqCfgLoad)
 void seqDiagNote(uint8_t section, uint32_t us);  // track worst loop stalls; 1Hz report

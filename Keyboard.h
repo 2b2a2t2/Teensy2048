@@ -113,17 +113,20 @@ void seqEraseAll();
 #define SEQ_ATT_GLIDE  0x02
 #define SEQ_ATT_ACCENT 0x04
 #define SEQ_ATT_PROB   0x08
-bool stepAttrToggle(uint8_t step, uint8_t att, uint8_t probVal);
+bool stepAttrToggle(uint8_t step, uint8_t att);
                                       // true = attribute now on.  MONO: the
                                       // step's own flag; DRUM: the SELECTED
                                       // PART's accent / probability (PROB
-                                      // stores probVal per voice)
+                                      // only marks the step - the % comes
+                                      // from the track's own probability)
 uint8_t stepAttrs(uint8_t step);      // edit channel's attribute mask for the
                                       // LED pulse - DRUM follows the part select
 
 // SEQMODE4 + REC: persist all SEQ settings to EEPROM - track type, mono
 // type, octave, input channel, velocity, accent velocity, gate, mutes,
-// probability clipboard, edit channel (NOTE PATTERNS ARE NOT STORED).
+// probability, pattern length, FOLLOW, edit channel.  NOTE PATTERNS ARE
+// NOT STORED: the steps, their contents and the tie/glide/accent/prob
+// attributes stay RAM only.
 // seqCfgLoad() restores them at boot (before the first draw); a blank or
 // corrupt block keeps the defaults
 void seqCfgSave();
@@ -132,6 +135,8 @@ void seqGateAdjust(int16_t counts);   // ENC5: 4 counts = 5%, clamped 10..100
 int  seqGatePct();                    // edit track's gate (% of one step)
 void seqVelocityAdjust(int16_t counts); // ENC6: 4 counts = 1, clamped 1..127
 int  seqVelocity();                   // edit track's default velocity
+void seqProbAdjust(int16_t counts);   // ENC8: 4 counts = 1%, clamped 0..100
+int  seqProbPct();                    // edit track's probability (%)
 void seqAccentVelocityAdjust(int16_t counts); // ENC6 + F3 held: accent vel
 int  seqAccentVelocity();             // edit track's accented-step velocity
 void seqSetAccentVelocity(uint8_t seq, uint8_t v); // EEPROM load, clamped

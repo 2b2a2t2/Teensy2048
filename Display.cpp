@@ -74,10 +74,14 @@ static const char* ctrlLegend(uint8_t i) {
     return key2 ? "Maj" : "M1";
   }
   if (i == 3) {
-    // hold M2 = ENCMODE channel mute; SEQMODE3 click = erase the track
+    // hold M2 = ENCMODE channel mute; SEQMODE3 click = erase the track;
+    // SEQMODE 1/2/4 + MONO/ARP = the ARP encoder page
     // (both keep priority over the quality key, same as the handler)
     if (modeBase == MODE_ENC) return "MUTE";
     if (modeBase == MODE_SEQ && modeVariant == 3) return "ERASE";
+    if (modeBase == MODE_SEQ && modeVariant != 3 &&
+        seqTrack() == SEQ_TRACK_MONO && seqMonoType() == SEQ_MONO_ARP)
+      return "ARP";
     return key2 ? "Min" : "M2";
   }
   if (i == 4) return key2 ? "Dim" : "M3";
@@ -95,7 +99,11 @@ void refreshMainScreen() {
   // SEQMODE + MONO + radio on: ENC5/6/8 shape the track (gate/vel/prob)
   bool seqGe = (modeBase == MODE_SEQ && modeVariant != 3 &&
                 seqTrack() == SEQ_TRACK_MONO && stepEditIsOn());
-  // SEQMODE + DRUM/POLY + radio on: only ENC8 (probability clipboard) is bound
+  // SEQMODE + M2 arp page: ENC2/3/4/7 take span/skip/mode/insert, the
+  // other four keep their knobs (ENC1 octave, 5/6/8 gate/vel/prob)
+  bool arpP = arpPageActive();
+  uint8_t arpSeq = (uint8_t)(seqEditChannel() - 1);
+  // SEQMODE + DRUM/POLY + radio on: only ENC8 (track probability) is bound
   bool seqDrumGe = (modeBase == MODE_SEQ && modeVariant != 3 &&
                     seqTrack() != SEQ_TRACK_MONO && stepEditIsOn());
   // KEYMODE2 rows: the main chord row, or the PREV overlay row
@@ -104,9 +112,23 @@ void refreshMainScreen() {
 
   for (uint8_t c = 0; c < 4; c++) {
     uint8_t x = c * 32 + 1;
-    u8g2.drawStr(x, 22, encLabel(b.enc, c));
+    const char *l1 = encLabel(b.enc, c);
+    if (arpP && c >= 1 && c <= 3) {
+      static const char *al[4] = { "OCT", "SPAN", "SKIP", "MODE" };
+      l1 = al[c];
+    }
+    u8g2.drawStr(x, 22, l1);
     if (modeBase == MODE_SEQ && c == 0) {
       snprintf(val, sizeof(val), "%d", seqOctaveShift()); // ENC1 = octave shift
+    } else if (arpP && c == 1) {
+      snprintf(val, sizeof(val), "%u",
+               seqArpSpanOf(arpSeq));           // ENC2 = span (octaves)
+    } else if (arpP && c == 2) {
+      snprintf(val, sizeof(val), "%s",
+               seqArpSkipOf(arpSeq) ? "ON" : "OFF");   // ENC3 = skip rests
+    } else if (arpP && c == 3) {
+      snprintf(val, sizeof(val), "%s",
+               seqArpModeName(seqArpModeOf(arpSeq)));  // ENC4 = mode
     } else if (seq3 && c == 1) {
       snprintf(val, sizeof(val), "%d", seqPatLen());      // ENC2 = steps
     } else if (seq3 && c == 2) {
@@ -118,7 +140,8 @@ void refreshMainScreen() {
       snprintf(val, sizeof(val), "%d", keyOctave());         // ENC1 = octave
     } else if (modeBase == MODE_KEY && c == 1) {
       snprintf(val, sizeof(val), "%s", keyScaleName());      // ENC2 = scale
-    } else if ((key2 || keyOv) && c == 2) {
+    } else if (modeBase == MODE_KEY &&
+               (modeVariant == 1 || modeVariant == 2) && c == 2) {
       snprintf(val, sizeof(val), "%s", keyRootName());       // ENC3 = root
     } else if (keyOv && c == 3) {
       snprintf(val, sizeof(val), "%s", chordLatch() ? "ON" : "OFF");
@@ -141,9 +164,13 @@ void refreshMainScreen() {
       l2 = sl[c];
     }
     if (c == 1 && f3AccentActive()) l2 = "ACC";   // F3 held: ENC6 = accent
+    if (arpP && 4 + c == 6) l2 = "INST";          // arp page: ENC7 = insert
     u8g2.drawStr(x, 38, l2);
     if (c == 1 && f3AccentActive()) {
       snprintf(val, sizeof(val), "%d", seqAccentVelocity()); // ENC6 = acc vel
+    } else if (arpP && 4 + c == 6) {
+      snprintf(val, sizeof(val), "%s",
+               seqArpInstName(seqArpInstOf(arpSeq)));  // ENC7 = insert mode
     } else if (seq3 && 4 + c == 4) {
       snprintf(val, sizeof(val), "%u", seqInputChannel()); // ENC5 = input ch
     } else if (seq3 && 4 + c == 5) {
@@ -159,7 +186,7 @@ void refreshMainScreen() {
     } else if (seqGe && 4 + c == 6) {
       snprintf(val, sizeof(val), "---");                    // ENC7 = free
     } else if (seqGe && 4 + c == 7) {
-      snprintf(val, sizeof(val), "%d%%", stepProbValue());  // ENC8 = prob
+      snprintf(val, sizeof(val), "%d%%", seqProbPct());  // ENC8 = track probability
     } else if (seqDrumGe && 4 + c == 4) {
       snprintf(val, sizeof(val), "---");                    // ENC5 free
     } else if (seqDrumGe && 4 + c == 5) {
@@ -167,7 +194,7 @@ void refreshMainScreen() {
     } else if (seqDrumGe && 4 + c == 6) {
       snprintf(val, sizeof(val), "---");                    // ENC7 free
     } else if (seqDrumGe && 4 + c == 7) {
-      snprintf(val, sizeof(val), "%d%%", stepProbValue());  // ENC8 = prob
+      snprintf(val, sizeof(val), "%d%%", seqProbPct());  // ENC8 = track probability
     } else if (keyOv && 4 + c == 4) {
       snprintf(val, sizeof(val), "%s", chordKeyLock() ? "ON" : "OFF");
     } else if (keyOv && 4 + c == 5) {
@@ -202,9 +229,12 @@ void drawHeaderText() {
   u8g2.setFont(u8g2_font_6x12_tf);   // header always uses its own font
   clearHeader();
   // SEQMODE step-edit: while an attribute target is engaged, the left
-  // header slot shows it instead of the mode name (TIE/GLIDE/ACCENT/PROB)
+  // header slot shows it instead of the mode name (TIE/GLIDE/ACCENT/PROB);
+  // an open ARP page wins over both so the rebind is always visible
   const char* left = headerLeft;
-  if (stepEditActive()) {
+  if (arpPageActive()) {
+    left = "ARP";
+  } else if (stepEditActive()) {
     static const char* ed[4] = { "TIE", "GLIDE", "ACCENT", "PROB" };
     left = ed[stepEditSel() - 1];
   }
@@ -220,6 +250,13 @@ void drawHeaderText() {
 void headerSetLeft(const char* text) {
   strncpy(headerLeft, text, sizeof(headerLeft) - 1);
   headerLeft[sizeof(headerLeft) - 1] = '\0';
+  drawHeaderText();
+  displayDirty = true;
+}
+
+// top strip only: the left slot tracks state that can change without a
+// mode switch (ARP page closed, radio target reset on a channel change)
+void refreshHeader() {
   drawHeaderText();
   displayDirty = true;
 }
