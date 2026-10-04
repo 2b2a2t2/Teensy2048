@@ -16,6 +16,7 @@ static ModeBase heldPrevBase = MODE_NONE;
 static uint8_t heldPrevVariant = 0;
 static bool heldActive = false;
 static uint8_t heldPad = 255;        // which mode button is being held
+static bool seq3ChSel = true;        // SEQ3 step-pad channel overlay up
 
 static const uint8_t modeLeds[3] = { 32, 33, 34 };  // ENC, SEQ, KEY
 static const ModeBase modeOfLed[3] = { MODE_ENC, MODE_SEQ, MODE_KEY };
@@ -119,9 +120,12 @@ static CRGB modeLedHook(uint8_t pad, bool isTouched, CRGB defaultColor) {
     }
     // variant-3 channel overlays: the 16 steps become the MIDI channel
     // selector - dimmed yellow background, selected channel in bright yellow
-    // (KEY = keyboard output, SEQ = sequencer edit, ENC = encoder CCs)
-    if (modeVariant == 3 && (modeBase == MODE_KEY || modeBase == MODE_SEQ ||
-                             modeBase == MODE_ENC)) {
+    // (KEY = keyboard output, SEQ = sequencer edit, ENC = encoder CCs).
+    // SEQ3 only until an encoder moves: the pads then show the sequencer
+    bool chOv = (modeVariant == 3) &&
+                (modeBase == MODE_KEY || modeBase == MODE_ENC ||
+                 (modeBase == MODE_SEQ && seq3ChSelActive()));
+    if (chOv) {
       uint8_t sel = (modeBase == MODE_KEY) ? keyChannel() :
                      (modeBase == MODE_SEQ) ? seqEditChannel() : encChannel();
       if (led == (int8_t)(sel - 1)) return CRGB::Yellow;
@@ -138,6 +142,9 @@ static CRGB modeLedHook(uint8_t pad, bool isTouched, CRGB defaultColor) {
       o.nscale8(16);
       return o;
     }
+    uint8_t vst = (uint8_t)(led + seqStepViewBase());
+    // past the pattern length: the pad is dark (touch still lights it white)
+    if (!seqStepUsed(vst)) return CRGB::Black;
     {
       // playhead of the edit window (the pads show one 16-step bar at a
       // time; the sequence itself may run up to 64 steps): green when the
@@ -149,7 +156,6 @@ static CRGB modeLedHook(uint8_t pad, bool isTouched, CRGB defaultColor) {
       if (gh < 16 && led == groupSteps[gh]) return CRGB::DarkBlue;
     }
     CRGB c;
-    uint8_t vst = (uint8_t)(led + seqStepViewBase());
     if (stepIsActive(vst)) {
       // selected-attribute pulse: while an attribute target is engaged,
       // the steps carrying it breathe YELLOW instead of dim static green
@@ -235,14 +241,15 @@ static CRGB modeLedHook(uint8_t pad, bool isTouched, CRGB defaultColor) {
     c.nscale8(KEY_DIM);
     return c;
   }
-  // SEQMODE step-edit radio: M1 + F1-F4 (MONO) or M1 + F3/F4 (DRUM) keep
-  // their mode visible at all times - bright white = the target the pads
-  // currently edit (M1 while no attribute is selected), dim dark blue
+  // SEQMODE step-edit radio: M1 + F1-F4 (MONO) or M1 + F3/F4 (DRUM/POLY)
+  // keep their mode visible at all times - bright white = the target the
+  // pads currently edit (M1 while no attribute is selected), dim dark blue
   // background otherwise.  Touch wins over everything
   bool seqMonoRadio = (modeBase == MODE_SEQ && modeVariant != 3 &&
                        seqTrack() == SEQ_TRACK_MONO);
   bool seqDrumRadio = (modeBase == MODE_SEQ && modeVariant != 3 &&
-                       seqTrack() == SEQ_TRACK_DRUM);
+                       (seqTrack() == SEQ_TRACK_DRUM ||
+                        seqTrack() == SEQ_TRACK_POLY));
   if ((seqMonoRadio &&
        (led == groupControls[2] ||
         (led >= groupControls[5] && led <= groupControls[8]))) ||
@@ -275,6 +282,20 @@ static CRGB modeLedHook(uint8_t pad, bool isTouched, CRGB defaultColor) {
     if (isTouched) return CRGB::White;
     CRGB c = (led == groupControls[2]) ? CRGB::Orange : CRGB::OrangeRed;
     c.nscale8(48);
+    return c;
+  }
+  // KEYMODE2 chord row: the quality momentaries (NEXT/M1/M2/M3) and the
+  // extensions (F1-F4) show the KEY button's dim green while idle - the
+  // extensions a touch darker (both are inert once KeyLock overrides the
+  // chord).  Touch still wins; ENCMODE/SEQMODE keep their own colors above
+  if (modeBase == MODE_KEY && modeVariant == 2 &&
+      led >= groupControls[1] && led <= groupControls[8]) {
+    if (isTouched) return CRGB::White;
+    CRGB c = dimColorFor(MODE_KEY);
+    if (led > groupControls[4]) {     // extensions: same green, less R+B
+      c.r = c.r / 2;                  //   (purer and a touch darker)
+      c.b = c.b / 2;
+    }
     return c;
   }
   // PLAY transport pad: dim dark green = stopped, bright green = running
@@ -429,6 +450,16 @@ uint8_t keyBehaviorVariant() {
   return familyMem[MODE_KEY];
 }
 
+bool seq3ChSelActive() { return seq3ChSel; }
+
+void seq3ChSelEnter() { seq3ChSel = true; }
+
+bool seq3ChSelDismiss() {
+  if (!seq3ChSel) return false;
+  seq3ChSel = false;
+  return true;
+}
+
 void modeOnEvent(uint8_t pad, uint8_t ev) {
   if (ev != EV_CLICKED && ev != EV_HOLD && ev != EV_DOUBLE && ev != EV_RELEASED) return;
 
@@ -467,6 +498,7 @@ void modeOnEvent(uint8_t pad, uint8_t ev) {
       heldPrevVariant = modeVariant;
       heldActive = true;
       heldPad = pad;
+      seq3ChSelEnter();    // (re)entry: SEQ3 gets its channel overlay back
     }
     modeVariant = 3;
   } else if (ev == EV_DOUBLE) {

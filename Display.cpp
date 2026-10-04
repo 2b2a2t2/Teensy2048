@@ -95,9 +95,9 @@ void refreshMainScreen() {
   // SEQMODE + MONO + radio on: ENC5/6/8 shape the track (gate/vel/prob)
   bool seqGe = (modeBase == MODE_SEQ && modeVariant != 3 &&
                 seqTrack() == SEQ_TRACK_MONO && stepEditIsOn());
-  // SEQMODE + DRUM + radio on: only ENC8 (probability clipboard) is bound
+  // SEQMODE + DRUM/POLY + radio on: only ENC8 (probability clipboard) is bound
   bool seqDrumGe = (modeBase == MODE_SEQ && modeVariant != 3 &&
-                    seqTrack() == SEQ_TRACK_DRUM && stepEditIsOn());
+                    seqTrack() != SEQ_TRACK_MONO && stepEditIsOn());
   // KEYMODE2 rows: the main chord row, or the PREV overlay row
   bool key2 = (modeBase == MODE_KEY && modeVariant == 2 && b.enc != ENC_KEY2_PREV);
   bool keyOv = (b.enc == ENC_KEY2_PREV);
@@ -112,7 +112,8 @@ void refreshMainScreen() {
     } else if (seq3 && c == 2) {
       snprintf(val, sizeof(val), "%s", seqFollow() ? "ON" : "OFF");
     } else if (seq3 && c == 3) {
-      snprintf(val, sizeof(val), "%s", seqIsSyncInternal() ? "INT" : "EXT");
+      snprintf(val, sizeof(val), "%s",
+               seqSpeedName(seqSpeedIdxOf((uint8_t)(seqEditChannel() - 1))));
     } else if (modeBase == MODE_KEY && c == 0) {
       snprintf(val, sizeof(val), "%d", keyOctave());         // ENC1 = octave
     } else if (modeBase == MODE_KEY && c == 1) {
@@ -122,7 +123,7 @@ void refreshMainScreen() {
     } else if (keyOv && c == 3) {
       snprintf(val, sizeof(val), "%s", chordLatch() ? "ON" : "OFF");
     } else if (key2 && c == 3) {
-      snprintf(val, sizeof(val), "%u", chordParam(0));       // ENC4 = voicing
+      snprintf(val, sizeof(val), "%s", chordFScale() ? "ON" : "OFF"); // ENC4
     } else if (modeBase == MODE_ENC) {
       snprintf(val, sizeof(val), "%u", encCcValue(c));       // CC value
     } else {
@@ -139,8 +140,11 @@ void refreshMainScreen() {
       static const char* sl[4] = { "---", "---", "---", "PROB" };
       l2 = sl[c];
     }
+    if (c == 1 && f3AccentActive()) l2 = "ACC";   // F3 held: ENC6 = accent
     u8g2.drawStr(x, 38, l2);
-    if (seq3 && 4 + c == 4) {
+    if (c == 1 && f3AccentActive()) {
+      snprintf(val, sizeof(val), "%d", seqAccentVelocity()); // ENC6 = acc vel
+    } else if (seq3 && 4 + c == 4) {
       snprintf(val, sizeof(val), "%u", seqInputChannel()); // ENC5 = input ch
     } else if (seq3 && 4 + c == 5) {
       snprintf(val, sizeof(val), "%s", seqTrackName());   // ENC6 = TRACK

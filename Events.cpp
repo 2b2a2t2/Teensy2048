@@ -32,12 +32,13 @@ static void logSets() {
 // PREV overlay (KEYMODE2) is held down - clear its slot on release
 static bool prevOvActive = false;
 
-// --- SEQMODE step-edit radio (MONO tracks only) ---------------------------
+// --- SEQMODE step-edit radio (all track types) -----------------------------
 // M1 toggles the edit on/off, F1-F4 pick the target (0=STEPS, 1=TIE,
 // 2=GLIDE, 3=ACCENT, 4=PROB).  The state persists across mode switches;
 // while ON, the step pads edit attributes instead of recording (STEPS
 // target = normal recording) and ENC5/6/8 shape gate/velocity/probability.
-// ENCMODE keeps its CCs, KEYMODE its keys - the radio never applies there
+// DRUM/POLY take ACCENT/PROB from F3/F4 only (M1 keeps its part-select
+// hold on DRUM).  ENCMODE keeps its CCs, KEYMODE its keys - never there
 static bool    stepEditOn = true;     // boot: pads record (STEPS)
 static uint8_t stepEditTarget = 0;    // 0 = STEPS (normal step recording)
 static int16_t editProbSRes = 0;      // leftover ENC8 counts (4 = 1%)
@@ -49,20 +50,20 @@ static bool stepEditCtx() {
          seqTrack() == SEQ_TRACK_MONO;
 }
 
-// DRUM variant: accent (F3/M3) and probability (F4/M4) only - TIE/GLIDE
-// make no sense for one-shot drum voices
-static bool stepEditDrumCtx() {
+// DRUM/POLY variant: accent (F3) and probability (F4) only - TIE/GLIDE
+// make no sense for one-shot drums or per-chord playback
+static bool stepEditAccCtx() {
   return modeBase == MODE_SEQ && modeVariant != 3 &&
-         seqTrack() == SEQ_TRACK_DRUM;
+         (seqTrack() == SEQ_TRACK_DRUM || seqTrack() == SEQ_TRACK_POLY);
 }
 
 // true while an ATTRIBUTE target is engaged for the current track: MONO =
-// TIE/GLIDE/ACCENT/PROB (1..4), DRUM = ACCENT/PROB (3,4).  Drives the
-// header label, the step pulse and the attribute pad mode
+// TIE/GLIDE/ACCENT/PROB (1..4), DRUM/POLY = ACCENT/PROB (3,4).  Drives
+// the header label, the step pulse and the attribute pad mode
 bool stepEditActive() {
   return stepEditOn &&
          ((seqTrack() == SEQ_TRACK_MONO && stepEditTarget != 0) ||
-          (seqTrack() == SEQ_TRACK_DRUM && stepEditTarget >= 3)) &&
+          (stepEditAccCtx() && stepEditTarget >= 3)) &&
          modeBase == MODE_SEQ && modeVariant != 3;
 }
 
@@ -73,6 +74,19 @@ static void stepEditSet(bool on, uint8_t target) {
 
 bool    stepEditIsOn() { return stepEditOn; }
 uint8_t stepEditSel()  { return stepEditTarget; }
+
+// HOLD F3 in SEQMODE: ENC6 rebinds from the track's default velocity to
+// its ACCENT velocity (the quick tap still picks the ACCENT target)
+static bool f3AccentSel = false;
+
+void f3AccentHold(bool on) { f3AccentSel = on; }
+
+// composite: the flag can outlive a mid-hold mode switch - the rebind
+// only applies while the panel is still in SEQMODE variants 1/2/4
+bool f3AccentActive() {
+  return f3AccentSel && modeBase == MODE_SEQ && modeVariant != 3;
+}
+
 uint8_t stepProbValue(){ return editProbVal; }
 void    stepProbSet(uint8_t v) {
   if (v > 100) v = 100;
@@ -106,10 +120,12 @@ void handleButtonEvents() {
     //  release -> note-off
     if (sidx != 255) {
       // variant-3 channel overlays: steps select a MIDI channel
-      // (KEY = keyboard output, SEQ = sequencer edit, ENC = encoder CCs)
+      // (KEY = keyboard output, SEQ = sequencer edit, ENC = encoder CCs).
+      // SEQ3's selector is gone once an encoder moved - the pads are back
+      // on the sequencer until SEQ is held into SEQMODE3 again
       bool chOverlay = (modeVariant == 3 &&
-                        (modeBase == MODE_KEY || modeBase == MODE_SEQ ||
-                         modeBase == MODE_ENC));
+                        (modeBase == MODE_KEY || modeBase == MODE_ENC ||
+                         (modeBase == MODE_SEQ && seq3ChSelActive())));
       // DRUM track: step press = toggle the selected part (voice)
       bool drum = (modeBase == MODE_SEQ && modeVariant != 3 &&
                    seqTrack() == SEQ_TRACK_DRUM);
@@ -156,8 +172,13 @@ void handleButtonEvents() {
       } else if (chOverlay) {
         if (ev == EV_PRESSED) {
           if (modeBase == MODE_KEY) keySetChannel(sidx + 1);
-          else if (modeBase == MODE_SEQ) seqSetEditChannel(sidx + 1);
-          else encSetChannel(sidx + 1);
+          else if (modeBase == MODE_SEQ) {
+            seqSetEditChannel(sidx + 1);
+            // a channel switch always lands back in step edit on the new
+            // channel: M1 (STEPS target) selected, radio on
+            stepEditSet(true, 0);
+            refreshAllLeds();        // M1 + F-row follow the radio again
+          } else encSetChannel(sidx + 1);
           if (modeBase == MODE_ENC)
             refreshMainScreen();   // CC values belong to the new channel
           if (logRoom(48)) {
@@ -179,6 +200,12 @@ void handleButtonEvents() {
             Serial.println(drumPartName());
           }
         }
+      } else if (!seqStepUsed(stp) && (ev == EV_PRESSED || ev == EV_CLICKED ||
+                                       ev == EV_HOLD)) {
+        // past the pattern length: the pad is dark AND inert - no record,
+        // no toggle, no assign, no attribute edit (release still falls
+        // through to the defensive cleanup below)
+        if (ev == EV_PRESSED && logRoom(48)) Serial.println("  step unused");
       } else if (attrMode && (ev == EV_PRESSED || ev == EV_CLICKED ||
                               ev == EV_HOLD)) {
         // attribute edit: a tap on an ACTIVE step toggles the selected
@@ -287,8 +314,8 @@ void handleButtonEvents() {
           if (logRoom(48)) Serial.println("  step edit off");
         }
         refreshAllLeds();
-      } else if (ev == EV_CLICKED && stepEditDrumCtx()) {
-        // SEQMODE + DRUM: a QUICK tap of M1 toggles the edit master only
+      } else if (ev == EV_CLICKED && stepEditAccCtx()) {
+        // SEQMODE + DRUM/POLY: a QUICK tap of M1 toggles the edit master only
         // (a HOLD still opens the part select - hold suppresses the click)
         if (stepEditOn) {
           stepEditSet(false, 0);
@@ -305,11 +332,35 @@ void handleButtonEvents() {
       }
     }
 
+    // HOLD F3 in SEQMODE: ENC6 becomes the track's ACCENT velocity knob
+    // (the quick tap below still picks the ACCENT target - a hold ends in
+    // EV_RELEASED and never reaches EV_CLICKED)
+    if (modeBase == MODE_SEQ && modeVariant != 3 &&
+        kl >= groupControls[5] && kl <= groupControls[8] &&
+        (uint8_t)(kl - groupControls[5]) == 2) {
+      if (ev == EV_PRESSED) {
+        f3AccentHold(true);
+        headerShow("ACCENT VEL");
+        refreshMainScreen();
+        if (logRoom(48)) {
+          Serial.print("  accent vel ");
+          Serial.println(seqAccentVelocity());
+        }
+      } else if (ev == EV_RELEASED && f3AccentActive()) {
+        f3AccentHold(false);
+        refreshMainScreen();
+        if (logRoom(48)) {
+          Serial.print("  accent vel done ");
+          Serial.println(seqAccentVelocity());
+        }
+      }
+    }
+
     // F1-F4 in SEQMODE (MONO): pick the edit target and switch the radio
-    // on (TIE/GLIDE/ACCENT/PROB).  DRUM tracks only take ACCENT/PROB from
-    // F3/F4 (the panel's M3/M4) - clicking the selected one again closes
-    // the radio there.  SEQMODE only: ENCMODE/KEYMODE keep their F-pad jobs
-    if (ev == EV_CLICKED && (stepEditCtx() || stepEditDrumCtx()) &&
+    // on (TIE/GLIDE/ACCENT/PROB).  DRUM/POLY tracks only take ACCENT/PROB
+    // from F3/F4 - clicking the selected one again closes the radio there.
+    // SEQMODE only: ENCMODE/KEYMODE keep their F-pad jobs
+    if (ev == EV_CLICKED && (stepEditCtx() || stepEditAccCtx()) &&
         kl >= groupControls[5] && kl <= groupControls[8]) {
       uint8_t idx = (uint8_t)(kl - groupControls[5]);      // 0..3
       static const char *const tn[4] = { "TIE", "GLIDE", "ACCENT", "PROB" };
@@ -392,11 +443,14 @@ void handleButtonEvents() {
       if (logRoom(48)) Serial.println("  seq config saved to eeprom");
     }
 
-    // SEQMODE1/2 + REC: live record - arm one pass over the edit track's
-    // pattern from its next 1st bar (auto-off after one pass; the keyboard
-    // channel must match the edit track or arming is refused)
+    // SEQMODE1/2 and KEYMODE1/2/4 + REC: live record - arm one pass over
+    // the edit track's pattern from its next 1st bar (auto-off after one
+    // pass; the keyboard channel must match the edit track or arming is
+    // refused).  KEYMODE2 records the whole chord the engine builds
     if (ev == EV_PRESSED && ledForPad[pad] == groupTransport[1] &&
-        modeBase == MODE_SEQ && (modeVariant == 1 || modeVariant == 2)) {
+        ((modeBase == MODE_SEQ && (modeVariant == 1 || modeVariant == 2)) ||
+         (modeBase == MODE_KEY &&
+          (modeVariant == 1 || modeVariant == 2 || modeVariant == 4)))) {
       uint8_t r = seqRecToggle();
       if (r == 0) headerShow("kbd ch mismatch");
       else if (r == 1) headerShow("rec armed");
@@ -417,19 +471,17 @@ void handleButtonEvents() {
       int8_t ci = -1;
       for (uint8_t i = 0; i < CONTROLS_NUM_G; i++)
         if (groupControls[i] == kl) ci = (int8_t)i;
-      bool m1Drum = (ci == 2 && modeBase == MODE_SEQ && modeVariant != 3 &&
-                     seqTrack() == SEQ_TRACK_DRUM);
-      bool m1SeqMono = (ci == 2 && modeBase == MODE_SEQ && modeVariant != 3 &&
-                        seqTrack() == SEQ_TRACK_MONO);   // edit radio M1
+      bool m1SeqRadio = (ci == 2 && modeBase == MODE_SEQ &&
+                         modeVariant != 3);               // edit radio M1
       bool m1Enc = (ci == 2 && modeBase == MODE_ENC);
       bool m2Enc = (ci == 3 && modeBase == MODE_ENC);
       bool m2Seq3 = (ci == 3 && modeBase == MODE_SEQ && modeVariant == 3);
-      bool fSeqMono = (ci >= 5 && modeBase == MODE_SEQ && modeVariant != 3 &&
-                       seqTrack() == SEQ_TRACK_MONO);    // F1-F4 targets
-      bool fSeqDrum = (ci >= 7 && modeBase == MODE_SEQ && modeVariant != 3 &&
-                       seqTrack() == SEQ_TRACK_DRUM);    // F3/F4 accent+prob
-      if (ci > 0 && !m1Drum && !m1SeqMono && !m1Enc && !m2Enc && !m2Seq3 &&
-          !fSeqMono && !fSeqDrum) {                      // ci 0 = PREV
+      bool fSeq = (ci >= 5 && modeBase == MODE_SEQ && modeVariant != 3);
+      // F1-F4 belong to the SEQMODE edit radio (target / accent / prob)
+      // plus the F3 accent-velocity hold - they never touch the chords
+      // there, on any track type
+      if (ci > 0 && !m1SeqRadio && !m1Enc && !m2Enc && !m2Seq3 &&
+          !fSeq) {                                        // ci 0 = PREV
         bool on = (ev == EV_PRESSED);
         static const uint8_t extOf[4] = { CHORD_EXT_6, CHORD_EXT_m7,
                                           CHORD_EXT_M7, CHORD_EXT_9 };
@@ -466,11 +518,21 @@ void handleButtonEvents() {
       }
     }
 
-    // PLAY in SEQMODE: Start (or Stop while the INT transport runs)
-    if (ev == EV_PRESSED && modeBase == MODE_SEQ &&
-        ledForPad[pad] == groupTransport[0]) {
-      seqTogglePlay();
-      if (logRoom(48)) Serial.println("  -> MIDI Play toggle");
+    // PLAY in SEQMODE: Start (or Stop while the INT transport runs).
+    // ENCMODE3: PLAY = toggle the clock source instead (frees ENC4 for
+    // the pattern speed) - it never starts the transport there
+    if (ev == EV_PRESSED && ledForPad[pad] == groupTransport[0]) {
+      if (modeBase == MODE_ENC && modeVariant == 3) {
+        seqSetSyncInternal(!seqIsSyncInternal());
+        headerShow(seqIsSyncInternal() ? "clock INT" : "clock EXT");
+        if (logRoom(48)) {
+          Serial.print("  clock ");
+          Serial.println(seqIsSyncInternal() ? "INT" : "EXT");
+        }
+      } else if (modeBase == MODE_SEQ) {
+        seqTogglePlay();
+        if (logRoom(48)) Serial.println("  -> MIDI Play toggle");
+      }
     }
 
     // keyboard pads -> MIDI notes in every mode (behavior defined by KEYMODE,
@@ -578,6 +640,14 @@ void handleEncoderEvents() {
   int16_t ed;
   bool any = false;
   for (uint8_t n = 0; n < MAX_EVENTS_PER_LOOP && popEncEvent(ei, ed); n++) {
+    // SEQMODE3: ANY encoder movement drops the step-pad channel selector
+    // for the rest of the hold - the pads go back to the sequencer (so the
+    // playhead, recorded steps and the pattern length read again) and only
+    // holding SEQ into SEQMODE3 brings the selector up
+    if (ed != 0 && modeBase == MODE_SEQ && modeVariant == 3 &&
+        seq3ChSelDismiss())
+      refreshAllLeds();
+
     // KEYMODE: ENC1 = octave -2..8 (clamped, no wrap; 4 counts = 1 octave)
     if (modeBase == MODE_KEY && ei == 0 && ed != 0) {
       keyOctaveAdjust(ed);
@@ -615,9 +685,9 @@ void handleEncoderEvents() {
       any = true;
     }
 
-    // KEYMODE2: ENC4..ENC7 = voicing/bass/spread/density, ENC8 = latch.
-    // With PREV held the row remaps: ENC4 = latch, ENC5 = KeyLock,
-    // ENC6 = Perf (state only)
+    // KEYMODE2: ENC4 = Force-to-scale (FScale), ENC5..ENC7 = bass/spread/
+    // density, ENC8 = latch.  With PREV held the row remaps: ENC4 = latch,
+    // ENC5 = KeyLock, ENC6 = Perf (state only)
     if (modeBase == MODE_KEY && modeVariant == 2 && ei != 2 && ed != 0) {
       ModeBinding b = currentBinding();
       if (b.enc == ENC_KEY2_PREV) {
@@ -642,8 +712,16 @@ void handleEncoderEvents() {
           Serial.println(chordLatch() ? "ON" : "OFF");
         }
         any = true;
-      } else if (ei >= 3 && ei <= 6) {
-        chordParamAdjust(ei - 3, ed);   // VOIC / BASS / SPRD / DENS
+      } else if (ei == 3) {
+        chordFScaleAdjust(ed);      // main row: ENC4 = Force-to-scale
+        refreshAllLeds();
+        if (logRoom(48)) {
+          Serial.print("  fscale ");
+          Serial.println(chordFScale() ? "ON" : "OFF");
+        }
+        any = true;
+      } else if (ei >= 4 && ei <= 6) {
+        chordParamAdjust(ei - 3, ed);   // BASS / SPRD / DENS
         if (logRoom(48)) {
           static const char* pn[4] = { "voic ", "bass ", "sprd ", "dens " };
           Serial.print(pn[ei - 3]);
@@ -675,7 +753,8 @@ void handleEncoderEvents() {
     }
 
     // SEQMODE: ENC1 = octave shift of the selected sequence (all variants)
-    // SEQMODE3: ENC4 = SYNC INT/EXT (two-state, no wrap: CW=INT, CCW=EXT)
+    // SEQMODE3: ENC4 = pattern SPEED of the edit sequence (7 rungs, 4 =
+    //           normal; sync moved to ENCMODE3+PLAY)
     //           ENC5 = input channel of the edit sequence, 1..16
     //           ENC6 = TRACK DRUM/MONO/POLY (three-state, no wrap)
     //           ENC7 = TYPE ROOT/BASS/ARP (MONO sequences only, no wrap)
@@ -689,10 +768,17 @@ void handleEncoderEvents() {
         }
         any = true;
       } else if (modeVariant != 3) {
-        // step-edit value encoders: ENC5 = gate %, ENC6 = default velocity
-        // (MONO only), ENC8 = the probability clipboard both tracks share.
-        // ENC7 stays free
-        if (ed != 0 && stepEditOn) {
+        // F3 held: ENC6 = ACCENT velocity of the edit track (every track
+        // type).  Otherwise the step-edit value encoders: ENC5 = gate %,
+        // ENC6 = default velocity (MONO only), ENC8 = the probability
+        // clipboard both tracks share.  ENC7 stays free
+        if (ei == 5 && ed != 0 && f3AccentActive()) {
+          seqAccentVelocityAdjust(ed);
+          if (logRoom(48)) {
+            Serial.print("  accvel ");
+            Serial.println(seqAccentVelocity());
+          }
+        } else if (ed != 0 && stepEditOn) {
           if (ei == 4 && stepEditCtx()) {
             seqGateAdjust(ed);
             if (logRoom(48)) {
@@ -707,7 +793,7 @@ void handleEncoderEvents() {
               Serial.println(seqVelocity());
             }
           } else if (ei == 7 &&
-                     (stepEditCtx() || stepEditDrumCtx())) {
+                     (stepEditCtx() || stepEditAccCtx())) {
             editProbSRes += ed;
             int16_t st = 0;
             while (editProbSRes >= 4) { editProbSRes -= 4; st++; }
@@ -758,13 +844,11 @@ void handleEncoderEvents() {
         }
         any = true;
       } else if (ei == 3 && ed != 0) {
-        bool want = (ed > 0);              // CW = INT, CCW = EXT (no wrap)
-        if (want != seqIsSyncInternal()) {
-          seqSetSyncInternal(want);
-          if (logRoom(48)) {
-            Serial.print("  sync ");
-            Serial.println(seqIsSyncInternal() ? "INT" : "EXT");
-          }
+        seqSpeedAdjust(ed);               // SPEED: 1/16 .. 1 .. 4 (no wrap)
+        if (logRoom(48)) {
+          Serial.print("  speed ");
+          Serial.println(seqSpeedName(seqSpeedIdxOf(
+              (uint8_t)(seqEditChannel() - 1))));
         }
         any = true;
       } else if (ei == 4 && ed != 0) {

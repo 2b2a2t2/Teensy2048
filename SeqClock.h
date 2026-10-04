@@ -51,6 +51,15 @@ void seqSetMonoType(uint8_t idx, uint8_t m);   // raw set (EEPROM load), clamped
 void seqPatLenAdjust(int16_t counts);    // edit channel; 4 counts = 1 step
 int  seqPatLen(void);                    // length of the edit sequence
 uint8_t seqPatLenOf(uint8_t ch);         // length of sequence ch 0..15
+// SEQMODE3 ENC4: per-track pattern SPEED - that sequence's step rate
+// relative to the master clock.  Ladder of 7, index 4 = normal (one step
+// per 16th note, the boot default): 1/16, 1/8, 1/4, 1/2, 1, 2, 4
+void        seqSpeedAdjust(int16_t counts);  // edit channel; 4 counts = 1 step
+uint8_t     seqSpeedIdxOf(uint8_t ch);       // index 0..6 of sequence ch
+void        seqSpeedSetOf(uint8_t ch, uint8_t idx);   // restore (seqCfgLoad)
+const char *seqSpeedName(uint8_t idx);       // "1/16" ... "4" for the OLED
+uint8_t     seqSpeedNumOf(uint8_t ch);       // sub-steps per master tick
+uint8_t     seqSpeedDenOf(uint8_t ch);       // master ticks per sub-step
 void seqPlayRange(uint8_t ch, uint8_t *lo, uint8_t *hi);  // playback window
 bool seqLoopOn(uint8_t ch);           // that track's bar loop is armed
 uint8_t seqBarPress(uint8_t bar);        // 0 = page set, 1 = loop on, 2 = off

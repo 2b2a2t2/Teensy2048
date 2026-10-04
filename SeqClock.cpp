@@ -88,9 +88,11 @@ static void midiControlChange(uint8_t ch, uint8_t cc, uint8_t val) {
 // active (recorded) steps = dimmed green, empty steps = dimmed dark blue
 static void drawSteps() {
   // variant-3 channel overlays (KEY3/SEQ3/ENC3) own the step LEDs (hook
-  // repaints them on mode change), the playhead must not paint over them
-  if (modeVariant == 3 && (modeBase == MODE_KEY || modeBase == MODE_SEQ ||
-                           modeBase == MODE_ENC))
+  // repaints them on mode change), the playhead must not paint over them.
+  // SEQ3 gives them back to the sequencer as soon as an encoder moves
+  if (modeVariant == 3 &&
+      (modeBase == MODE_KEY || modeBase == MODE_ENC ||
+       (modeBase == MODE_SEQ && seq3ChSelActive())))
     return;
   // DRUM part-select overlay (hold M1) also owns the step LEDs
   if (modeBase == MODE_SEQ && modeVariant != 3 &&
@@ -106,7 +108,9 @@ static void drawSteps() {
     uint8_t led = groupSteps[i];
     if (leds[led] == CRGB(CRGB::White)) continue;  // pad currently touched
     CRGB c;
-    if (i == ph) {
+    if (!seqStepUsed((uint8_t)(base + i))) {
+      c = CRGB::Black;    // past the pattern length: pad off
+    } else if (i == ph) {
       c = CRGB::Green;
     } else if (i == gh) {
       c = CRGB::DarkBlue;   // bar on the pads is not the one being read
@@ -311,6 +315,44 @@ void seqPatLenAdjust(int16_t counts) {
 int seqPatLen() { return patLen[seqEditChannel() - 1]; }
 
 uint8_t seqPatLenOf(uint8_t ch) { return (ch < 16) ? patLen[ch] : 16; }
+
+// SEQMODE3 ENC4: per-track pattern speed, clamped 0..6 (no wrap).  The
+// ladder doubles each way around the default 4 = normal (one step per
+// 16th note): 1/16, 1/8, 1/4, 1/2, 1, 2, 4 - num/den describe how many
+// sub-steps a track takes inside one master tick
+static const uint8_t spdNum[7] = { 1, 1, 1, 1, 1, 2, 4 };
+static const uint8_t spdDen[7] = { 16, 8, 4, 2, 1, 1, 1 };
+static uint8_t patSpeed[16] = { 4, 4, 4, 4, 4, 4, 4, 4,
+                                4, 4, 4, 4, 4, 4, 4, 4 };
+static int16_t spdRes = 0;               // leftover encoder counts (ENC4)
+
+void seqSpeedAdjust(int16_t counts) {
+  spdRes += counts;
+  int8_t step = 0;
+  while (spdRes >= 4)  { spdRes -= 4;  step++; }
+  while (spdRes <= -4) { spdRes += 4;  step--; }
+  if (!step) return;
+  int v = (int)patSpeed[seqEditChannel() - 1] + step;
+  if (v < 0) v = 0;
+  if (v > 6) v = 6;
+  patSpeed[seqEditChannel() - 1] = (uint8_t)v;
+}
+
+uint8_t seqSpeedIdxOf(uint8_t ch) { return (ch < 16) ? patSpeed[ch] : 4; }
+
+void seqSpeedSetOf(uint8_t ch, uint8_t idx) {
+  if (ch >= 16) return;
+  patSpeed[ch] = (idx > 6) ? 4 : idx;
+}
+
+const char *seqSpeedName(uint8_t idx) {
+  static const char *const nm[7] = { "1/16", "1/8", "1/4", "1/2",
+                                     "1", "2", "4" };
+  return nm[(idx > 6) ? 4 : idx];
+}
+
+uint8_t seqSpeedNumOf(uint8_t ch) { return spdNum[seqSpeedIdxOf(ch)]; }
+uint8_t seqSpeedDenOf(uint8_t ch) { return spdDen[seqSpeedIdxOf(ch)]; }
 
 void seqPlayRange(uint8_t ch, uint8_t *lo, uint8_t *hi) {
   if (ch >= 16) { *lo = 0; *hi = STEPS_COUNT; return; }

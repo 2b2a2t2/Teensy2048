@@ -98,6 +98,7 @@ static uint8_t sExt = 0;                  // extension bitmask (F1..F4)
 static int8_t  sParam[4] = {0, 0, 0, 0};  // voicing, bass, spread, density
 static int16_t sParamRes[4] = {0};
 static bool    sLatch = false, sLock = false, sPerf = false;
+static bool    sFScale = false;      // KEYMODE2 ENC4: force chord tones to scale
 
 static uint16_t sHeld = 0;                // keys held during the gesture
 static uint8_t  sHeldCount = 0;
@@ -261,6 +262,20 @@ static void addExtensions(uint8_t *out, uint8_t &n, int root, uint8_t qType) {
   }
 }
 
+// FScale: pull an out-of-scale chord tone onto the nearest scale pitch.
+// Ties go DOWN first (a sharp tends to flatten), and chromatic has nothing
+// to do so it passes everything through
+static uint8_t forceScaleNote(uint8_t note) {
+  if (!sFScale || keyIsInScale(note)) return note;
+  for (int d = 1; d <= 6; d++) {
+    int dn = (int)note - d;
+    if (dn >= 0 && keyIsInScale((uint8_t)dn)) return (uint8_t)dn;
+    int up = (int)note + d;
+    if (up <= 127 && keyIsInScale((uint8_t)up)) return (uint8_t)up;
+  }
+  return note;
+}
+
 // build and play the chord on a root note with a fixed quality
 static void playChordAt(int note, uint8_t qType) {
   stopNotes();
@@ -315,6 +330,19 @@ static void playChordAt(int note, uint8_t qType) {
     }
   }
 
+  // FScale: every tone lands inside the scale, collapsed to unique notes
+  // (so a forced third can never double the root silently)
+  if (sFScale) {
+    uint8_t m = 0;
+    for (uint8_t i = 0; i < n; i++) {
+      uint8_t v = forceScaleNote(out[i]);
+      bool dup = false;
+      for (uint8_t j = 0; j < m; j++) if (out[j] == v) dup = true;
+      if (!dup) out[m++] = v;
+    }
+    n = m;
+  }
+
   for (uint8_t i = 0; i < n; i++) sNotes[i] = out[i];
   sCount = n;
   sPlayedRoot = (int16_t)root;
@@ -333,12 +361,13 @@ static void playSingle(int note) {
   sendOut();
 }
 
-// KeyLock: snap the root to the nearest scale tone, pick that degree's
-// triad quality, then play
+// KeyLock: snap the root to the nearest scale tone, then play - a held
+// quality button wins over that degree's triad (KeyLock still quantizes
+// the root, the quality row stays live)
 static void playKeyLockAt(int note) {
   uint8_t pc = (uint8_t)(((note % 12) + 12) % 12);
   int deg = keylockDegree(pc);
-  uint8_t q = keylockQuality(deg);
+  uint8_t q = (sQuality != CHORD_Q_NONE) ? sQuality : keylockQuality(deg);
 
   uint16_t rot = rotPattern();
   int bestDist = 12, snap = pc;
@@ -465,6 +494,15 @@ void chordPerfAdjust(int16_t counts) {
   bool want = (counts > 0);
   if (want != sPerf) sPerf = want;   // state only (the reference has no behavior)
 }
+
+void chordFScaleAdjust(int16_t counts) {
+  bool want = (counts > 0);          // CW = on, CCW = off (no wrap)
+  if (want == sFScale) return;
+  sFScale = want;
+  retrigger();                       // live: rebuild the chord it silences
+}
+
+bool chordFScale() { return sFScale; }
 
 uint8_t chordParam(uint8_t idx) { return (idx < 4) ? (uint8_t)sParam[idx] : 0; }
 bool chordLatch()  { return sLatch; }

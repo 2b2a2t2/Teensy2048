@@ -71,7 +71,7 @@ The hardware has 48 touch pads but only 42 LEDs. The mapping (`padToLedList` in 
 | `Events.h/cpp` | Event loop: button + encoder dispatch per binding |
 | `SeqClock.h/cpp` | uClock integration, playhead, sync (INT/EXT), tempo, track types |
 | `Keyboard.h/cpp` | Keyboard pads → MIDI notes, octave, channel, pending chords |
-| `Chords.h/cpp` | KEYMODE2 chord engine: quality, extensions, voicing, latch, KeyLock |
+| `Chords.h/cpp` | KEYMODE2 chord engine: quality, extensions, FScale, latch, KeyLock |
 
 ## Mode System
 
@@ -92,9 +92,9 @@ Each mode/variant combination selects an `EncSet`, `CtrlSet`, `StepSet`, `KeySet
 
 **Example (SEQMODE3):**
 - ENC1: Octave shift of edit sequence
-- ENC2: (unused)
-- ENC3: (unused)
-- ENC4: SYNC INT/EXT
+- ENC2: Pattern length (0–64 steps)
+- ENC3: FOLLOW ON/OFF
+- ENC4: Pattern speed (1/16 … 1 … 4, default 1)
 - ENC5: Input channel (1–16)
 - ENC6: Track type (DRUM/MONO/POLY)
 - ENC7: Mono type (ROOT/BASS/ARP) — MONO only
@@ -107,9 +107,11 @@ Each mode/variant combination selects an `EncSet`, `CtrlSet`, `StepSet`, `KeySet
 - **ENC1** (KEYMODE): Octave –2..+8 (4 counts = 1 octave, clamped)
 - **ENC2** (KEYMODE): Scale select (39 scales, Chromatic = no filter)
 - **KEYMODE2**: Chord engine active
-  - M1/M2/M3/NEXT = quality (Maj/Min/Dim/Sus) — momentary
+  - M1/M2/M3/NEXT = quality (Maj/Min/Dim/Sus) — momentary, beats **KeyLock**'s diatonic triad (root still snapped to the scale)
   - F1–F4 = extensions (6, m7, M7, 9) — toggle
-  - ENC3 = Root, ENC4–7 = Voicing/Bass/Spread/Density, ENC8 = Latch
+  - **LEDs**: quality pads idle in the KEY button's dim green, extensions the same green with less red and blue (a touch darker); touch lights them white
+  - ENC3 = Root, **ENC4 = FScale (Force to scale)**, ENC5–7 = Bass/Spread/Density, ENC8 = Latch
+    - **FScale ON**: every chord tone is snapped to the nearest pitch of the current scale before it is sent (ties flatten first), so no out-of-scale note ever reaches MIDI — duplicates collapse to one voice; Chromatic passes everything through; OFF = free voicings
   - **PREV (hold)** = momentary encoder overlay (Root/Scale/Latch/KeyLock/Perf)
 
 ### 2. Sequencer (SEQMODE)
@@ -122,12 +124,13 @@ Each mode/variant combination selects an `EncSet`, `CtrlSet`, `StepSet`, `KeySet
 - **Click active step** → disables it
 - **Pending chord sources**: keyboard (when its channel matches), external MIDI on sequence's input channel
 
-#### Live Recording (SEQMODE1/2)
+#### Live Recording (SEQMODE1/2, KEYMODE1/2/4)
 - **REC** arms one record pass over the edit track's pattern from its **next 1st bar** (or the looped bar's head when a bar loop is armed); the pass covers the whole play range and then switches itself off (`rec done`)
 - **LED**: dim dark red = idle, **bright red** = armed / recording (touch = white)
 - The keyboard channel must match the edit track — otherwise arming is refused (`kbd ch mismatch`); changing the keyboard channel mid-record disarms
 - Each gesture writes the step under the playhead: **POLY/MONO replace** (fresh gesture clears step + attributes, held notes build the chord), **DRUM overdubs** (notes are added, never removed, duplicates skipped)
 - Press **REC again** = cancel (`rec off`); **transport stop** interrupts the pass and re-arms it for the next start
+- **PLAY stays SEQMODE-only** — start the transport there first (or feed an external clock), then switch to KEYMODE to arm and play
 
 #### Bar Loop (SEQMODE3)
 - **Press C/D/E/F bar button** (on step pads in SEQMODE3): first press selects that 16-step edit window; **press again on the SELECTED bar toggles its loop**
@@ -137,12 +140,18 @@ Each mode/variant combination selects an `EncSet`, `CtrlSet`, `StepSet`, `KeySet
 
 #### Sequence Configuration (SEQMODE3)
 - **ENC1**: Playback octave shift (±5 octaves from stored notes, clamped to –2..+8 convention)
-- **ENC4**: SYNC **INT** (Teensy master, streams Clock+Start, **default**) / **EXT** (follow USB-MIDI clock)
+- **ENC2**: Pattern length of the edit sequence (**0–64** steps, boot default 16; 0 = silent track, per-track RAM only)
+  - **Steps past the length go dark and inert** — no record, no toggle, no attribute edit, so a shortened pattern can't hide stale content. An armed **bar loop** still covers its own 16 steps, so those stay lit and editable
+- **ENC4**: Pattern **speed** of the edit sequence — step rate relative to the master clock: **1/16, 1/8, 1/4, 1/2, 1 (default), 2, 4**
+  - Per track (polymeter + polyrhythm): a slow track skips master ticks until its accumulator fills, a fast one plays 2–4 sub-steps inside one tick; the gate time scales with the track's own step length
+  - Saved/restored with SEQMODE4+REC. Clock **SYNC** moved to **ENCMODE3+PLAY**
 - **ENC5**: Input channel (1–16) — notes arriving here feed pending chord; changing backfills from that track
 - **ENC6**: Track type — **DRUM** / **MONO** / **POLY**
   - Ch1 defaults DRUM, ch2–16 default POLY
 - **ENC7**: MONO transform — **ROOT** (chord root), **BASS** (lowest note), **ARP** (ascending arpeggio)
 - **ENC8**: Tempo 40–240 BPM (INT sync only)
+- **Step-pad channel selector**: while SEQ is held into SEQMODE3 the 16 steps are the edit-channel selector (dim yellow, selected channel bright yellow). **Any encoder movement dismisses it** — the pads immediately show the normal sequencer again (playhead, recorded steps, pattern length) and stay that way until SEQ is held into SEQMODE3 once more
+  - **Choosing a channel always returns to step edit**: the edit radio switches back on with **M1 (STEPS)** selected on the newly selected channel, whatever attribute it had on the previous one
 
 #### Track Behaviors
 | Track | Playback | Step Recording |
@@ -150,6 +159,15 @@ Each mode/variant combination selects an `EncSet`, `CtrlSet`, `StepSet`, `KeySet
 | **DRUM** | Each step holds drum parts (voices C1–D#2). Playhead sends all active parts on channel. | Press step = toggle selected part (M1 hold = part-select overlay) |
 | **MONO** | One note per step: root/lowest/arp of stored chord + sequence octave shift | Records pending chord; MONO also follows **input track's timeline** (last active step at/before position) |
 | **POLY** | Full chord per step + sequence octave shift | Records pending chord; if input≠own, prefers **held gesture** (keys/latched chord/ext notes) over timeline |
+
+#### Step Edit Radio (SEQMODE 1/2/4)
+- **M1 (edit)**: off = pads record steps, on = pads edit attributes on ACTIVE steps (PROB stores the ENC8 clipboard, inverted per step)
+  - **MONO**: click cycles OFF → STEPS → OFF; **F1–F4** pick TIE / GLIDE / ACCENT / PROB; ENC5/6 shape gate/velocity  - **DRUM/POLY**: quick M1 tap toggles edit (on reuses ACCENT/PROB, default ACCENT); **F3 = ACCENT, F4 = PROB** (click selected again = off); M1 **hold** on DRUM still opens the part-select; ENC8 = clipboard
+- **LED**: M1 bright white while no attribute is selected, selected F-pad white, all radio pads carry a dim dark-blue background (F-pads blink green while the playhead reads an attributed step)
+- **Accent velocity (per track, boot 101, 1–127)**: an accented step sends this instead of a hard-wired 127 — applies to MONO, POLY and the DRUM step/per-voice accent alike (the other notes keep their own velocity)
+  - **Hold F3** in SEQMODE 1/2/4: the ENC6 row switches **VEL → ACC** and ENC6 edits the edit track's accent velocity (header shows `ACCENT VEL`); release restores ENC6 to VEL
+  - Saved/restored with SEQMODE4+REC
+  - F1–F4 in SEQMODE are radio keys only — they no longer trigger chord extensions there (DRUM/POLY with the radio off used to leak into the KEY behaviour)
 
 **Bar Loop (per track, SEQMODE3):**
 - Loop arms on the **selected edit window bar** (0–3, each 16 steps)
@@ -167,7 +185,8 @@ When a track's step chords are written, all MONO/POLY sequences **listening to t
 
 ### 4. Transport
 - **PLAY** button (SEQMODE): Start (or Stop if INT transport running)
-- **SYNC=INT**: Teensy generates MIDI Clock (0xF8) + Start (0xFA) → DAW follows
+- **PLAY** button (**ENCMODE3**): toggle clock **INT/EXT** — it never starts the transport there (frees SEQMODE3 ENC4)
+- **SYNC=INT**: Teensy generates MIDI Clock (0xF8) + Start (0xFA) → DAW follows (**default**)
 - **SYNC=EXT**: Follows incoming USB-MIDI Clock/Start/Stop/Continue
 
 ### 5. DRUM Part Sequencing

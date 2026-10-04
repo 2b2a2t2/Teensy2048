@@ -122,16 +122,19 @@ uint8_t stepAttrs(uint8_t step);      // edit channel's attribute mask for the
                                       // LED pulse - DRUM follows the part select
 
 // SEQMODE4 + REC: persist all SEQ settings to EEPROM - track type, mono
-// type, octave, input channel, velocity, gate, mutes, probability
-// clipboard, edit channel (NOTE PATTERNS ARE NOT STORED).  seqCfgLoad()
-// restores them at boot (before the first draw); a blank or corrupt
-// block keeps the defaults
+// type, octave, input channel, velocity, accent velocity, gate, mutes,
+// probability clipboard, edit channel (NOTE PATTERNS ARE NOT STORED).
+// seqCfgLoad() restores them at boot (before the first draw); a blank or
+// corrupt block keeps the defaults
 void seqCfgSave();
 void seqCfgLoad();
 void seqGateAdjust(int16_t counts);   // ENC5: 4 counts = 5%, clamped 10..100
 int  seqGatePct();                    // edit track's gate (% of one step)
 void seqVelocityAdjust(int16_t counts); // ENC6: 4 counts = 1, clamped 1..127
 int  seqVelocity();                   // edit track's default velocity
+void seqAccentVelocityAdjust(int16_t counts); // ENC6 + F3 held: accent vel
+int  seqAccentVelocity();             // edit track's accented-step velocity
+void seqSetAccentVelocity(uint8_t seq, uint8_t v); // EEPROM load, clamped
 void seqGatePoll();                   // fire gate note-offs (loop context)
 uint8_t seqFMask();                   // attributes the playhead reads this step
                                       // (F-row blink mask, edit channel)
@@ -157,6 +160,9 @@ void stepAssignSet(int8_t step);     // step = 0..63 to arm, -1 to disarm
 // seqStepAdvance runs each time the playhead reaches a step - every
 // track carries its OWN position (independent pattern length / bar loop)
 bool stepIsActive(uint8_t step);     // step has a recorded chord
+bool seqStepUsed(uint8_t step);      // edit track reads it: inside its
+                                     // pattern or inside its armed bar loop
+                                     // (past it the pad is dark + inert)
 void seqStepAdvance(bool start);   // transport step; start snaps to range heads
 void seqStepStop();                  // transport stopped: release notes
 uint8_t seqStepPlayPad();            // playhead pad 0..15 of the edit window,

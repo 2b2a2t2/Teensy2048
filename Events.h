@@ -34,3 +34,8 @@ uint8_t stepEditSel();
 uint8_t stepProbValue();
 void    stepProbSet(uint8_t v);      // clamped 0..100 (EEPROM load)
 bool    stepEditActive();
+
+// HOLD F3 in SEQMODE (variants 1/2/4): ENC6 edits the track's ACCENT
+// velocity instead of its default velocity (release restores ENC6)
+void    f3AccentHold(bool on);
+bool    f3AccentActive();

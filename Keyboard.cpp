@@ -97,6 +97,7 @@ static int8_t  seqOct[SEQ_CH_COUNT] = {0};
 static int16_t octSRes = 0;              // leftover encoder counts (ENC1)
 static int16_t gateSRes = 0;             // leftover encoder counts (ENC5 gate)
 static int16_t velSRes = 0;              // leftover encoder counts (ENC6 vel)
+static int16_t accSRes = 0;              // leftover encoder counts (ENC6 acc)
 
 // per-channel per-step stored chord; len 0 = unassigned (plays pending[])
 static uint8_t stepChord[SEQ_CH_COUNT][STEP_MAX][CHORD_MAX];
@@ -129,6 +130,10 @@ static uint8_t drumProbOn[SEQ_CH_COUNT][STEP_MAX];
 static uint8_t drumProbInv[SEQ_CH_COUNT][STEP_MAX][16];
 static uint8_t seqVel[SEQ_CH_COUNT] = {90,90,90,90,90,90,90,90,
                                        90,90,90,90,90,90,90,90};
+// per-track velocity of an ACCENTED step (127 is the old hard-wire; 101 is
+// the boot default) - F3 held + ENC6 edits it
+static uint8_t seqAccVel[SEQ_CH_COUNT] = {101,101,101,101,101,101,101,101,
+                                          101,101,101,101,101,101,101,101};
 static uint8_t seqGate[SEQ_CH_COUNT] = {100,100,100,100,100,100,100,100,
                                         100,100,100,100,100,100,100,100};
 static uint32_t gateOffAt[SEQ_CH_COUNT] = {0};   // 0 = no pending note-off
@@ -553,7 +558,7 @@ bool stepIsActive(uint8_t step) {
   return stepChordLen[seqEditCh][step] > 0;
 }
 
-// toggle an attribute on the EDIT channel's step.  MONO tracks use the
+// toggle an attribute on the EDIT channel's step.  MONO/POLY use the
 // per-step flags (a PROB toggle-on stores the clipboard value, inverted);
 // DRUM tracks toggle it for the SELECTED PART only - each voice carries
 // its own accent and probability.  Returns the new state so the caller
@@ -595,8 +600,8 @@ bool stepAttrToggle(uint8_t step, uint8_t att, uint8_t probVal) {
 }
 
 // attribute mask of the EDIT channel's step (step LED pulse / display).
-// On DRUM tracks the view follows the SELECTED PART: its accent / its own
-// probability - switching the part select re-maps the yellow pulse live
+// MONO/POLY read the step flags; on DRUM tracks the view follows the
+// SELECTED PART - switching the part select re-maps the yellow pulse live
 uint8_t stepAttrs(uint8_t step) {
   if (step >= STEP_MAX) return 0;
   if (seqTrack() == SEQ_TRACK_DRUM) {
@@ -797,6 +802,13 @@ static bool headSounds(uint8_t ch, uint8_t p) {
   return p >= lo && p < hi;
 }
 
+// is this absolute step of the EDIT track ever read?  steps past the
+// pattern length are unused and their pads go dark + inert (an armed bar
+// loop still covers its own 16 steps, so those stay live)
+bool seqStepUsed(uint8_t step) {
+  return step < STEP_MAX && headSounds(seqEditCh, step);
+}
+
 // playhead tick: every track steps its OWN position (its pattern length or
 // its looped bar), so lengths may differ (polymeter).  start = transport
 // (re)start: every track snaps to its range head first.  MONO sequences
@@ -805,17 +817,19 @@ static bool headSounds(uint8_t ch, uint8_t p) {
 // (ENC1) - and honors the step-edit attributes: TIE bridges into the next
 // step, GLIDE overlaps the notes (legato), ACCENT plays 127, PROB gates by
 // its stored chance, the track's gate time cuts the note mid-step
-void seqStepAdvance(bool start) {
-  uint32_t now = millis();
-  // gate length is a % of ONE step: measure the gap between advances so
-  // tempo changes and the external clock are followed live
-  static uint32_t lastAdvMs = 0;
-  uint32_t stepDur = 0;
-  if (lastAdvMs) {
-    stepDur = now - lastAdvMs;
-    if (stepDur > 2000) stepDur = 2000;   // paused transport gap
-  }
-  lastAdvMs = now;
+// pattern-speed state: each track's accumulator turns master ticks into
+// its own sub-steps (SEQMODE3 ENC4), spdGo = sub-steps still owed inside
+// the current tick, chInRng = window state carried over skipped ticks
+static uint16_t spdAcc[SEQ_CH_COUNT];
+static uint8_t  spdGo[SEQ_CH_COUNT];
+static bool     chInRng[SEQ_CH_COUNT];
+
+// one sub-step of the transport: every track whose speed gate fired this
+// sub-tick (`go[c]`) walks its position and re-voices, the others keep
+// sounding untouched.  lo/hi are recomputed (stateless) so FOLLOW can
+// still read a feeder that did not advance
+static void seqAdvanceOnce(bool start, const bool *go,
+                           uint32_t now, uint32_t stepDur) {
   // position of every track for this tick: it walks its own pattern toward
   // an armed bar loop.  Activating a loop TELEPORTS the playhead directly
   // to the looped bar (immediate loop).  A looped bar wraps at its own
@@ -826,6 +840,7 @@ void seqStepAdvance(bool start) {
   bool inRng[SEQ_CH_COUNT];
   for (uint8_t c = 0; c < SEQ_CH_COUNT; c++) {
     seqPlayRange(c, &lo[c], &hi[c]);
+    if (!go[c]) { inRng[c] = chInRng[c]; continue; }   // skipped this tick
     uint8_t phi = seqPatLenOf(c);
     bool lp = seqLoopOn(c);
     if (start) {
@@ -856,12 +871,12 @@ void seqStepAdvance(bool start) {
       }
     }
     loopWasOn[c] = lp;                    // remember for next tick
-    inRng[c] = headSounds(c, chStep[c]);
+    chInRng[c] = inRng[c] = headSounds(c, chStep[c]);
   }
   // live record: one pass over the edit track's play range - armed waits
   // for its range head (the pattern's 1st bar, or the looped bar's head),
   // the run then covers the whole range and switches the mode off
-  if (recState) {
+  if (recState && go[recCh]) {
     if (recState == 1) {
       if (chStep[recCh] == lo[recCh] && hi[recCh] > lo[recCh]) {
         recState = 2;
@@ -879,6 +894,7 @@ void seqStepAdvance(bool start) {
   bool tied[SEQ_CH_COUNT], defer[SEQ_CH_COUNT];
   for (uint8_t c = 0; c < SEQ_CH_COUNT; c++) {
     tied[c] = defer[c] = false;
+    if (!go[c]) continue;               // parked this sub-tick: keep sounding
     if (!inRng[c]) { releaseCh(c); advPrev[c] = 0xFF; continue; }
     uint8_t pf = (advPrev[c] < STEP_MAX && seqTrackOf(c) == SEQ_TRACK_MONO)
                    ? stepAtt[c][advPrev[c]] : 0;
@@ -889,10 +905,18 @@ void seqStepAdvance(bool start) {
   // carry the current pending chords forward into the new position: the
   // chord played during steps 1-8 is the "actual chord" of step 8 even
   // though it was fed while the playhead sat on step 1
-  for (uint8_t c = 0; c < SEQ_CH_COUNT; c++) histAt(c, chStep[c]);
+  for (uint8_t c = 0; c < SEQ_CH_COUNT; c++)
+    if (go[c]) histAt(c, chStep[c]);
   for (uint8_t c = 0; c < SEQ_CH_COUNT; c++) {
+    if (!go[c]) continue;                 // did not advance this sub-tick
     if (!inRng[c]) continue;              // parked outside its window
     if (tied[c]) continue;              // merged note keeps sounding
+    // this track's own step length: its pattern speed scales the tick
+    uint32_t sd = stepDur;
+    if (sd) {
+      sd = (sd * seqSpeedDenOf(c)) / seqSpeedNumOf(c);
+      if (!sd) sd = 1;
+    }
     uint8_t stp = chStep[c];
     uint8_t len = stepChordLen[c][stp];
     // FOLLOW: the own active step gates the rhythm, the NOTES are read
@@ -933,10 +957,9 @@ void seqStepAdvance(bool start) {
     }
     bool mono = (seqTrackOf(c) == SEQ_TRACK_MONO);
     bool drumTrack = (seqTrackOf(c) == SEQ_TRACK_DRUM);
-    // MONO uses the per-step flags; DRUM rolls accent/probability per voice
-    uint8_t att = mono ? stepAtt[c][stp] : 0;
+    uint8_t att = drumTrack ? 0 : stepAtt[c][stp];   // DRUM rolls per voice
     bool plays = (len > 0) && !seqIsMuted(c);
-    // probability gate (MONO only): a miss silences the step this pass
+    // probability gate (MONO/POLY): a miss silences the step this pass
     if (plays && (att & SEQ_ATT_PROB) &&
         (uint8_t)random(100) >= (uint8_t)(100 - stepProbInv[c][stp]))
       plays = false;
@@ -959,7 +982,7 @@ void seqStepAdvance(bool start) {
         note = rootOf(ch, len);         // SEQ_MONO_ROOT
       }
       note = shNote(note, sh);
-      uint8_t vel = (att & SEQ_ATT_ACCENT) ? 127 : seqVel[c];
+      uint8_t vel = (att & SEQ_ATT_ACCENT) ? seqAccVel[c] : seqVel[c];
       if (defer[c]) {
         // GLIDE: new note-on BEFORE the old note-off (legato overlap)
         usbMIDI.sendNoteOn(note, vel, c + 1);
@@ -973,8 +996,8 @@ void seqStepAdvance(bool start) {
       seqNotes[c][0] = note;
       seqLen[c] = 1;
       // gate timer: TIE/GLIDE hold to the boundary by definition
-      if (stepDur && seqGate[c] < 100 && !(att & (SEQ_ATT_TIE | SEQ_ATT_GLIDE)))
-        gateOffAt[c] = now + (stepDur * (uint32_t)seqGate[c]) / 100;
+      if (sd && seqGate[c] < 100 && !(att & (SEQ_ATT_TIE | SEQ_ATT_GLIDE)))
+        gateOffAt[c] = now + (sd * (uint32_t)seqGate[c]) / 100;
     } else {
       if (defer[c]) releaseCh(c);       // track flipped mid-play: cut old
       for (uint8_t i = 0; i < len && i < CHORD_MAX; i++) {
@@ -982,8 +1005,8 @@ void seqStepAdvance(bool start) {
         // DRUM voices muted in the ENCMODE overlay stay silent (match the
         // stored note, like the part select - the octave shift applies after)
         if (drumTrack && drumVoiceMuted(raw)) continue;
-        uint8_t dvel = KEY_VEL;
-        // per-voice accent + probability (DRUM only; POLY ignores the masks)
+        uint8_t dvel = (att & SEQ_ATT_ACCENT) ? seqAccVel[c] : KEY_VEL;
+        // per-voice accent + probability (DRUM only; POLY reads stepAtt)
         uint8_t v = (drumTrack && raw >= 36 && raw < 52)
                       ? (uint8_t)(raw - 36) : 0xFF;
         if (v != 0xFF) {
@@ -992,7 +1015,7 @@ void seqStepAdvance(bool start) {
                 (uint8_t)(100 - drumProbInv[c][stp][v]))
               continue;                 // this voice misses its roll
           }
-          if ((drumAccent[c][stp] >> v) & 1) dvel = 127;
+          if ((drumAccent[c][stp] >> v) & 1) dvel = seqAccVel[c];
         }
         uint8_t note = shNote(raw, sh);
         seqNotes[c][seqLen[c]] = note;
@@ -1002,12 +1025,12 @@ void seqStepAdvance(bool start) {
     }
   }
   // F-row blink: attributes of the edit channel's step the playhead reads
-  // (MONO = the step flags; DRUM = any part carrying accent/probability)
+  // (MONO/POLY = the step flags; DRUM = any part carrying accent/prob)
   fBlinkMask = 0;
   if (inRng[seqEditCh]) {
     uint8_t fTrk = seqTrackOf(seqEditCh);
     uint8_t fstp = chStep[seqEditCh];
-    if (fTrk == SEQ_TRACK_MONO) {
+    if (fTrk == SEQ_TRACK_MONO || fTrk == SEQ_TRACK_POLY) {
       fBlinkMask = stepChordLen[seqEditCh][fstp] > 0
                      ? stepAtt[seqEditCh][fstp] : 0;
     } else if (fTrk == SEQ_TRACK_DRUM) {
@@ -1022,7 +1045,9 @@ void seqStepAdvance(bool start) {
   // live keyboard arp (MONO+ARP on the keyboard channel): one note of the
   // held gesture per step, transport-gated - recorded steps above play
   // independently, the previous arp note is released first
-  if (monoEngaged() && monoType() == SEQ_MONO_ARP) {
+  uint8_t kc = (uint8_t)(keyCh - 1);
+  if (kc < SEQ_CH_COUNT && go[kc] && monoEngaged() &&
+      monoType() == SEQ_MONO_ARP) {
     const uint8_t *src;
     uint8_t n = monoSrc(&src);
     monoVoiceOff();
@@ -1032,6 +1057,54 @@ void seqStepAdvance(bool start) {
       monoNote = note;
       monoOn = true;
     }
+  }
+}
+
+// transport tick: the clock hands us ONE master step (a 16th note at the
+// current tempo).  Every track converts that into its own sub-steps from
+// its pattern speed (SEQMODE3 ENC4): a slow track skips ticks until its
+// accumulator fills, a fast one runs 2 or 4 sub-steps inside the same
+// tick - so tracks may pull apart rhythmically (polyrhythm on top of the
+// existing polymeter).  start = transport (re)start: reset every
+// accumulator and snap all tracks to their range head in one sub-step
+void seqStepAdvance(bool start) {
+  uint32_t now = millis();
+  // gate length is a % of ONE step: measure the gap between advances so
+  // tempo changes and the external clock are followed live
+  static uint32_t lastAdvMs = 0;
+  uint32_t stepDur = 0;
+  if (lastAdvMs) {
+    stepDur = now - lastAdvMs;
+    if (stepDur > 2000) stepDur = 2000;   // paused transport gap
+  }
+  lastAdvMs = now;
+
+  bool go[SEQ_CH_COUNT];
+  if (start) {
+    for (uint8_t c = 0; c < SEQ_CH_COUNT; c++) {
+      spdAcc[c] = 0;
+      spdGo[c] = 0;
+      go[c] = true;                       // every track snaps to its head
+    }
+    seqAdvanceOnce(true, go, now, stepDur);
+    return;
+  }
+  uint8_t reps = 1;
+  for (uint8_t c = 0; c < SEQ_CH_COUNT; c++) {
+    uint8_t num = seqSpeedNumOf(c), den = seqSpeedDenOf(c);
+    spdAcc[c] = (uint16_t)(spdAcc[c] + num);
+    uint8_t n = 0;
+    while (spdAcc[c] >= den) { spdAcc[c] = (uint16_t)(spdAcc[c] - den); n++; }
+    spdGo[c] = n;
+    if (n > reps) reps = n;
+  }
+  for (uint8_t r = 0; r < reps; r++) {
+    bool any = false;
+    for (uint8_t c = 0; c < SEQ_CH_COUNT; c++) {
+      go[c] = (spdGo[c] > 0);
+      if (go[c]) { spdGo[c]--; any = true; }
+    }
+    if (any) seqAdvanceOnce(false, go, now, stepDur);
   }
 }
 
@@ -1154,7 +1227,7 @@ void seqGateAdjust(int16_t counts) {
 int seqGatePct() { return seqGate[seqEditCh]; }
 
 // ENC6 in SEQMODE (MONO + step-edit): default note velocity of the edit
-// sequence, 4 counts = 1, clamped 1..127 (accent steps stay 127)
+// sequence, 4 counts = 1, clamped 1..127 (accented steps use seqAccVel)
 void seqVelocityAdjust(int16_t counts) {
   velSRes += counts;
   int16_t st = 0;
@@ -1168,6 +1241,29 @@ void seqVelocityAdjust(int16_t counts) {
 }
 
 int seqVelocity() { return seqVel[seqEditCh]; }
+
+// F3 held in SEQMODE: ENC6 edits the edit sequence's ACCENT velocity
+// instead of its default one, 4 counts = 1, clamped 1..127 (boot 101)
+void seqAccentVelocityAdjust(int16_t counts) {
+  accSRes += counts;
+  int16_t st = 0;
+  while (accSRes >= 4) { accSRes -= 4; st++; }
+  while (accSRes <= -4) { accSRes += 4; st--; }
+  if (!st) return;
+  int v = (int)seqAccVel[seqEditCh] + st;
+  if (v < 1) v = 1;
+  if (v > 127) v = 127;
+  seqAccVel[seqEditCh] = (uint8_t)v;
+}
+
+int seqAccentVelocity() { return seqAccVel[seqEditCh]; }
+
+void seqSetAccentVelocity(uint8_t seq, uint8_t v) {
+  if (seq >= SEQ_CH_COUNT) return;
+  if (v < 1) v = 1;
+  if (v > 127) v = 127;
+  seqAccVel[seq] = v;
+}
 
 // ENC5 in SEQMODE3: input channel of the edit sequence, 4 counts = 1 step,
 // clamped 1..16, no wrap
@@ -1300,10 +1396,11 @@ void seqEraseAll() {
 // Settings only - the note patterns themselves stay RAM.  Layout at address
 // 160 (after the 131-byte CC block): magic | editCh | prob | oct[16] |
 // inCh[16] | vel[16] | gate[16] | mute[16] | track[16] | mono[16] |
-// checksum = 116 bytes; blank or corrupt keeps the defaults
+// speed[16] | acc[16] | checksum = 148 bytes; blank or corrupt keeps the
+// defaults
 static const uint8_t  SEQ_EE_MAGIC = 0x53;
 static const uint16_t SEQ_EE_ADDR = 160;
-static const uint16_t SEQ_EE_LEN = 116;
+static const uint16_t SEQ_EE_LEN = 148;
 
 void seqCfgSave() {
   uint8_t b[SEQ_EE_LEN];
@@ -1318,6 +1415,8 @@ void seqCfgSave() {
     b[67 + i] = seqMute[i] ? 1 : 0;
     b[83 + i] = seqTrackOf(i);
     b[99 + i] = seqMonoTypeOf(i);
+    b[115 + i] = seqSpeedIdxOf((uint8_t)i);   // pattern speed 0..6
+    b[131 + i] = seqAccVel[i];                // accent velocity 1..127
   }
   uint8_t sum = 0;
   for (uint16_t i = 0; i < SEQ_EE_LEN - 1; i++) sum += b[i];
@@ -1351,6 +1450,8 @@ void seqCfgLoad() {
     seqMute[i] = (b[67 + i] != 0);
     seqSetTrackType(i, b[83 + i]);
     seqSetMonoType(i, b[99 + i]);
+    seqSpeedSetOf(i, b[115 + i]);         // clamped inside (bad -> 4)
+    seqSetAccentVelocity(i, b[131 + i]);  // clamped inside (0 -> 1)
     seqOctClamp(i);                      // content bounds (empty = convention)
   }
   stepProbSet(b[2]);                     // clamped inside
