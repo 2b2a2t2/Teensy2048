@@ -235,30 +235,31 @@ static CRGB modeLedHook(uint8_t pad, bool isTouched, CRGB defaultColor) {
     c.nscale8(KEY_DIM);
     return c;
   }
-  // SEQMODE + MONO step-edit radio: M1 and F1-F4 leave their normal control
-  // colors - selected target bright white, blink-bright white, unselected
-  // dark blue; F1-F4 flash dim green while the playhead reads an attributed
-  // step of the edit channel (touch wins over everything).  DRUM tracks
-  // only style F3/F4 (accent/probability) while their radio is engaged
+  // SEQMODE step-edit radio: M1 + F1-F4 (MONO) or M1 + F3/F4 (DRUM) keep
+  // their mode visible at all times - bright white = the target the pads
+  // currently edit (M1 while no attribute is selected), dim dark blue
+  // background otherwise.  Touch wins over everything
   bool seqMonoRadio = (modeBase == MODE_SEQ && modeVariant != 3 &&
                        seqTrack() == SEQ_TRACK_MONO);
-  bool seqDrumRadio = stepEditActive() && seqTrack() == SEQ_TRACK_DRUM;
+  bool seqDrumRadio = (modeBase == MODE_SEQ && modeVariant != 3 &&
+                       seqTrack() == SEQ_TRACK_DRUM);
   if ((seqMonoRadio &&
        (led == groupControls[2] ||
         (led >= groupControls[5] && led <= groupControls[8]))) ||
-      (seqDrumRadio && led >= groupControls[5] + 2 &&
-       led <= groupControls[5] + 3)) {
+      (seqDrumRadio && (led == groupControls[2] ||
+                        led == groupControls[5] + 2 ||
+                        led == groupControls[5] + 3))) {
     if (isTouched) return CRGB::White;
-    if (led >= groupControls[5] && fBlinkOn &&
+    if ((seqMonoRadio || stepEditActive()) &&
+        led >= groupControls[5] && fBlinkOn &&
         (seqFMask() & (uint8_t)(1 << (led - groupControls[5])))) {
       CRGB g = CRGB::Green;
       g.nscale8(64);
       return g;
     }
-    if (stepEditIsOn() &&
-        ((stepEditSel() == 0 && led == groupControls[2]) ||
-         (stepEditSel() != 0 &&
-          stepEditSel() == (uint8_t)(led - groupControls[5] + 1)))) {
+    if ((stepEditSel() == 0 && led == groupControls[2]) ||
+        (stepEditSel() != 0 &&
+         stepEditSel() == (uint8_t)(led - groupControls[5] + 1))) {
       CRGB s = CRGB::White;
       s.nscale8(80);
       return s;
@@ -266,6 +267,24 @@ static CRGB modeLedHook(uint8_t pad, bool isTouched, CRGB defaultColor) {
     CRGB d = CRGB::DarkBlue;
     d.nscale8(32);
     return d;
+  }
+  // ENCMODE function pads: always show their identity colors even when
+  // idle - M1 dim orange, M2 dim orange-red (touch still wins)
+  if (modeBase == MODE_ENC &&
+      (led == groupControls[2] || led == groupControls[3])) {
+    if (isTouched) return CRGB::White;
+    CRGB c = (led == groupControls[2]) ? CRGB::Orange : CRGB::OrangeRed;
+    c.nscale8(48);
+    return c;
+  }
+  // PLAY transport pad: dim dark green = stopped, bright green = running
+  // (touch always wins)
+  if (led == groupTransport[0]) {
+    if (isTouched) return CRGB::White;
+    if (seqIsRunning()) return CRGB::Green;
+    CRGB g = CRGB::Green;
+    g.nscale8(48);
+    return g;
   }
   // REC transport pad: dim dark red = idle, bright red = live record armed
   // / running (a touch always wins)
@@ -337,6 +356,15 @@ void pollModeLeds() {
     refreshAllLeds();
   }
   if (seqRecTakeDone()) headerShow("rec done");
+
+  // transport edge: repaint the PLAY LED on every start/stop (button,
+  // external clock, INT transport alike)
+  static bool playLast = false;
+  bool playNow = seqIsRunning();
+  if (playNow != playLast) {
+    playLast = playNow;
+    refreshAllLeds();
+  }
 
   // attribute-step pulse driver: while an attribute target is engaged,
   // repaint at ~30 fps so the marked steps breathe (edge restores static

@@ -11,6 +11,7 @@
 #define MPR121_IRQ4 3
 #define TOUCH_THRESH 50
 #define TOUCH_REL    30
+#define IRQ_HEARTBEAT_MS 50   // safety re-read when no edge arrives
 
 extern Adafruit_MPR121 chips[NUM_CHIPS];
 extern uint16_t lastTouched[NUM_CHIPS];
@@ -18,3 +19,5 @@ extern uint16_t currTouched[NUM_CHIPS];
 
 bool initTouchChips();            // begin + autoconfig + IRQs; false if a chip missing
 void pollTouchChips();            // read chips whose IRQ fired, feed handleTouches()
+void touchRecalibrate();          // force re-autoconfig on all chips
+void touchPrintDiag();            // print baseline & filtered data for all electrodes

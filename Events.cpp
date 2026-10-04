@@ -776,6 +776,7 @@ void handleEncoderEvents() {
         any = true;
       } else if (ei == 5 && ed != 0) {
         seqTrackAdjust(ed);                // TRACK: DRUM/MONO/POLY (no wrap)
+        refreshAllLeds();                  // the step-edit radio follows the track type
         if (logRoom(48)) {
           Serial.print("  track ");
           Serial.println(seqTrackName());

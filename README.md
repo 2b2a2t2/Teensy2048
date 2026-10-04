@@ -137,7 +137,7 @@ Each mode/variant combination selects an `EncSet`, `CtrlSet`, `StepSet`, `KeySet
 
 #### Sequence Configuration (SEQMODE3)
 - **ENC1**: Playback octave shift (±5 octaves from stored notes, clamped to –2..+8 convention)
-- **ENC4**: SYNC **INT** (Teensy master, streams Clock+Start) / **EXT** (follow USB-MIDI clock)
+- **ENC4**: SYNC **INT** (Teensy master, streams Clock+Start, **default**) / **EXT** (follow USB-MIDI clock)
 - **ENC5**: Input channel (1–16) — notes arriving here feed pending chord; changing backfills from that track
 - **ENC6**: Track type — **DRUM** / **MONO** / **POLY**
   - Ch1 defaults DRUM, ch2–16 default POLY

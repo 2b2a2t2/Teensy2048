@@ -60,4 +60,22 @@ void loop() {
   displayUpdate();
   uint32_t t4 = micros();
   seqDiagNote(3, t4 - t3);
+
+  // Serial command: type "recal" + Enter to force MPR121 recalibration
+  //                type "diag"  + Enter to print electrode baselines
+  static String serialBuf = "";
+  while (Serial.available()) {
+    char c = Serial.read();
+    if (c == '\n' || c == '\r') {
+      serialBuf.trim();
+      if (serialBuf == "recal") {
+        touchRecalibrate();
+      } else if (serialBuf == "diag") {
+        touchPrintDiag();
+      }
+      serialBuf = "";
+    } else {
+      serialBuf += c;
+    }
+  }
 }

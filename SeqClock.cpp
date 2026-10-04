@@ -16,8 +16,8 @@ static volatile uint8_t pendingStep = 255;   // 255 = nothing pending
 static volatile bool pendingStop = false;
 static volatile bool pendingStart = false;   // transport (re)start: reset heads
 
-// SEQMODE3 sync state: EXT (default, follow incoming clock) or INT (master)
-static bool syncInternal = false;
+// SEQMODE3 sync state: INT (default, master) or EXT (follow incoming clock)
+static bool syncInternal = true;
 static uint16_t tempoBpm = 120;
 
 // fired from uClock's timer ISR on every output PPQN_24 tick (master mode only)
@@ -61,9 +61,11 @@ static void midiClock() {
   lastUs = now;
   uClock.clockMe();
 }
-static void midiStart() { uClock.start(); }
-static void midiStop()  { uClock.stop(); }
-static void midiContinue() { uClock.start(); }
+// incoming clock transport is honored only as slave (EXT); in INT master
+// mode the Teensy's own start/stop stays authoritative
+static void midiStart() { if (!syncInternal) uClock.start(); }
+static void midiStop()  { if (!syncInternal) uClock.stop(); }
+static void midiContinue() { if (!syncInternal) uClock.start(); }
 
 // incoming notes feed the record workflow (loop context via seqPumpMidi)
 static void midiNoteOn(uint8_t ch, uint8_t note, uint8_t vel) {
@@ -128,7 +130,9 @@ void initSeqClock() {
   uClock.setOnClockStop(onClockStopCb);
   uClock.setOnSync(uClock.PPQN_24, onSync24Callback);
   uClock.init();
-  uClock.setClockMode(uClock.EXTERNAL_CLOCK);
+  // boot default = INT master; ENC4 SYNC (SEQMODE3) can switch to EXT slave
+  uClock.setClockMode(syncInternal ? uClock.INTERNAL_CLOCK : uClock.EXTERNAL_CLOCK);
+  uClock.setTempo((float)tempoBpm);
 
   usbMIDI.setHandleClock(midiClock);
   usbMIDI.setHandleStart(midiStart);
