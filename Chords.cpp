@@ -517,6 +517,8 @@ void chordFScaleAdjust(int16_t counts) {
 
 bool chordFScale() { return sFScale; }
 
+uint8_t chordForceNote(uint8_t note) { return forceScaleNote(note); }
+
 uint8_t chordParam(uint8_t idx) { return (idx < 4) ? (uint8_t)sParam[idx] : 0; }
 bool chordLatch()  { return sLatch; }
 bool chordKeyLock() { return sLock; }

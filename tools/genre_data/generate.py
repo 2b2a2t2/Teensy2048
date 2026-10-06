@@ -79,7 +79,15 @@ def build_genres(results):
         qmb = LIT.QUAL_MULT.get(g, [1.0] * 4)
         imb = LIT.INV_MULT.get(g, [1.0] * 4)
 
-        if g in LIT.EMPIRICAL:
+        if g in LIT.HAND:
+            h = LIT.HAND[g]
+            trans = [row[:] for row in h["trans"]]
+            qual = [row[:] for row in h["qual"]]
+            inv = [row[:] for row in h["inv"]]
+            prior_t, prior_q, prior_i = trans, qual, inv
+            flags[0] |= F_ESTIMATED
+            stats = {"pieces": 0, "events": 0, "chrom": 0.0, "sources": []}
+        elif g in LIT.EMPIRICAL:
             srcs = LIT.EMPIRICAL[g]
             trans = pooled_grid(results, "trans", srcs, 7, 7)
             qual = pooled_grid(results, "qual", srcs, 7, 4)
@@ -192,7 +200,7 @@ def emit_markdown(genres, results, out_path):
     a("")
     a("## What is in `genre_data.h`")
     a("")
-    a("`GenreData genreTable[17]` in PROGMEM-style const storage, per genre:")
+    a(f"`GenreData genreTable[{len(LIT.GENRE_ORDER)}]` in PROGMEM-style const storage, per genre:")
     a("")
     a("| Field | Size | Meaning |")
     a("|---|---|---|")
@@ -204,7 +212,8 @@ def emit_markdown(genres, results, out_path):
     a("| `flags` | 1 B | `0x01` estimated, `0x02/0x04/0x08` row fallback used |")
     a("")
     total = 49 * 3 + 8 + 2
-    a(f"Struct size: {total} B x 17 genres = {total * 17} B.")
+    n_gen = len(LIT.GENRE_ORDER)
+    a(f"Struct size: {total} B x {n_gen} genres = {total * n_gen} B.")
     a("")
     a("Rhythm templates (16th-grid attack masks, one bar = 16 sixteenths):")
     a("")
@@ -238,6 +247,9 @@ def emit_markdown(genres, results, out_path):
     a("a pooled POP+ROCK+FOLK prior by style multipliers from genre literature.")
     a("Estimated genres (GOSPEL, LATIN, CINEMATIC, MODAL) use the same")
     a("machinery and are flagged `GENRE_F_ESTIMATED`.")
+    a("Hand-authored genres (DUBTECHNO) ship full rows written straight from")
+    a("genre theory in `literature.py` (`HAND`) - no corpus, no prior - and")
+    a("are flagged `GENRE_F_ESTIMATED` too.")
     a("")
     a("Rhythm weights and `microVar` are hand-authored judgements for all")
     a("genres (no rhythm corpus); see `tools/genre_data/literature.py`.")
@@ -283,6 +295,7 @@ def emit_markdown(genres, results, out_path):
         d = genres[g]
         st = d["stats"]
         tier = ("empirical" if g in LIT.EMPIRICAL else
+                "hand" if g in LIT.HAND else
                 "hybrid" if g in LIT.HYBRID else "estimated")
         ev = str(st["events"]) if st["events"] else "—"
         ch = f"{st['chrom']:.1%}" if st["events"] else "—"

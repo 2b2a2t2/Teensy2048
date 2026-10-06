@@ -10,7 +10,7 @@ python3 fetch.py && python3 process.py && python3 generate.py && python3 verify.
 
 ## What is in `genre_data.h`
 
-`GenreData genreTable[17]` in PROGMEM-style const storage, per genre:
+`GenreData genreTable[18]` in PROGMEM-style const storage, per genre:
 
 | Field | Size | Meaning |
 |---|---|---|
@@ -21,7 +21,7 @@ python3 fetch.py && python3 process.py && python3 generate.py && python3 verify.
 | `microVar` | 1 B | humanization amount 0-255 |
 | `flags` | 1 B | `0x01` estimated, `0x02/0x04/0x08` row fallback used |
 
-Struct size: 157 B x 17 genres = 2669 B.
+Struct size: 157 B x 18 genres = 2826 B.
 
 Rhythm templates (16th-grid attack masks, one bar = 16 sixteenths):
 
@@ -60,6 +60,9 @@ Empirical genres use their corpus counts as-is. Hybrid genres
 a pooled POP+ROCK+FOLK prior by style multipliers from genre literature.
 Estimated genres (GOSPEL, LATIN, CINEMATIC, MODAL) use the same
 machinery and are flagged `GENRE_F_ESTIMATED`.
+Hand-authored genres (DUBTECHNO) ship full rows written straight from
+genre theory in `literature.py` (`HAND`) - no corpus, no prior - and
+are flagged `GENRE_F_ESTIMATED` too.
 
 Rhythm weights and `microVar` are hand-authored judgements for all
 genres (no rhythm corpus); see `tools/genre_data/literature.py`.
@@ -94,6 +97,7 @@ Excluded sources: chordonomicon (CC-BY-NC-4.0) — NonCommercial license; exclud
 | HIPHOP | hybrid | — | — | 0x01 | [12, 18, 18, 6, 10, 14, 14, 8] | 155 |
 | ELECTRONIC | hybrid | — | — | 0x01 | [5, 15, 30, 15, 8, 15, 7, 5] | 15 |
 | REGGAE | hybrid | — | — | 0x01 | [4, 10, 14, 6, 12, 38, 10, 6] | 100 |
+| DUBTECHNO | hand | — | — | 0x01 | [30, 20, 10, 5, 5, 20, 5, 5] | 30 |
 | GOSPEL | estimated | — | — | 0x01 | [8, 15, 25, 10, 12, 15, 8, 7] | 105 |
 | LATIN | estimated | — | — | 0x01 | [4, 12, 22, 12, 8, 20, 10, 12] | 130 |
 | CINEMATIC | estimated | — | — | 0x01 | [55, 25, 10, 3, 1, 3, 2, 1] | 85 |

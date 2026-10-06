@@ -72,7 +72,7 @@ The hardware has 48 touch pads but only 42 LEDs. The mapping (`padToLedList` in 
 | `SeqClock.h/cpp` | uClock integration, playhead, sync (INT/EXT), tempo, track types |
 | `Keyboard.h/cpp` | Keyboard pads → MIDI notes, octave, channel, pending chords |
 | `Chords.h/cpp` | KEYMODE2 chord engine: quality, extensions, FScale, latch, KeyLock |
-| `Key4.h/cpp` + `genre_data.h` | KEYMODE4 genre engine: 17-genre transition tables, ranked chord proposals, write-to-focus (data generated into `genre_data.h`, method in `GENRE_DATA.md`) |
+| `Key4.h/cpp` + `genre_data.h` | KEYMODE4 genre engine: 18-genre transition tables, ranked chord proposals, write-to-focus (data generated into `genre_data.h`, method in `GENRE_DATA.md`) |
 
 ## Mode System
 
@@ -87,7 +87,7 @@ Three mode families, each with 4 variants (1–4). Variant 3 is **momentary hold
 **KEYMODE2** = chord mode (diatonic auto-chords, quality/extension buttons, latch, KeyLock).  
 Chord behavior is **inherited** by SEQMODE/ENCMODE via `keyBehaviorVariant()`.
 
-**KEYMODE4** = genre mode (double-click KEY): a 17-genre progression engine ranks the best next chords on the keyboard, pressing one auditions it and writes it to the focused step (see Workflows).
+**KEYMODE4** = genre mode (double-click KEY): an 18-genre progression engine ranks the best next chords on the keyboard, pressing one auditions it and writes it to the focused step (see Workflows).
 
 ### Binding Matrix (Bindings.cpp)
 
@@ -114,13 +114,13 @@ Each mode/variant combination selects an `EncSet`, `CtrlSet`, `StepSet`, `KeySet
   - F1–F4 = extensions (6, m7, M7, 9) — toggle
   - **LEDs**: quality pads idle in the KEY button's dim green, extensions the same green with less red and blue (a touch darker); touch lights them white
   - ENC3 = Root, **ENC4 = FScale (Force to scale)**, ENC5–7 = Bass/Spread/Density, ENC8 = Latch
-    - **FScale ON**: every chord tone is snapped to the nearest pitch of the current scale before it is sent (ties flatten first), so no out-of-scale note ever reaches MIDI — duplicates collapse to one voice; Chromatic passes everything through; OFF = free voicings
+    - **FScale ON**: every chord tone is snapped to the nearest pitch of the current scale before it is sent (ties flatten first), so no out-of-scale note ever reaches MIDI — duplicates collapse to one voice; Chromatic passes everything through; OFF = free voicings. The snap also applies **at playback**: with FScale ON the sequencer forces each stored chord step into the current scale as it is sent (stored notes stay raw), so **changing the scale recolors recorded progressions live**; OFF plays the recording exactly as stored
   - **PREV (hold)** = momentary encoder overlay (Root/Scale/Latch/KeyLock/Perf)
 
 - **KEYMODE4** (double-click KEY): genre-driven chord proposals
   - The engine scores all 12 pitch classes for the slot **before the focus** (transition matrix × MOOD × MOTION × CADENCE × SURP) and lays the whole scored degree set out on the keyboard: **hue-mapped by key as originally designed** (C = blue … B = red), **rank 0 = the next chord from the highest probability = hottest**, brightness stepping down the list so the colors tell how probable each degree is after the last chord; borrowed degrees open with **TENS ≥ 34** and light **orange** (closed ones stay dark); every knob is 0–100 (boot 50), 1 count = 1 unit. Every knob/genre turn re-ranks the propositions **dynamically** and repaints the keyboard live
   - The **header displays the progression**: `f3 V vi > I IV` = focus · the walk so far · `>` · the top-4 proposals. The **first chord of the walk is the chord played in KEYMODE2** when you enter (its kept notes seed the chain), or the stored step before the focus after a focus move
-  - **ENC row**: ENC1 = **GENRE** (17, wraps), ENC2–8 = MOOD/TENS/MOTION/CAD/CPX/ERA/SURP; **PREV (hold)** = overlay with ENC1 Octave / ENC2 Scale / ENC3 Key, and **PREV (click)** = focus −1
+  - **ENC row**: ENC1 = **GENRE** (18, clamps — the knob does not wrap), ENC2–8 = MOOD/TENS/MOTION/CAD/CPX/ERA/SURP; **PREV (hold)** = overlay with ENC1 Octave / ENC2 Scale / ENC3 Key / **ENC4 FScale** (force-to-scale ON/OFF — ON makes playback of recorded steps follow the scale, same switch as KEYMODE2), and **PREV (click)** = focus −1
   - **Press a proposed key** = audition the chord (unscored keys are silent) and **chain the progression**: the next proposals follow the chord you just heard, so repeated presses walk a sequence by ear — even in AUDITION with nothing written. The chain re-anchors on the stored steps whenever the focus moves; on release the header shows where the chain goes next. With **WRITE** on (boots in **AUDITION**) it also lands on the **focused step** and the focus auto-advances (**M2** = AUTO, boots off)
   - **Controls**: NEXT = focus +1 · **M1** = WRITE ⇄ AUDITION (**dim red** = AUDITION, **bright red** = WRITE) · **M2** = AUTO-ADVANCE · **M3 tap** = apply the generator to every unlocked step, **M3 hold** = undo (one-level, restores channel + attributes) · **F1** = VARIATION (reseed + generate) · **F2** = lock the focused step (apply skips it) · **F3** = VOICE-LEAD (inversions follow the bass line) · **F4 held** = audition only (no write, no advance). After M3/F1/undo the header shows the **written progression** as numerals (`I V vi IV +8` = first four chords + how many follow)
   - **Step pads**: press = move the focus (**white** in AUDITION, **red** in WRITE; locked = amber), then the usual trigger/assign behavior

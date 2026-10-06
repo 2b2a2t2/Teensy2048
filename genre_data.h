@@ -4,7 +4,7 @@
 #define GENRE_DATA_H
 #include <stdint.h>
 
-#define GENRE_COUNT 17
+#define GENRE_COUNT 18
 #define RHYTHM_COUNT 8
 #define GENRE_F_ESTIMATED 0x01
 #define GENRE_F_TRANS_FB  0x02
@@ -27,7 +27,7 @@ static const char *const rhythmNames[RHYTHM_COUNT] = {
   "WHOLE", "HALF", "QUART", "EIGHTH", "BACKBEAT", "OFFBEAT", "PUSH", "SYNCOP"
 };
 static const char *const genreNames[GENRE_COUNT] = {
-  "POP", "ROCK", "JAZZ", "CLASSICAL", "FOLK", "COUNTRY", "BLUES", "RNB", "FUNK", "METAL", "HIPHOP", "ELECTRONIC", "REGGAE", "GOSPEL", "LATIN", "CINEMATIC", "MODAL"
+  "POP", "ROCK", "JAZZ", "CLASSICAL", "FOLK", "COUNTRY", "BLUES", "RNB", "FUNK", "METAL", "HIPHOP", "ELECTRONIC", "REGGAE", "DUBTECHNO", "GOSPEL", "LATIN", "CINEMATIC", "MODAL"
 };
 
 static const GenreData genreTable[GENRE_COUNT] = {
@@ -121,6 +121,13 @@ static const GenreData genreTable[GENRE_COUNT] = {
     {{94,2,3,1},{92,5,1,2},{95,2,2,1},{93,2,5,0},{96,2,2,0},{96,2,1,1},{94,3,2,1}},
     {4,10,14,6,12,38,10,6},
     100, 0x01
+  },
+  { // DUBTECHNO
+    {{60,1,8,12,10,1,8},{45,15,8,12,10,5,5},{50,2,15,8,7,8,10},{55,2,5,20,8,5,5},{55,2,5,8,20,5,5},{45,2,15,8,7,15,8},{52,2,8,8,7,5,18}},
+    {{5,40,45,10},{8,47,40,5},{8,47,40,5},{8,47,40,5},{8,47,40,5},{8,47,40,5},{8,47,40,5}},
+    {{96,2,1,1},{96,2,1,1},{96,2,1,1},{96,2,1,1},{96,2,1,1},{96,2,1,1},{96,2,1,1}},
+    {30,20,10,5,5,20,5,5},
+    30, 0x01
   },
   { // GOSPEL
     {{40,9,3,21,17,8,2},{12,16,3,4,60,4,1},{16,11,20,13,6,27,7},{49,5,4,13,20,5,4},{51,5,3,13,21,6,1},{14,36,7,12,12,13,6},{42,2,23,7,5,8,13}},

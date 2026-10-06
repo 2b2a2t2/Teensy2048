@@ -46,6 +46,7 @@ void    chordKeyLockAdjust(int16_t counts);  // CW = KeyLock on, CCW = off
 void    chordPerfAdjust(int16_t counts);     // CW = Perf on, CCW = off (state only)
 void    chordFScaleAdjust(int16_t counts);   // CW = FScale on, CCW = off
 bool    chordFScale();        // ON: every chord tone is snapped to the scale
+uint8_t chordForceNote(uint8_t note);  // the FScale snap (identity when off)
 bool    chordLatch();
 bool    chordKeyLock();
 bool    chordPerf();

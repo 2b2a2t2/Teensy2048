@@ -1195,6 +1195,22 @@ static void seqAdvanceOnce(bool start, const bool *go,
     }
     uint8_t *ch = follow ? stepChord[seqInCh[c] - 1][fstp]
                          : stepChord[c][stp];
+    // FScale: force-to-scale also governs PLAYBACK - with it ON the stored
+    // notes are snapped to the current scale as they leave (duplicates
+    // collapse, like buildNotes), so turning the scale recolors recorded
+    // progressions live.  Stored notes stay raw; OFF/Chromatic = unchanged.
+    // DRUM steps keep their raw note numbers (they are drum-map ids)
+    uint8_t mapped[CHORD_MAX];
+    if (chordFScale() && !drumTrack) {
+      uint8_t m = 0;
+      for (uint8_t i = 0; i < len && i < CHORD_MAX; i++) {
+        uint8_t v = chordForceNote(ch[i]);
+        bool dup = false;
+        for (uint8_t j = 0; j < m; j++) if (mapped[j] == v) dup = true;
+        if (!dup) mapped[m++] = v;
+      }
+      if (m) { len = m; ch = mapped; }
+    }
     int8_t sh = seqOct[c];
     if (mono) {
       uint8_t note;

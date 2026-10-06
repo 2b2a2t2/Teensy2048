@@ -42,7 +42,7 @@ static const char* encLabels[ENC_SET_COUNT][8] = {
   /* ENC_KEY4         */ { "GENRE", "MOOD", "TENS", "MOTION", "CAD", "CPX", "ERA", "SURP" },
   /* ENC_SEQ_STEP_HELD*/ { "HD1", "HD2", "HD3", "HD4", "HD5", "HD6", "HD7", "HD8" },
   /* ENC_KEY2_PREV    */ { "OCT", "SCALE", "KEY", "LATCH", "KLOCK", "PERF", "--", "--" },
-  /* ENC_KEY4_PREV    */ { "OCT", "SCALE", "KEY", "--", "--", "--", "--", "--" },
+  /* ENC_KEY4_PREV    */ { "OCT", "SCALE", "KEY", "FSCALE", "--", "--", "--", "--" },
 };
 
 static const char* encSetNames[ENC_SET_COUNT] = {

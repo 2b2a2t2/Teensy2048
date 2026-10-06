@@ -159,7 +159,8 @@ void refreshMainScreen() {
     } else if (key4 && c == 3) {
       snprintf(val, sizeof(val), "%u", k4Knob(2));      // ENC4 = MOTION
     } else if (key4Ov && c == 3) {
-      snprintf(val, sizeof(val), "---");                // overlay ENC4 idle
+      snprintf(val, sizeof(val), "%s",
+               chordFScale() ? "ON" : "OFF");       // overlay ENC4 = FScale
     } else if (modeBase == MODE_KEY && c == 0) {
       snprintf(val, sizeof(val), "%d", keyOctave());         // ENC1 = octave
     } else if (modeBase == MODE_KEY && c == 1) {
@@ -272,7 +273,10 @@ void drawHeaderText() {
     static const char* ed[4] = { "TIE", "GLIDE", "ACCENT", "PROB" };
     left = ed[stepEditSel() - 1];
   }
-  if (left[0]) {
+  // a transient message owns the whole strip: long strings (the KEY4
+  // progression) right-align over the left slot, so drop the label
+  // instead of drawing it underneath
+  if (left[0] && !(headerActive && headerText[0])) {
     u8g2.drawStr(2, 13, left);
   }
   if (headerActive && headerText[0]) {

@@ -27,7 +27,7 @@
 // only, by design).
 
 // --- context encoders (main row) ------------------------------------------
-void        k4GenreAdjust(int16_t counts);   // wraps 0..GENRE_COUNT-1
+void        k4GenreAdjust(int16_t counts);   // clamps at 0..GENRE_COUNT-1
 uint8_t     k4Genre();
 const char* k4GenreName();                   // full name (header / log)
 const char* k4GenreShort();                  // <= 7 chars (OLED value column)

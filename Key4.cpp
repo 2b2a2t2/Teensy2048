@@ -411,8 +411,8 @@ void k4Refresh() {
 // ---------------------------------------------------------------------------
 void k4GenreAdjust(int16_t counts) {
   int g = (int)sGenre + (int)counts;
-  g %= GENRE_COUNT;
-  if (g < 0) g += GENRE_COUNT;
+  if (g < 0) g = 0;                       // clamp: the genre knob does
+  if (g >= GENRE_COUNT) g = GENRE_COUNT - 1;   // not wrap around
   if ((uint8_t)g != sGenre) {
     sGenre = (uint8_t)g;
     k4Refresh();

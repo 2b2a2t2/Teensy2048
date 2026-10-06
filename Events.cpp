@@ -836,6 +836,20 @@ void handleEncoderEvents() {
       any = true;
     }
 
+    // KEYMODE4: the PREV overlay row = ENC1 Octave / ENC2 Scale / ENC3 Key
+    // / ENC4 = Force-to-scale (same global ON/OFF as KEYMODE2's ENC4: with
+    // it on, sequencer playback snaps stored notes to the current scale,
+    // so turning the scale recolors recorded progressions live)
+    if (modeBase == MODE_KEY && modeVariant == 4 && ei == 3 && ed != 0 &&
+        currentBinding().enc == ENC_KEY4_PREV) {
+      chordFScaleAdjust(ed);
+      if (logRoom(48)) {
+        Serial.print("  fscale ");
+        Serial.println(chordFScale() ? "ON" : "OFF");
+      }
+      any = true;
+    }
+
     // KEYMODE2: ENC4 = Force-to-scale (FScale), ENC5..ENC7 = bass/spread/
     // density, ENC8 = latch.  With PREV held the row remaps: ENC4 = latch,
     // ENC5 = KeyLock, ENC6 = Perf (state only)

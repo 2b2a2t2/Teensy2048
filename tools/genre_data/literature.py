@@ -43,6 +43,7 @@ RHYTHM_W = {
     "HIPHOP":     [12, 18, 18,  6, 10, 14, 14,  8],
     "ELECTRONIC": [ 5, 15, 30, 15,  8, 15,  7,  5],
     "REGGAE":     [ 4, 10, 14,  6, 12, 38, 10,  6],
+    "DUBTECHNO":  [30, 20, 10,  5,  5, 20,  5,  5],
     "GOSPEL":     [ 8, 15, 25, 10, 12, 15,  8,  7],
     "LATIN":      [ 4, 12, 22, 12,  8, 20, 10, 12],
     "CINEMATIC":  [55, 25, 10,  3,  1,  3,  2,  1],
@@ -53,6 +54,7 @@ MICRO_VAR = {
     "POP": 50, "ROCK": 60, "JAZZ": 175, "CLASSICAL": 90, "FOLK": 70,
     "COUNTRY": 65, "BLUES": 120, "RNB": 110, "FUNK": 140, "METAL": 20,
     "HIPHOP": 155, "ELECTRONIC": 15, "REGGAE": 100, "GOSPEL": 105,
+    "DUBTECHNO": 30,
     "LATIN": 130, "CINEMATIC": 85, "MODAL": 95,
 }
 
@@ -164,16 +166,72 @@ EMPIRICAL = {"POP": ["POP_billboard", "POP_isophonics"],
              "CLASSICAL": ["CLASSICAL_tavern"],
              "FOLK": ["FOLK_nottingham"]}
 
+# Genres whose tables are authored in full here, straight from genre theory
+# (no corpus, no prior mixing).  Rows are raw weights; generate.py keeps
+# them as-is (each row already sums to 100) and flags them estimated.
+#
+# DUBTECHNO — Basic Channel / Deepchord school: near-static single-chord
+# vamp with the classic parallel formulas layered on top:
+#   static vamp        i -> i              (diag 60 in the i row)
+#   step-down drift    i <-> bVII          (-2 semitones, rows 0<->6)
+#   classic fourth     i <-> iv            (+5, rows 0<->3)
+#   shadow fifth       i <-> v             (+7, rows 0<->4)
+#   hypnotic third     i <-> bIII          (+3, rows 0<->2)
+# Quality: m7 standard, m9 blueprint (bucket 2 = m7+9 over minor via
+# addExtensions), sus4 pivot strongest on i (bucket 3, x2 at TENS>=67).
+# Bass stays anchored: root-position inversions (the inversion pivot is
+# voiced by the sus bucket, not by moving the bass).
+HAND = {
+    "DUBTECHNO": {
+        "trans": [
+            # I   ii  bIII  iv   v   bVI bVII
+            [60,  1,  8, 12, 10,  1,  8],   # i: vamp + fourth + fifth + third
+            [45, 15,  8, 12, 10,  5,  5],   # ii
+            [50,  2, 15,  8,  7,  8, 10],   # bIII
+            [55,  2,  5, 20,  8,  5,  5],   # iv
+            [55,  2,  5,  8, 20,  5,  5],   # v
+            [45,  2, 15,  8,  7, 15,  8],   # bVI
+            [52,  2,  8,  8,  7,  5, 18],   # bVII: drift partner, back to i
+        ],
+        "qual": [
+            # triad  7th  9th+ sus/alt
+            [ 5, 40, 45, 10],   # i: m9 blueprint + sus pivot
+            [ 8, 47, 40,  5],
+            [ 8, 47, 40,  5],
+            [ 8, 47, 40,  5],
+            [ 8, 47, 40,  5],
+            [ 8, 47, 40,  5],
+            [ 8, 47, 40,  5],
+        ],
+        "inv": [
+            [96, 2, 1, 1],
+            [96, 2, 1, 1],
+            [96, 2, 1, 1],
+            [96, 2, 1, 1],
+            [96, 2, 1, 1],
+            [96, 2, 1, 1],
+            [96, 2, 1, 1],
+        ],
+    },
+}
+
 GENRE_ORDER = ["POP", "ROCK", "JAZZ", "CLASSICAL", "FOLK", "COUNTRY",
                "BLUES", "RNB", "FUNK", "METAL", "HIPHOP", "ELECTRONIC",
-               "REGGAE", "GOSPEL", "LATIN", "CINEMATIC", "MODAL"]
+               "REGGAE", "DUBTECHNO", "GOSPEL", "LATIN", "CINEMATIC",
+               "MODAL"]
 
 
 def check():
     for g, w in RHYTHM_W.items():
         assert sum(w) == 100, (g, sum(w))
     assert set(RHYTHM_W) == set(MICRO_VAR) == set(GENRE_ORDER)
-    assert set(HYBRID) | set(ESTIMATED) | set(EMPIRICAL) == set(GENRE_ORDER)
+    assert set(HYBRID) | set(ESTIMATED) | set(EMPIRICAL) | set(HAND) == set(GENRE_ORDER)
+    assert not (set(HAND) & (set(HYBRID) | set(ESTIMATED) | set(EMPIRICAL)))
+    for g, d in HAND.items():
+        for field, rows in d.items():
+            cols = len(rows[0])
+            assert len(rows) == 7 and all(len(r) == cols for r in rows), (g, field)
+            assert all(sum(r) == 100 for r in rows), (g, field)
     return True
 
 

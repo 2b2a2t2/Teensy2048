@@ -58,8 +58,9 @@ def check_static():
     text = HEADER.read_text()
     m = re.search(r"#define GENRE_COUNT (\d+)", text)
     n = int(m.group(1)) if m else 0
-    if n != 17:
-        fail(f"GENRE_COUNT = {n}, expected 17")
+    import literature as LIT
+    if n != len(LIT.GENRE_ORDER):
+        fail(f"GENRE_COUNT = {n}, expected {len(LIT.GENRE_ORDER)}")
     tables = parse_header(text)
     if len(tables) != n:
         fail(f"parsed {len(tables)} genre tables, expected {n}")
