@@ -3,6 +3,7 @@
 #include "Modes.h"      // keyBehaviorVariant() - KEYMODE2 = chord mode
 #include "Chords.h"     // chord engine + scale filter state
 #include "Events.h"     // prob clipboard accessors (SEQ save/load)
+#include "Key4.h"       // KEYMODE4 proposal gesture (press/release/commit)
 #include <EEPROM.h>
 
 #define KEY_OCT_MIN   (-2)
@@ -246,7 +247,7 @@ static uint8_t noteFor(uint8_t k, int8_t oct) {
 // In KEYMODE2 the snapshot is the chord engine's sounding notes instead
 // (chords feed the sequencer like single notes)
 static void updatePending() {
-  bool chordMode = (keyBehaviorVariant() == 2);
+  bool chordMode = keyChordMode();   // KEYMODE2 or KEYMODE4: the engine's notes
   const uint8_t *cn = chordNotes();
   uint8_t ccount = chordCount();
   for (uint8_t s = 0; s < SEQ_CH_COUNT; s++) {
@@ -272,8 +273,8 @@ static void setOctave(int8_t o) {
   if (o == octave) return;
   int16_t delta = 12 * (o - octave);
   octave = o;
-  // KEYMODE2: the chord engine owns its notes - shift and re-send them
-  if (keyBehaviorVariant() == 2) {
+  // chord engine variants: the engine owns its notes - shift and re-send them
+  if (keyChordMode()) {
     chordShift(delta);
     return;
   }
@@ -388,6 +389,19 @@ int keyPadPress(uint8_t idx) {
     liveRecAppend(chordNotes(), chordCount());
     return r;
   }
+  // KEYMODE4: the genre engine proposes; an unproposed key is silent and
+  // untracked (rank -1), a proposed one sounds its whole chord
+  if (keyBehaviorVariant() == 4) {
+    keyNote[idx] = noteFor(idx, octave);
+    int r = k4KeyOn((uint8_t)idx);
+    if (r < 0) return -1;       // not proposed: silent, no write, no advance
+    keyActive[idx] = true;
+    keySounding[idx] = false;   // the chord engine, not us, sends the sound
+    assignAppend(chordNotes(), chordCount());
+    liveRecAppend(chordNotes(), chordCount());
+    if (assignStep < 0) k4KeyCommitted();   // a held step owns the target
+    return r;
+  }
   // scale filter: an out-of-scale key is silent and untracked (KeyLock
   // bypasses it); Chromatic (the default) has every key in scale = no change
   if (keyScale() != 0 && !chordKeyLock() && !keyIsInScale(idx)) return -1;
@@ -414,7 +428,19 @@ int keyPadRelease(uint8_t idx) {
     usbMIDI.sendNoteOff(keyNote[idx], 0, keyCh);
     keySounding[idx] = false;
   }
-  if (keyBehaviorVariant() == 2) chordPadRelease(idx);
+  if (keyBehaviorVariant() == 2) {
+    chordPadRelease(idx);
+  } else if (keyBehaviorVariant() == 4) {
+    // re-voice from the first key still held: the engine rebuilds from it,
+    // so its proposal bucket must be in place first
+    for (uint8_t k = 0; k < 12; k++) {
+      if (k != idx && keyActive[k]) {
+        if (k4KeyRank((uint8_t)k) >= 0) k4BucketFor((uint8_t)k);
+        break;
+      }
+    }
+    chordPadRelease(idx);
+  }
   // all keys up while assigning = that chord is finished; the next press
   // starts a fresh replacement instead of appending (live record: next
   // gesture replaces too, DRUM overdubs regardless)
@@ -422,6 +448,7 @@ int keyPadRelease(uint8_t idx) {
   for (uint8_t k = 0; k < 12; k++) anyUp = anyUp || keyActive[k];
   if (assignStep >= 0 && !anyUp && extHeldLen[assignCh] == 0) assignStarted = false;
   if (!anyUp) recStarted = false;
+  if (!anyUp && keyBehaviorVariant() == 4) k4GestureEnd();  // engine home
   monoApply();   // the held gesture shrank: re-voice / release the voice
   return keyNote[idx];
 }
@@ -443,12 +470,12 @@ int keyOctave() { return octave; }
 // nothing is held (or the held chord is empty), *out then undefined
 static uint8_t liveHeldChord(uint8_t s, const uint8_t **out) {
   if (keyCh == s + 1 || seqInCh[s] == keyCh) {
-    if (keyBehaviorVariant() == 2) {
-      if (chordSounding()) {
-        *out = chordNotes();
-        return chordCount();
-      }
-    } else {
+  if (keyChordMode()) {
+    if (chordSounding()) {
+      *out = chordNotes();
+      return chordCount();
+    }
+  } else {
       static uint8_t live[CHORD_MAX];   // static: pointer handed to caller
       uint8_t n = 0;
       for (uint8_t k = 0; k < 12 && n < CHORD_MAX; k++)
@@ -540,6 +567,77 @@ int stepChordClick(uint8_t step) {
   stepChordLen[seqEditCh][step] = 0;
   stepAttClear(seqEditCh, step);   // a dead step carries no tie/prob over
   seqOctClamp(seqEditCh);     // content shrank: shift range may have grown
+  return 0;
+}
+
+// --- KEYMODE4 write path (Key4.cpp drives it) ------------------------------
+// the generated chord lands like the live gesture would: pre-compensated
+// for the sequence's octave shift, so the step sounds the note the engine
+// just built (assignAppend does the same)
+int stepChordWrite(uint8_t step, const uint8_t *notes, uint8_t n) {
+  if (step >= STEP_MAX || n == 0 || n > CHORD_MAX || notes == 0) return -1;
+  uint8_t ch = seqEditCh;
+  int pre = -12 * (int)seqOct[ch];
+  stepChordLen[ch][step] = 0;
+  stepAttClear(ch, step);
+  for (uint8_t i = 0; i < n; i++) {
+    int v = (int)notes[i] + pre;
+    if (v < 0) v = 0;
+    else if (v > 127) v = 127;
+    stepChord[ch][step][stepChordLen[ch][step]++] = (uint8_t)v;
+  }
+  seqOctClamp(ch);
+  stepSyncFrom(ch);
+  return (int)stepChordLen[ch][step];
+}
+
+const uint8_t* stepChordAt(uint8_t step, uint8_t *len) {
+  if (step >= STEP_MAX || len == 0) { if (len) *len = 0; return stepChord[0][0]; }
+  *len = stepChordLen[seqEditCh][step];
+  return stepChord[seqEditCh][step];
+}
+
+// one-level undo of the last KEYMODE4 write batch (apply / key write /
+// variation): a full snapshot of the edit sequence - chords, lengths, the
+// step attributes and the drum accent/probability masks (~769 B static)
+static uint8_t snapChord[STEP_MAX][CHORD_MAX];
+static uint8_t snapLen[STEP_MAX];
+static uint8_t snapAttB[STEP_MAX];
+static uint8_t snapDrumA[STEP_MAX];
+static uint8_t snapDrumP[STEP_MAX];
+static uint8_t snapCh = 0;
+static bool    snapValid = false;
+
+void stepSnapshotTake() {
+  uint8_t ch = seqEditCh;
+  if (ch >= SEQ_CH_COUNT) return;
+  snapCh = ch;
+  for (uint8_t st = 0; st < STEP_MAX; st++) {
+    snapLen[st] = stepChordLen[ch][st];
+    snapAttB[st] = stepAtt[ch][st];
+    snapDrumA[st] = drumAccent[ch][st];
+    snapDrumP[st] = drumProbOn[ch][st];
+    for (uint8_t i = 0; i < CHORD_MAX; i++)
+      snapChord[st][i] = stepChord[ch][st][i];
+  }
+  snapValid = true;
+}
+
+int stepSnapshotRestore() {
+  if (!snapValid) return -1;
+  snapValid = false;
+  if (snapCh >= SEQ_CH_COUNT) return -1;
+  if (seqEditCh != snapCh) seqSetEditChannel((uint8_t)(snapCh + 1));
+  uint8_t ch = snapCh;
+  for (uint8_t st = 0; st < STEP_MAX; st++) {
+    stepChordLen[ch][st] = snapLen[st];
+    stepAtt[ch][st] = snapAttB[st];
+    drumAccent[ch][st] = snapDrumA[st];
+    drumProbOn[ch][st] = snapDrumP[st];
+    for (uint8_t i = 0; i < CHORD_MAX; i++)
+      stepChord[ch][st][i] = snapChord[st][i];
+  }
+  stepSyncFrom(ch);
   return 0;
 }
 
@@ -804,7 +902,7 @@ static uint8_t monoType() { return seqMonoTypeOf(keyCh - 1); }
 // held gesture as the voice source: KEYMODE2 uses the chord engine's
 // sounding notes (latch included), single mode the held keys (ascending)
 static uint8_t monoSrc(const uint8_t **out) {
-  if (keyBehaviorVariant() == 2) {
+  if (keyChordMode()) {
     if (chordSounding()) { *out = chordNotes(); return chordCount(); }
     return 0;
   }
@@ -834,9 +932,9 @@ static void cutRaw() {
 }
 
 // ...and MONO -> POLY while keys are held: they sound raw again (single
-// mode only - in KEYMODE2 the chord engine re-sends via chordMute(false))
+// mode only - in chord modes the engine re-sends via chordMute(false))
 static void strikeRaw() {
-  if (keyBehaviorVariant() == 2) return;
+  if (keyChordMode()) return;
   for (uint8_t k = 0; k < 12; k++)
     if (keyActive[k]) {
       keyNote[k] = noteFor(k, octave);
@@ -1718,7 +1816,7 @@ void keySetChannel(uint8_t ch) {
     // was POLY before the switch: held keys re-strike raw here (a MONO->
     // POLY switch restores them instead via monoApply's strikeRaw, so the
     // two never double-send)
-    if (!monoEng && keyBehaviorVariant() != 2)
+    if (!monoEng && !keyChordMode())
       for (uint8_t k = 0; k < 12; k++)
         if (keyActive[k]) {
           usbMIDI.sendNoteOn(keyNote[k], KEY_VEL, keyCh);

@@ -19,6 +19,12 @@ const char* modeName();              // "---", "ENC", "ENC2", "ENC3", "ENC4"...
 // mode is inherited by SEQMODE/ENCMODE)
 uint8_t keyBehaviorVariant();
 
+// true while the keyboard sounds through the chord engine: KEYMODE2
+// (diatonic chords) and KEYMODE4 (genre proposals) share it for the sound,
+// the pending snapshot and the MONO voice - the latched variant elsewhere
+// inherits the same way keyBehaviorVariant() does
+bool keyChordMode();
+
 // SEQMODE3 step-pad channel overlay: the 16 steps become the edit-channel
 // selector while it is up.  Holding SEQ into SEQMODE3 brings it back; any
 // encoder movement dismisses it for the rest of the hold so the pads show

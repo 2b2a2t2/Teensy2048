@@ -490,6 +490,12 @@ uint8_t seqStepViewBase() {
   return (uint8_t)(seqPage[seqEditChannel() - 1] * STEPS_COUNT);
 }
 
+void seqStepViewFollow(uint8_t step) {
+  uint8_t pg = (uint8_t)(step / STEPS_COUNT);
+  if (pg > 3) return;
+  seqPage[seqEditChannel() - 1] = pg;
+}
+
 uint8_t seqStepPage() { return seqPage[seqEditChannel() - 1]; }
 
 bool seqBarLooped(uint8_t page) {

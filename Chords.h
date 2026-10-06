@@ -56,6 +56,18 @@ bool           chordSounding();
 bool           chordPlaysPitch(uint8_t pc);  // pitch class currently sounding
 const char*    chordName();    // "GMaj7" for the header ("" before first chord)
 
+// --- KEYMODE4 (genre-driven proposals) -------------------------------------
+// the genre engine drives the build state directly: press builds an explicit
+// quality/extension/bass-inversion chord (KeyLock and latch are bypassed for
+// the gesture - their KEYMODE2 state is saved and restored by chordKey4Clear)
+int     chordKey4Press(uint8_t kidx, uint8_t note, uint8_t q, uint8_t ext,
+                       uint8_t bass);          // returns the root played
+void    chordKey4Bucket(uint8_t q, uint8_t ext, uint8_t bass);
+                                                // re-voice the remaining keys
+void    chordKey4Clear();                       // gesture over: restore state
+uint8_t chordBuild(uint8_t root, uint8_t q, uint8_t ext, uint8_t bass,
+                   uint8_t *out);               // notes only (apply path)
+
 // lifecycle (keyboard output channel / octave / mode changes)
 void chordShift(int semitones);  // octave shift of the held/sounding chord
 void chordCut();                 // note-offs on the current channel

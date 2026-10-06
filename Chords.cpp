@@ -240,17 +240,18 @@ static void sendOut() {
 
 // extensions above the triad - fixed intervals so every scale (chromatic,
 // pentatonic, ...) gets proper 6/7/9 colors; the 9 implies a 7th when no
-// 7th button is held
-static void addExtensions(uint8_t *out, uint8_t &n, int root, uint8_t qType) {
-  if (!sExt) return;
+// 7th bit is set
+static void addExtensions(uint8_t *out, uint8_t &n, int root, uint8_t qType,
+                          uint8_t ext) {
+  if (!ext) return;
   uint8_t add[4];
   uint8_t an = 0;
-  if (sExt & CHORD_EXT_6)
+  if (ext & CHORD_EXT_6)
     add[an++] = (qType == CHORD_Q_MIN || qType == CHORD_Q_DIM) ? 8 : 9;
-  if (sExt & CHORD_EXT_m7) add[an++] = 10;
-  if (sExt & CHORD_EXT_M7) add[an++] = 11;
-  if (sExt & CHORD_EXT_9) {
-    if (!(sExt & (CHORD_EXT_m7 | CHORD_EXT_M7)))
+  if (ext & CHORD_EXT_m7) add[an++] = 10;
+  if (ext & CHORD_EXT_M7) add[an++] = 11;
+  if (ext & CHORD_EXT_9) {
+    if (!(ext & (CHORD_EXT_m7 | CHORD_EXT_M7)))
       add[an++] = (qType == CHORD_Q_MIN) ? 10 : 11;
     add[an++] = 14;
   }
@@ -276,14 +277,12 @@ static uint8_t forceScaleNote(uint8_t note) {
   return note;
 }
 
-// build and play the chord on a root note with a fixed quality
-static void playChordAt(int note, uint8_t qType) {
-  stopNotes();
-  int root = note;
-  if (root < 36) root = 36;
-  if (root > 84) root = 84;
-
-  uint8_t out[CHORD_N];
+// build the notes of a chord: triad from the quality row, extensions, then
+// the explicit spread/density/bass/voicing transforms and the FScale snap.
+// Shared by the live engine (playChordAt) and the KEYMODE4 apply path
+static uint8_t buildNotes(int root, uint8_t qType, uint8_t ext, uint8_t bass,
+                          uint8_t voicing, uint8_t spread, uint8_t density,
+                          uint8_t *out) {
   uint8_t n = 0;
   out[n++] = (uint8_t)root;
 
@@ -294,15 +293,15 @@ static void playChordAt(int note, uint8_t qType) {
     for (uint8_t j = 0; j < n; j++) if (out[j] == v) dup = true;
     if (!dup) out[n++] = v;
   }
-  addExtensions(out, n, root, qType);
+  addExtensions(out, n, root, qType, ext);
 
   // spread: raise everything above the root one octave per step
-  if (sParam[2] > 0)
+  if (spread > 0)
     for (uint8_t j = 1; j < n; j++)
-      out[j] = clampNote((int)out[j] + sParam[2] * 12);
+      out[j] = clampNote((int)out[j] + spread * 12);
 
   // density: add octave copies of the chord until full
-  if (sParam[3] > 0) {
+  if (density > 0) {
     uint8_t base = n;
     for (uint8_t j = 0; j < base && n < CHORD_N; j++) {
       out[n] = clampNote((int)out[j] + 12);
@@ -311,19 +310,19 @@ static void playChordAt(int note, uint8_t qType) {
   }
 
   // bass: move the idx-th note down an octave to the bottom
-  if (sParam[1] > 0 && n > 1 && n < CHORD_N) {
-    uint8_t src = out[sParam[1] % n];
+  if (bass > 0 && n > 1 && n < CHORD_N) {
+    uint8_t src = out[bass % n];
     if (src >= 12) {
-      uint8_t bass = (uint8_t)(src - 12);
+      uint8_t low = (uint8_t)(src - 12);
       for (int j = n; j > 0; j--) out[j] = out[j - 1];
-      out[0] = bass;
+      out[0] = low;
       n++;
     }
   }
 
   // voicing: rotate the top notes down (voicing times)
-  if (sParam[0] > 0 && n > 3) {
-    for (int8_t v = 0; v < sParam[0] && v < n - 1; v++) {
+  if (voicing > 0 && n > 3) {
+    for (int8_t v = 0; v < voicing && v < n - 1; v++) {
       uint8_t top = out[0];
       for (uint8_t j = 0; j + 1 < n; j++) out[j] = out[j + 1];
       out[n - 1] = top;
@@ -342,6 +341,20 @@ static void playChordAt(int note, uint8_t qType) {
     }
     n = m;
   }
+  return n;
+}
+
+// build and play the chord on a root note with a fixed quality
+static void playChordAt(int note, uint8_t qType) {
+  stopNotes();
+  int root = note;
+  if (root < 36) root = 36;
+  if (root > 84) root = 84;
+
+  uint8_t out[CHORD_N];
+  uint8_t n = buildNotes(root, qType, sExt, (uint8_t)sParam[1],
+                         (uint8_t)sParam[0], (uint8_t)sParam[2],
+                         (uint8_t)sParam[3], out);
 
   for (uint8_t i = 0; i < n; i++) sNotes[i] = out[i];
   sCount = n;
@@ -537,6 +550,76 @@ const char* chordName() {
            kRootName[((sPlayedRoot % 12) + 12) % 12],
            kQualityName[sPlayed], ext);
   return buf;
+}
+
+// ---------------------------------------------------------------------------
+// KEYMODE4: the genre engine owns the build state per gesture
+// ---------------------------------------------------------------------------
+
+// saved KEYMODE2 state (latch/KeyLock/params persist as globals - KEY4 must
+// leave them exactly as it found them)
+static bool    k4Saved = false;
+static bool    k4LockWas = false, k4LatchWas = false;
+static int8_t  k4ParamWas[4];
+
+static void k4Force(uint8_t q, uint8_t ext, uint8_t bass) {
+  sQuality = q;
+  sExt = ext;
+  sParam[0] = 0;
+  sParam[1] = (int8_t)bass;
+  sParam[2] = 0;
+  sParam[3] = 0;
+}
+
+int chordKey4Press(uint8_t kidx, uint8_t note, uint8_t q, uint8_t ext,
+                   uint8_t bass) {
+  if (kidx >= 12) return -1;
+  if (!k4Saved) {
+    k4Saved = true;
+    k4LockWas = sLock;
+    k4LatchWas = sLatch;
+    for (uint8_t i = 0; i < 4; i++) k4ParamWas[i] = sParam[i];
+  }
+  sLock = false;      // the proposal set decides the roots, not KeyLock
+  sLatch = false;     // an audition releases with the key, like a single note
+  if (!(sHeld & (uint16_t)(1u << kidx))) {
+    sHeld |= (uint16_t)(1u << kidx);
+    sHeldCount++;
+  }
+  sPressNote[kidx] = note;
+  sRootNote = note;
+  k4Force(q, ext, bass);
+  playChordAt(note, q);        // explicit quality: never the KeyLock path
+  keyPendingRefresh();
+  return (sCount > 0) ? sNotes[0] : -1;
+}
+
+// the gesture re-voices from its first held key on release: swap the build
+// state to that key's proposal before chordPadRelease rebuilds
+void chordKey4Bucket(uint8_t q, uint8_t ext, uint8_t bass) {
+  k4Force(q, ext, bass);
+}
+
+// gesture over / leaving KEYMODE4: the engine is back to KEYMODE2 state
+void chordKey4Clear() {
+  sQuality = CHORD_Q_NONE;
+  sExt = 0;
+  if (k4Saved) {
+    sLock = k4LockWas;
+    sLatch = k4LatchWas;
+    for (uint8_t i = 0; i < 4; i++) sParam[i] = k4ParamWas[i];
+    k4Saved = false;
+  }
+}
+
+// the notes of a proposal without touching the sounding gesture (apply path:
+// same builder as the live engine, KEY2's spread/density/voicing at neutral)
+uint8_t chordBuild(uint8_t root, uint8_t q, uint8_t ext, uint8_t bass,
+                   uint8_t *out) {
+  int r = root;
+  if (r < 36) r = 36;
+  if (r > 84) r = 84;
+  return buildNotes(r, q, ext, bass, 0, 0, 0, out);
 }
 
 // ---------------------------------------------------------------------------

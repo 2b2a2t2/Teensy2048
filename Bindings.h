@@ -12,6 +12,7 @@ enum EncSet : uint8_t {
   ENC_KEY, ENC_KEY2, ENC_KEY3, ENC_KEY4,
   ENC_SEQ_STEP_HELD,           // overlay: step held in SEQMODE
   ENC_KEY2_PREV,               // overlay: PREV held in KEYMODE2
+  ENC_KEY4_PREV,               // overlay: PREV held in KEYMODE4
   ENC_SET_COUNT
 };
 enum CtrlSet : uint8_t {

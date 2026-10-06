@@ -1,0 +1,172 @@
+{
+  "generated_by": "tools/genre_data/fetch.py",
+  "included": {
+    "billboard_index": {
+      "kind": "download",
+      "url": "https://www.dropbox.com/s/o0olz0uwl9z9stb/billboard-2.0-index.csv?dl=1",
+      "path": "cache/billboard/billboard-2.0-index.csv",
+      "bytes": 61542,
+      "sha256": "fc39435098814f1a4f1dd5c95c72aff399b648b78f33a59682924dfb9b5280fb",
+      "genres": [
+        "POP",
+        "ROCK"
+      ],
+      "license": "CC0-1.0",
+      "license_url": "http://creativecommons.org/publicdomain/zero/1.0/",
+      "note": "McGill Billboard Project index (song metadata, no keys).",
+      "citation": "Aljanaki, Margoni, Muller. Studying Popular Music Composition with the McGill Billboard Dataset. ISMIR 2016.",
+      "status": "ok"
+    },
+    "billboard_lab": {
+      "kind": "download",
+      "url": "https://www.dropbox.com/s/t390alzrkx0c9yt/billboard-2.0.1-lab.tar.gz?dl=1",
+      "path": "cache/billboard/billboard-2.0.1-lab.tar.gz",
+      "bytes": 1037052,
+      "sha256": "718f870cbe37134c3f3a52add7c46058ad313f1a568518438887fcd2dcf27d01",
+      "genres": [
+        "POP",
+        "ROCK"
+      ],
+      "license": "CC0-1.0",
+      "license_url": "http://creativecommons.org/publicdomain/zero/1.0/",
+      "note": "890 songs, LAB chord annotations (Harte syntax, includes inversions and chord embellishments).",
+      "citation": "Aljanaki, Margoni, Muller. Studying Popular Music Composition with the McGill Billboard Dataset. ISMIR 2016.",
+      "status": "ok"
+    },
+    "isophonics_beatles": {
+      "kind": "download",
+      "url": "https://isophonics.net/files/annotations/The%20Beatles%20Annotations.tar.gz",
+      "path": "cache/isophonics/beatles.tar.gz",
+      "bytes": 2779640,
+      "sha256": "e642f7f999c1df791326358050ce6cbb99684137c1d9cdd3e89dae6e87c81fdc",
+      "genres": [
+        "ROCK"
+      ],
+      "license": "no-formal-license (free research download)",
+      "license_url": "https://isophonics.net/content/reference-annotations-beatles.html",
+      "note": "Beatles reference annotations: chordlab + keylab + seglab LAB files (Harte). No formal license text; distributed openly for research. Only aggregate counts are redistributed.",
+      "citation": "Mauch et al. A Correction to the Beatles Dataset. ISMIR 2011.",
+      "status": "ok",
+      "extracted_to": "cache/isophonics/beatles"
+    },
+    "isophonics_queen": {
+      "kind": "download",
+      "url": "https://isophonics.net/files/annotations/Queen%20Annotations.tar.gz",
+      "path": "cache/isophonics/queen.tar.gz",
+      "bytes": 227243,
+      "sha256": "0e96352f3ee220657bd408c57a08eb3bdc2b7fe48268e9b51bd81f554729c1a0",
+      "genres": [
+        "ROCK"
+      ],
+      "license": "no-formal-license (free research download)",
+      "license_url": "https://isophonics.net/content/reference-annotations-queen.html",
+      "note": "Queen reference annotations: chordlab + keylab LAB files (Harte). Only aggregate counts are redistributed.",
+      "citation": "Zanetti et al. A Fighter's Guide to Computational Music Analysis: Queen. ISMIR 2017.",
+      "status": "ok",
+      "extracted_to": "cache/isophonics/queen"
+    },
+    "isophonics_mj": {
+      "kind": "download",
+      "url": "https://isophonics.net/files/annotations/Michael%20Jackson%20Annotations.tar.gz",
+      "path": "cache/isophonics/mj.tar.gz",
+      "bytes": 36448,
+      "sha256": "b74da5b46b48af2fd0b394b4a8e4e3974c781afbd55c96496de6726a27e50fc9",
+      "genres": [
+        "POP"
+      ],
+      "license": "no-formal-license (free research download)",
+      "license_url": "https://isophonics.net/content/reference-annotations-michael-jackson.html",
+      "note": "Michael Jackson reference annotations: chordlab + keylab LAB files (Harte). Only aggregate counts are redistributed. Bundle turned out to contain only segmentation (seglab) files - no chords/keys published - so it is NOT used as a data source.",
+      "citation": "Mauch et al. The Michael Jackson pop corpus. ISMIR 2010.",
+      "status": "ok",
+      "extracted_to": "cache/isophonics/mj",
+      "not_used": true
+    },
+    "isophonics_caroleking": {
+      "kind": "download",
+      "url": "https://isophonics.net/files/annotations/Carole%20King%20Annotations.tar.gz",
+      "path": "cache/isophonics/caroleking.tar.gz",
+      "bytes": 73507,
+      "sha256": "79f1e94dc682fdc5a686df4d2c9320ee172c88524042072d0f62ee6bb04b1d3c",
+      "genres": [
+        "POP"
+      ],
+      "license": "no-formal-license (free research download)",
+      "license_url": "https://isophonics.net/content/reference-annotations-carole-king.html",
+      "note": "Carole King reference annotations: chordlab + keylab LAB files (Harte). Only aggregate counts are redistributed.",
+      "citation": "Mauch et al. A correction to the McGill Billboard dataset: Carole King. 2015.",
+      "status": "ok",
+      "extracted_to": "cache/isophonics/caroleking"
+    },
+    "wjazzd": {
+      "kind": "download",
+      "url": "https://jazzomat.hfm-weimar.de/download/downloads/wjazzd.db",
+      "path": "cache/weimar/wjazzd.db",
+      "bytes": 42512384,
+      "sha256": "af6a0d9debf042c3581565bd75baad591d32e166cd2ec7298519883de614bf12",
+      "genres": [
+        "JAZZ"
+      ],
+      "license": "ODbL-1.0 (db_info table; contents under DbCL)",
+      "license_url": "http://opendatacommons.org/licenses/odbl/1.0/",
+      "note": "Weimar Jazz Database v2.1 SQLite: 456 jazz solos / 302 tunes, chord label per beat (beats.chord), composition-level tonality. ODbL share-alike honoured by attributing and only redistributing aggregate counts.",
+      "citation": "Arndt, Pfleiderer, Muller. The Weimar Jazz Database. 2017.",
+      "status": "ok"
+    },
+    "nottingham": {
+      "kind": "download",
+      "url": "https://github.com/jukedeck/nottingham-dataset/archive/refs/heads/master.zip",
+      "path": "cache/nottingham/nottingham-dataset.zip",
+      "bytes": 1616232,
+      "sha256": "613246b8ae65192ac0dd6ab598fdff195f227ce255fa11dcef0992e9a157cff9",
+      "genres": [
+        "FOLK"
+      ],
+      "license": "GPL-3.0 (cleaning); original Nottingham Music Database is free/community",
+      "license_url": "https://github.com/jukedeck/nottingham-dataset",
+      "note": "1034 ABC lead sheets (melody + chords) with K: key fields. Chord notation normalised by JukeDeck. Used as read-only input; only aggregate counts are redistributed.",
+      "citation": "Nottingham Music Database (abc.sourceforge.net/NMD/); cleaned by JukeDeck Ltd.",
+      "status": "ok"
+    },
+    "tavern": {
+      "kind": "clone",
+      "url": "https://github.com/jcdevaney/TAVERN.git",
+      "path": "cache/tavern/repo",
+      "genres": [
+        "CLASSICAL"
+      ],
+      "license": "CC-BY-SA-4.0",
+      "license_url": "https://github.com/jcdevaney/TAVERN/blob/master/LICENSE",
+      "note": "27 Mozart/Beethoven theme-and-variation sets, 1060 phrases, Humdrum .krn Roman-numeral analyses (**chords spine + **function).",
+      "citation": "Deevy, Devaney. TAVERN: Theme And Variation Encodings with Roman Numerals. 2020.",
+      "files": 5602,
+      "status": "ok"
+    }
+  },
+  "excluded": {
+    "chordonomicon": {
+      "license": "CC-BY-NC-4.0",
+      "reason": "NonCommercial license; excluded by project decision."
+    },
+    "casd": {
+      "license": "CC-BY-NC-SA-4.0",
+      "reason": "NonCommercial license."
+    },
+    "dilemmadata": {
+      "license": "CC-BY-NC-SA-4.0",
+      "reason": "NonCommercial license (per its .zenodo.json)."
+    },
+    "dcmlab_corpora": {
+      "license": "CC-BY-NC-SA-4.0",
+      "reason": "NonCommercial license (DCML standard corpus license)."
+    },
+    "when_in_rome": {
+      "license": "no license",
+      "reason": "No repository license; it republishes third-party corpora of mixed licensing."
+    },
+    "augmentednet": {
+      "license": "MIT",
+      "reason": "MIT, but checked-in data is only 199 MuseScore correction zips; its corpora are unlicensed/NC submodules. Dropped as data source (TAVERN covers classical)."
+    }
+  }
+}

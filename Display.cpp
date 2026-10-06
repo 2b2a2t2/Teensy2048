@@ -6,6 +6,7 @@
 #include "Keyboard.h"
 #include "Events.h"
 #include "Chords.h"
+#include "Key4.h"       // KEYMODE4 genre/knob values + control legend
 #include <Wire.h>
 
 U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, U8X8_PIN_NONE);
@@ -42,6 +43,7 @@ void clearMainScreen() {
 static const char* ctrlLegend(uint8_t i) {
   if (i > 8) return "";
   bool key2 = keyBehaviorVariant() == 2;   // quality / extension momentaries
+  bool key4 = (modeBase == MODE_KEY && modeVariant == 4);  // genre row
   if (i >= 5) {
     // SEQMODE + MONO step-edit: F1-F4 select TIE/GLIDE/ACCENT/PROB
     if (modeBase == MODE_SEQ && modeVariant != 3 &&
@@ -55,6 +57,10 @@ static const char* ctrlLegend(uint8_t i) {
       static const char* ed[2] = { "ACC", "PROB" };
       return ed[i - 7];
     }
+    if (key4) {          // KEYMODE4: VAR / LOCK / LEAD / HOLD
+      static const char* k4r2[4] = { "VAR", "LOCK", "LEAD", "HOLD" };
+      return k4r2[i - 5];
+    }
     if (!key2) {
       static const char* row2[4] = { "M1", "M2", "M3", "M4" };
       return row2[i - 5];
@@ -62,7 +68,7 @@ static const char* ctrlLegend(uint8_t i) {
     static const char* ext[4] = { "6", "m7", "M7", "9" };
     return ext[i - 5];
   }
-  if (i == 1) return key2 ? "Sus" : "NEXT";
+  if (i == 1) return key2 ? "Sus" : "NEXT";   // KEYMODE4 keeps NEXT
   if (i == 2) {
     // hold M1 = DRUM part-select (beats the KEYMODE2 quality, like Events);
     // SEQMODE+MONO = step-edit radio; ENCMODE hold M1 = drum-VOICE mute
@@ -71,6 +77,7 @@ static const char* ctrlLegend(uint8_t i) {
     if (modeBase == MODE_SEQ && modeVariant != 3 && seqTrack() == SEQ_TRACK_MONO)
       return "EDIT";
     if (modeBase == MODE_ENC) return "DRUM";
+    if (key4) return "MODE";
     return key2 ? "Maj" : "M1";
   }
   if (i == 3) {
@@ -82,9 +89,13 @@ static const char* ctrlLegend(uint8_t i) {
     if (modeBase == MODE_SEQ && modeVariant != 3 &&
         seqTrack() == SEQ_TRACK_MONO && seqMonoType() == SEQ_MONO_ARP)
       return "ARP";
+    if (key4) return "AUTO";
     return key2 ? "Min" : "M2";
   }
-  if (i == 4) return key2 ? "Dim" : "M3";
+  if (i == 4) {
+    if (key4) return "APPLY";
+    return key2 ? "Dim" : "M3";
+  }
   return "PREV";
 }
 
@@ -109,6 +120,9 @@ void refreshMainScreen() {
   // KEYMODE2 rows: the main chord row, or the PREV overlay row
   bool key2 = (modeBase == MODE_KEY && modeVariant == 2 && b.enc != ENC_KEY2_PREV);
   bool keyOv = (b.enc == ENC_KEY2_PREV);
+  // KEYMODE4: the genre row, or its OCT/SCALE/KEY overlay
+  bool key4 = (modeBase == MODE_KEY && modeVariant == 4 && b.enc == ENC_KEY4);
+  bool key4Ov = (b.enc == ENC_KEY4_PREV);
 
   for (uint8_t c = 0; c < 4; c++) {
     uint8_t x = c * 32 + 1;
@@ -136,12 +150,22 @@ void refreshMainScreen() {
     } else if (seq3 && c == 3) {
       snprintf(val, sizeof(val), "%s",
                seqSpeedName(seqSpeedIdxOf((uint8_t)(seqEditChannel() - 1))));
+    } else if (key4 && c == 0) {
+      snprintf(val, sizeof(val), "%s", k4GenreShort()); // ENC1 = genre
+    } else if (key4 && c == 1) {
+      snprintf(val, sizeof(val), "%u", k4Knob(0));      // ENC2 = MOOD
+    } else if (key4 && c == 2) {
+      snprintf(val, sizeof(val), "%u", k4Knob(1));      // ENC3 = TENS
+    } else if (key4 && c == 3) {
+      snprintf(val, sizeof(val), "%u", k4Knob(2));      // ENC4 = MOTION
+    } else if (key4Ov && c == 3) {
+      snprintf(val, sizeof(val), "---");                // overlay ENC4 idle
     } else if (modeBase == MODE_KEY && c == 0) {
       snprintf(val, sizeof(val), "%d", keyOctave());         // ENC1 = octave
     } else if (modeBase == MODE_KEY && c == 1) {
       snprintf(val, sizeof(val), "%s", keyScaleName());      // ENC2 = scale
     } else if (modeBase == MODE_KEY &&
-               (modeVariant == 1 || modeVariant == 2) && c == 2) {
+               (modeVariant == 1 || modeVariant == 2 || key4Ov) && c == 2) {
       snprintf(val, sizeof(val), "%s", keyRootName());       // ENC3 = root
     } else if (keyOv && c == 3) {
       snprintf(val, sizeof(val), "%s", chordLatch() ? "ON" : "OFF");
@@ -195,6 +219,16 @@ void refreshMainScreen() {
       snprintf(val, sizeof(val), "---");                    // ENC7 free
     } else if (seqDrumGe && 4 + c == 7) {
       snprintf(val, sizeof(val), "%d%%", seqProbPct());  // ENC8 = track probability
+    } else if (key4 && 4 + c == 4) {
+      snprintf(val, sizeof(val), "%u", k4Knob(3));          // CAD
+    } else if (key4 && 4 + c == 5) {
+      snprintf(val, sizeof(val), "%u", k4Knob(4));          // CPX
+    } else if (key4 && 4 + c == 6) {
+      snprintf(val, sizeof(val), "%u", k4Knob(5));          // ERA
+    } else if (key4 && 4 + c == 7) {
+      snprintf(val, sizeof(val), "%u", k4Knob(6));          // SURP
+    } else if (key4Ov) {
+      snprintf(val, sizeof(val), "---");                // overlay row 2 idle
     } else if (keyOv && 4 + c == 4) {
       snprintf(val, sizeof(val), "%s", chordKeyLock() ? "ON" : "OFF");
     } else if (keyOv && 4 + c == 5) {

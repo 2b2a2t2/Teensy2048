@@ -7,6 +7,7 @@
 #include "Bindings.h"
 #include "Chords.h"
 #include "Events.h"
+#include "Key4.h"      // KEYMODE4 proposal LEDs (rank / focus / locks)
 
 ModeBase modeBase = MODE_NONE;
 uint8_t modeVariant = 0;
@@ -150,10 +151,22 @@ static CRGB modeLedHook(uint8_t pad, bool isTouched, CRGB defaultColor) {
       // time; the sequence itself may run up to 64 steps): green when the
       // bar on the pads is the one being read, dark-blue ghost at the same
       // beat position while playback runs in another bar
-      uint8_t ph = seqStepPlayPad();
-      if (ph < 16 && led == groupSteps[ph]) return CRGB::Green;
-      uint8_t gh = seqStepPlayGhost();
-      if (gh < 16 && led == groupSteps[gh]) return CRGB::DarkBlue;
+    uint8_t ph = seqStepPlayPad();
+    if (ph < 16 && led == groupSteps[ph]) return CRGB::Green;
+    uint8_t gh = seqStepPlayGhost();
+    if (gh < 16 && led == groupSteps[gh]) return CRGB::DarkBlue;
+    // KEYMODE4: the write target (focus) and the steps apply skips (locked)
+    // stay visible under the playhead colors
+    if (modeBase == MODE_KEY && modeVariant == 4) {
+      bool foc = (vst == k4Focus());
+      if (foc && k4Locked(vst)) return CRGB(255, 200, 40);   // amber
+      if (foc) return k4Write() ? CRGB::Red : CRGB::White;   // write target
+      if (k4Locked(vst)) {
+        CRGB a = CRGB(255, 200, 40);                          // dim amber
+        a.nscale8(64);
+        return a;
+      }
+    }
     }
     CRGB c;
     if (stepIsActive(vst)) {
@@ -214,8 +227,10 @@ static CRGB modeLedHook(uint8_t pad, bool isTouched, CRGB defaultColor) {
     bool inScale = (keyScale() == 0) || keyIsInScale((uint8_t)k);
     if (isTouched) {
       // a key the scale filter silences flashes red (chord mode / KeyLock
-      // play it, so they flash white)
-      if (kv != 2 && !chordKeyLock() && !inScale) return CRGB(40, 0, 0);
+      // play it, so they flash white; KEYMODE4 plays any PROPOSED key -
+      // out-of-scale keys included, so they never flash red either)
+      if (kv != 2 && kv != 4 && !chordKeyLock() && !inScale)
+        return CRGB(40, 0, 0);
       return CRGB::White;
     }
     // sequence playing on the keyboard channel: those pitch classes blink
@@ -227,16 +242,32 @@ static CRGB modeLedHook(uint8_t pad, bool isTouched, CRGB defaultColor) {
     }
     // sounding chord keys tint cyan (they win over the scale's dark keys)
     if (kv == 2 && chordPlaysPitch((uint8_t)k)) return CRGB(0, 90, 160);
+    // KEYMODE4: the whole scored degree set lights - hue-mapped by key as
+    // originally designed (C=blue ... B=red), rank 0 (the next chord from
+    // the highest probability) hottest, brightness stepping down the list;
+    // borrowed proposals (open by TENS) stay orange, closed ones stay dark
+    if (kv == 4) {
+      int8_t rk = k4KeyRank((uint8_t)k);
+      if (rk < 0) return CRGB::Black;
+      CRGB c;
+      if (k4KeyBorrowed((uint8_t)k)) {
+        c = CRGB(255, 120, 0);
+      } else {
+        uint8_t hue = (uint8_t)(170 + ((uint16_t)k * 85 + 5) / 11);
+        c = CHSV(hue, 255, 255);
+      }
+      int b = 255 - (int)rk * 64;     // steep: rank 0 unmistakably hottest
+      if (b < 40) b = 40;             // rank 4+ stay dim but visible
+      c.nscale8((uint8_t)b);
+      c.nscale8(KEY_DIM);
+      return c;
+    }
     if (!inScale) return CRGB::Black;         // scale display: dead keys dark
     CRGB c;
-    if (kv == 4) {
-      // FastLED hue: 170=blue ... 213=magenta ... 255=red
-      uint8_t hue = (k >= 0) ? (uint8_t)(170 + (k * 85 + 5) / 11) : 170;
-      c = CHSV(hue, 255, 255);
-    } else if (kv == 2) {
-      c = CRGB(60, 0, 255);                     // blue-violet
+    if (kv == 2) {
+      c = CRGB(60, 0, 255);                   // blue-violet
     } else {
-      c = CRGB::DarkBlue;                       // KEYMODE / KEYMODE3
+      c = CRGB::DarkBlue;                     // KEYMODE / KEYMODE3
     }
     c.nscale8(KEY_DIM);
     return c;
@@ -314,6 +345,22 @@ static CRGB modeLedHook(uint8_t pad, bool isTouched, CRGB defaultColor) {
       c.b = c.b / 2;
     }
     return c;
+  }
+  // KEYMODE4 M1: the write state - dim red = AUDITION (proposals only,
+  // nothing lands), bright red = WRITE (keys land on the focus step)
+  if (modeBase == MODE_KEY && modeVariant == 4 &&
+      led == groupControls[2]) {
+    if (isTouched) return CRGB::White;
+    if (k4Write()) return CRGB::Red;
+    CRGB r = CRGB::Red;
+    r.nscale8(48);
+    return r;
+  }
+  // KEYMODE4 M3 (APPLY): a slow dim hue cycle marks the generator button
+  if (modeBase == MODE_KEY && modeVariant == 4 &&
+      led == groupControls[4]) {
+    if (isTouched) return CRGB::White;
+    return CHSV((uint8_t)(millis() >> 2), 255, 100);  // full cycle ~1s
   }
   // PLAY transport pad: dim dark green = stopped, bright green = running
   // (touch always wins)
@@ -470,6 +517,7 @@ void pollModeLeds() {
 void initModes() {
   modeBase = MODE_KEY;      // boot into KEYMODE
   modeVariant = 1;
+  k4Refresh();              // proposal cache valid before the first LED pass
   setLedColorHook(modeLedHook);
   applyModeLeds();
   headerSetLeft(modeName());
@@ -479,6 +527,11 @@ void initModes() {
 uint8_t keyBehaviorVariant() {
   if (modeBase == MODE_KEY) return modeVariant;
   return familyMem[MODE_KEY];
+}
+
+bool keyChordMode() {
+  uint8_t kv = keyBehaviorVariant();
+  return kv == 2 || kv == 4;
 }
 
 bool seq3ChSelActive() { return seq3ChSel; }
@@ -500,6 +553,10 @@ void modeOnEvent(uint8_t pad, uint8_t ev) {
     if (led == modeLeds[i]) b = modeOfLed[i];
   }
   if (b == MODE_NONE) return;
+
+  // was the keyboard sitting in KEYMODE4 when this click/hold began?  The
+  // variant mutations below must not be able to lose that fact
+  bool wasK4 = (modeBase == MODE_KEY && modeVariant == 4);
 
   if (ev == EV_RELEASED) {
     // releasing the held mode button ends the hold.  ENCMODE3 always exits
@@ -547,9 +604,20 @@ void modeOnEvent(uint8_t pad, uint8_t ev) {
   }
   modeBase = b;
 
-  // leaving KEYMODE2 = leaving chord mode: silence it; the PREV overlay is
-  // momentary - it never outlives the binding it remaps
-  if (keyBehaviorVariant() != 2) chordStopAll();
+  // the engine resets when the keyboard leaves the chord variants OR when
+  // KEYMODE4 is (re)entered - it starts every visit with a clean gesture
+  // (the KEYMODE2 latch/KeyLock/params globals survive, only the sound
+  // and the held keys reset).  The PREV overlay is momentary - it never
+  // outlives the binding it remaps
+  bool nowK4 = (modeBase == MODE_KEY && modeVariant == 4);
+  if (!keyChordMode() || nowK4) chordStopAll();
+  // fresh KEYMODE4 visit: seed the progression - its first chord is the
+  // chord the engine still holds (the KEYMODE2 chord just played), else
+  // the stored step before the focus
+  if (nowK4 && !wasK4) k4Enter();
+  // leaving KEYMODE4 into another chord context: hand the engine's saved
+  // KEYMODE2 state (KeyLock, latch, params) back before anyone else uses it
+  if (wasK4 && !nowK4) k4Stop();
   clearOverlay(G_ENC);
   encMuteHold(false);       // the M2 mute overlay never outlives the ENC mode
   drumMuteHold(false);      // nor the M1 drum-voice mute overlay

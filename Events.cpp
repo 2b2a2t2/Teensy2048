@@ -8,6 +8,7 @@
 #include "SeqClock.h"
 #include "Keyboard.h"
 #include "Chords.h"
+#include "Key4.h"       // KEYMODE4 controls (focus/apply/undo/locks)
 
 // skip a log line if the USB TX buffer is congested (never block the loop —
 // a blocked Serial.write stalls pollSeqClock and freezes the playhead)
@@ -252,6 +253,9 @@ void handleButtonEvents() {
         if (ev == EV_PRESSED && logRoom(48))
           Serial.println("  step edit off");
       } else if (ev == EV_PRESSED) {
+        // KEYMODE4: a step pad press moves the write target there first,
+        // then the usual trigger/assign behavior runs on it
+        if (modeBase == MODE_KEY && modeVariant == 4) k4FocusSet(stp);
         if (drum) {
           int r = stepDrumToggle(stp);
           if (r == -2 && logRoom(48)) {
@@ -526,19 +530,98 @@ void handleButtonEvents() {
       }
     }
 
-    // PREV = momentary encoder overlay in KEYMODE2: while held the row
-    // remaps to Oct/Scale/Root/Latch/KLock/Perf, release restores it
+    // KEYMODE4 control row: NEXT = focus+1, M1 = write latch (WRITE lands
+    // the proposal on the focused step / AUDITION plays it only), M2 =
+    // auto-advance after every write, M3 tap = apply the generator to every
+    // unlocked step / M3 hold = undo, F1 = variation (reseed + generate),
+    // F2 = lock the focused step (apply skips it), F3 = VOICE-LEAD
+    // inversions, F4 held = audition only (no write, no advance)
+    int8_t k4ci = -1;
+    for (uint8_t i = 0; i < CONTROLS_NUM_G; i++)
+      if (groupControls[i] == kl) k4ci = (int8_t)i;
+    if (modeBase == MODE_KEY && modeVariant == 4) {
+      if (k4ci == 1 && ev == EV_CLICKED) {
+        k4FocusStep(1);            // announces focus + progression itself
+        refreshAllLeds();
+        if (logRoom(48)) Serial.println("  focus next");
+      } else if (k4ci == 2 && ev == EV_CLICKED) {
+        bool on = k4WriteToggle();
+        headerShow(on ? "KEY WRITE" : "KEY AUDITION");
+        if (logRoom(48))
+          Serial.println(on ? "  key write" : "  key audition");
+      } else if (k4ci == 3 && ev == EV_CLICKED) {
+        bool on = k4AutoToggle();
+        headerShow(on ? "AUTO ADV" : "AUTO OFF");
+        if (logRoom(48)) Serial.println(on ? "  auto on" : "  auto off");
+      } else if (k4ci == 4 && ev == EV_CLICKED) {
+        int w = k4ApplyAll();
+        if (w > 0) k4AnnouncePattern();   // the progression that was written
+        else headerShow("APPLIED 0");
+        refreshAllLeds();
+        refreshMainScreen();   // focus/locks may have been re-read
+        if (logRoom(48)) Serial.println(w > 0 ? "  applied" : "  applied 0");
+      } else if (k4ci == 4 && ev == EV_HOLD) {
+        int u = k4Undo();
+        if (u == 0) k4AnnouncePattern();   // the restored progression
+        else headerShow("nothing to undo");
+        refreshAllLeds();
+        refreshMainScreen();
+        if (logRoom(48)) Serial.println("  undo");
+      } else if (k4ci == 5 && ev == EV_CLICKED) {
+        int w = k4Variation();
+        if (w > 0) k4AnnouncePattern();   // the reseeded progression
+        else headerShow("VAR 0");
+        refreshAllLeds();
+        if (logRoom(48)) Serial.println(w > 0 ? "  variation" : "  var 0");
+      } else if (k4ci == 6 && ev == EV_CLICKED) {
+        bool on = k4LockToggle(k4Focus());
+        char lb[14];
+        snprintf(lb, sizeof(lb), "%s %u", on ? "lock" : "unlock",
+                 (unsigned)(k4Focus() + 1));
+        headerShow(lb);
+        refreshAllLeds();       // amber focus/lock pads follow
+        if (logRoom(48)) { Serial.print("  "); Serial.println(lb); }
+      } else if (k4ci == 7 && ev == EV_CLICKED) {
+        bool on = k4LeadToggle();
+        headerShow(on ? "LEAD ON" : "LEAD OFF");
+        if (logRoom(48)) Serial.println(on ? "  lead on" : "  lead off");
+      } else if (k4ci == 8 && ev == EV_PRESSED) {
+        k4HoldSet(true);
+        if (logRoom(48)) Serial.println("  hold audition");
+      }
+    }
+    // F4 release, ungated by mode: the momentary hold flag clears even if
+    // the mode changed while the key was down (never a stuck audition)
+    if (k4ci == 8 && ev == EV_RELEASED && k4Hold()) {
+      k4HoldSet(false);
+      if (logRoom(48)) Serial.println("  hold off");
+    }
+
+    // PREV = momentary encoder overlay: KEYMODE2 remaps the row to
+    // Oct/Scale/Root/Latch/KLock/Perf, KEYMODE4 to Oct/Scale/Key; release
+    // restores it.  A quick KEYMODE4 tap (no hold) steps the focus back
     if (kl == groupControls[0]) {
       if (ev == EV_PRESSED && keyBehaviorVariant() == 2) {
         setOverlay(G_ENC, ENC_KEY2_PREV);
         prevOvActive = true;
         refreshMainScreen();
         if (logRoom(48)) Serial.println("  overlay KEY2 PREV");
+      } else if (ev == EV_PRESSED && modeBase == MODE_KEY &&
+                 modeVariant == 4) {
+        setOverlay(G_ENC, ENC_KEY4_PREV);
+        prevOvActive = true;
+        refreshMainScreen();
+        if (logRoom(48)) Serial.println("  overlay KEY4 PREV");
       } else if (ev == EV_RELEASED && prevOvActive) {
         clearOverlay(G_ENC);
         prevOvActive = false;
         refreshMainScreen();
         if (logRoom(48)) Serial.println("  overlay off");
+      } else if (ev == EV_CLICKED && modeBase == MODE_KEY &&
+                 modeVariant == 4) {
+        k4FocusStep(-1);           // announces focus + progression itself
+        refreshAllLeds();
+        if (logRoom(48)) Serial.println("  focus prev");
       }
     }
 
@@ -553,7 +636,8 @@ void handleButtonEvents() {
           Serial.print("  clock ");
           Serial.println(seqIsSyncInternal() ? "INT" : "EXT");
         }
-      } else if (modeBase == MODE_SEQ) {
+      } else if (modeBase == MODE_SEQ ||
+                 (modeBase == MODE_KEY && modeVariant == 4)) {
         seqTogglePlay();
         if (logRoom(48)) Serial.println("  -> MIDI Play toggle");
       }
@@ -592,8 +676,8 @@ void handleButtonEvents() {
           Serial.print("  note on ");
           Serial.println(n);
         }
-        // KEYMODE2: the header shows the chord that just started
-        if (n >= 0 && keyBehaviorVariant() == 2 && chordName()[0])
+        // chord engine variants: the header shows the chord that started
+        if (n >= 0 && keyChordMode() && chordName()[0])
           headerShow(chordName());
       } else if (ev == EV_RELEASED) {
         if (barHeld & (1 << kidx)) barHeld &= (uint8_t)~(1 << kidx);
@@ -672,8 +756,11 @@ void handleEncoderEvents() {
         seq3ChSelDismiss())
       refreshAllLeds();
 
-    // KEYMODE: ENC1 = octave -2..8 (clamped, no wrap; 4 counts = 1 octave)
-    if (modeBase == MODE_KEY && ei == 0 && ed != 0) {
+    // KEYMODE: ENC1 = octave -2..8 (clamped, no wrap; 4 counts = 1 octave).
+    // KEYMODE4: the main row owns ENC1 for GENRE - the octave lives on the
+    // PREV overlay row (same composite guard the scale row uses)
+    if (modeBase == MODE_KEY && ei == 0 && ed != 0 &&
+        (modeVariant != 4 || currentBinding().enc == ENC_KEY4_PREV)) {
       keyOctaveAdjust(ed);
       if (logRoom(48)) {
         Serial.print("  octave ");
@@ -684,11 +771,18 @@ void handleEncoderEvents() {
 
     // KEYMODE: ENC2 = scale (every variant, and the PREV overlay row);
     // 4 counts = 1 scale, clamped 0..12, no wrap.  Selecting a scale
-    // flashes its mood ("Happy", "Sad", ...) in the temporary header
-    if (modeBase == MODE_KEY && ei == 1 && ed != 0) {
+    // flashes its mood ("Happy", "Sad", ...) in the temporary header -
+    // KEYMODE4 announces its new proposal ranking there instead
+    if (modeBase == MODE_KEY && ei == 1 && ed != 0 &&
+        (modeVariant != 4 || currentBinding().enc == ENC_KEY4_PREV)) {
       keyScaleAdjust(ed);
-      headerShow(keyScaleMood());
       refreshAllLeds();             // in-scale / out-of-scale keys repaint
+      if (modeVariant == 4) {
+        k4Refresh();                // the framework follows the scale
+        k4Announce();               // the header names the new ranking
+      } else {
+        headerShow(keyScaleMood());
+      }
       if (logRoom(48)) {
         Serial.print("  scale ");
         Serial.println(keyScaleName());
@@ -697,15 +791,48 @@ void handleEncoderEvents() {
     }
 
     // KEYMODE1/2: ENC3 = KEY (the key/root) - shared by both variants: it
-    // roots the scale mask in KEYMODE1 and the chord engine in KEYMODE2
-    if (modeBase == MODE_KEY && (modeVariant == 1 || modeVariant == 2) &&
+    // roots the scale mask in KEYMODE1 and the chord engine in KEYMODE2.
+    // KEYMODE4: same, but only while its PREV overlay row is up (the main
+    // row uses ENC3 for TENS)
+    if (modeBase == MODE_KEY &&
+        (modeVariant == 1 || modeVariant == 2 ||
+         currentBinding().enc == ENC_KEY4_PREV) &&
         ei == 2 && ed != 0) {
       keyRootAdjust(ed);
       refreshAllLeds();           // the scale mask is rooted here too
+      if (modeVariant == 4) {     // the framework follows the root
+        k4Refresh();
+        k4Announce();
+      }
       if (logRoom(48)) {
         Serial.print("  root ");
         Serial.println(keyRootName());
       }
+      any = true;
+    }
+
+    // KEYMODE4: the main context row = ENC1 GENRE (1 count = 1 genre,
+    // wraps), ENC2..ENC8 = MOOD/TENS/MOTION/CAD/CPX/ERA/SURP (1 count =
+    // 1 unit, clamped 0..100).  Every change re-ranks the proposals
+    if (modeBase == MODE_KEY && modeVariant == 4 && ed != 0 &&
+        currentBinding().enc == ENC_KEY4) {
+      if (ei == 0) {
+        k4GenreAdjust(ed);
+        if (logRoom(48)) {
+          Serial.print("  genre ");
+          Serial.println(k4GenreName());
+        }
+      } else {
+        k4KnobAdjust((uint8_t)(ei - 1), ed);
+        if (logRoom(48)) {
+          static const char* kn[7] = { "mood ", "tens ", "motion ", "cad ",
+                                       "cpx ", "era ", "surp " };
+          Serial.print(kn[ei - 1]);
+          Serial.println(k4Knob((uint8_t)(ei - 1)));
+        }
+      }
+      refreshAllLeds();   // the keyboard repaints the re-ranked proposals
+      k4Announce();       // ...and the header names them (I V vi IV)
       any = true;
     }
 

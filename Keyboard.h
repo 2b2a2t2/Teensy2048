@@ -160,6 +160,15 @@ int  stepChordPress(uint8_t step);   // notes recorded; -1 = silent (active/bad)
 int  stepChordClick(uint8_t step);   // EV_CLICKED: 0 = step disabled
 void stepAssignSet(int8_t step);     // step = 0..63 to arm, -1 to disarm
 
+// KEYMODE4 (Key4.cpp drives it): direct write of a generated chord into the
+// edit sequence (pre-compensated for the sequence octave shift, like the
+// live gesture) and a one-level undo of the last write batch
+int            stepChordWrite(uint8_t step, const uint8_t *notes, uint8_t n);
+                                                           // stored n, -1 = bad
+const uint8_t* stepChordAt(uint8_t step, uint8_t *len);    // stored chord (edit seq)
+void           stepSnapshotTake();     // snapshot the edit sequence for undo
+int            stepSnapshotRestore();  // 0 = restored (switches back the ch), -1 = none
+
 // sequencing (called from loop context, never from the clock ISR):
 // press on an unassigned step records a chord into it (see above);
 // seqStepAdvance runs each time the playhead reaches a step - every
