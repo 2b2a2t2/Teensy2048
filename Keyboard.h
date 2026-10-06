@@ -122,6 +122,21 @@ bool stepAttrToggle(uint8_t step, uint8_t att);
 uint8_t stepAttrs(uint8_t step);      // edit channel's attribute mask for the
                                       // LED pulse - DRUM follows the part select
 
+// POLY step FX (embellishments, F1 = FX target in SEQMODE): one byte per
+// step beside stepAtt - SUS2/SUS4, COLOR (quiet half-step-below-root ghost)
+// and STRUM (staggered note-ons) in the low nibble, a CHORD_EXT-style
+// extension mask (6/m7/M7/9) in the top nibble.  Playback transforms the
+// chord as it leaves (buildNotes keeps writing plain triads/extensions).
+// Same lifecycle as the attributes: RAM only, dies with the step
+enum StepFxType : uint8_t {
+  SEQ_FX_SUS2 = 0, SEQ_FX_SUS4, SEQ_FX_EXT6, SEQ_FX_EXTm7,
+  SEQ_FX_EXTM7, SEQ_FX_EXT9, SEQ_FX_COLOR, SEQ_FX_STRUM
+};
+uint8_t stepFxBit(uint8_t type);      // type index -> bit in the FX byte
+bool stepFxToggle(uint8_t step, uint8_t type);
+                                      // true = FX now on; the SUS pair is
+                                      // mutually exclusive (sus2 vs sus4)
+
 // SEQMODE4 + REC: persist all SEQ settings to EEPROM - track type, mono
 // type, octave, input channel, velocity, accent velocity, gate, mutes,
 // probability, pattern length, FOLLOW, edit channel.  NOTE PATTERNS ARE
@@ -141,6 +156,8 @@ void seqAccentVelocityAdjust(int16_t counts); // ENC6 + F3 held: accent vel
 int  seqAccentVelocity();             // edit track's accented-step velocity
 void seqSetAccentVelocity(uint8_t seq, uint8_t v); // EEPROM load, clamped
 void seqGatePoll();                   // fire gate note-offs (loop context)
+void seqStrumPoll();                  // drain staggered strum note-ons
+                                      // (loop context, beside seqGatePoll)
 uint8_t seqFMask();                   // attributes the playhead reads this step
                                       // (F-row blink mask, edit channel)
 

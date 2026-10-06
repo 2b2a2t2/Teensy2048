@@ -35,6 +35,23 @@ const char* k4GenreShort();                  // <= 7 chars (OLED value column)
 void    k4KnobAdjust(uint8_t idx, int16_t counts);  // 0..6 = MOOD..SURP
 uint8_t k4Knob(uint8_t idx);
 
+// --- embellish menu (NEXT tap: sticky row = EMB / PLACE) -------------------
+// EMB shapes WHAT M3 writes: OFF = the plain generator, PASS = the odd
+// steps become passing chords (one scale degree below the following main
+// chord), PASS+SUB = also swaps main chords through the substitution table
+// (I->iii, ii->IV, iii->I, IV->ii, V->bVII, vi->IV, bVII->V) with the SURP
+// knob as the chance.  PLACE picks the passing rule: ODD = every odd step
+// that qualifies, DIST = only when the bracketing main chords stand at
+// least two scale degrees apart (the odd step keeps its main chord else).
+void    k4EmbMenuSet(bool on);   // NEXT tap; also opens/closes the overlay
+bool    k4EmbMenu();
+void    k4EmbModeAdjust(int16_t counts);   // off/pass/p+s, wraps
+uint8_t k4EmbMode();                      // 0 off, 1 pass, 2 pass+sub
+const char* k4EmbModeName();              // "OFF" / "PASS" / "P+S"
+void    k4EmbPlaceAdjust(int16_t counts); // CW = dist, CCW = odd
+uint8_t k4EmbPlace();                     // 0 odd, 1 distance
+const char* k4EmbPlaceName();             // "ODD" / "DIST"
+
 // --- control buttons --------------------------------------------------------
 bool k4WriteToggle();      // M1: key presses land on the focused step
 bool k4Write();

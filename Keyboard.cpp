@@ -120,6 +120,10 @@ static bool tapCandidate[STEP_MAX] = {false};
 // seqVel = default velocity (boot 100, accent step = 127), seqGate = gate
 // time in % of one step (100 = hold until the next step = today's behavior)
 static uint8_t stepAtt[SEQ_CH_COUNT][STEP_MAX];
+// POLY-only step FX (embellishments): SUS2/SUS4, COLOR (ghost approach),
+// STRUM (staggered note-ons) and a CHORD_EXT-style extension mask in the
+// top nibble.  Same lifecycle as stepAtt: RAM only, dies with the step
+static uint8_t stepFx[SEQ_CH_COUNT][STEP_MAX];
 // DRUM tracks split accent/probability PER VOICE: mask bits say which of
 // the 16 parts (notes 36..51) is accented / probability-gated in a step.
 // Zero-init: no accents, no probability gates (mask bit = attribute present)
@@ -153,9 +157,10 @@ static bool    recStarted = false;  // current gesture already wrote the step
 static bool    recDone = false;  // one-shot: a pass finished by itself
 
 // a step's attributes live and die with its content (both the MONO flags
-// and the DRUM per-voice accent/probability masks)
+// and the DRUM per-voice accent/probability masks; the POLY FX byte too)
 static void stepAttClear(uint8_t ch, uint8_t st) {
   stepAtt[ch][st] = 0;
+  stepFx[ch][st] = 0;
   drumAccent[ch][st] = 0;
   drumProbOn[ch][st] = 0;
 }
@@ -603,6 +608,7 @@ const uint8_t* stepChordAt(uint8_t step, uint8_t *len) {
 static uint8_t snapChord[STEP_MAX][CHORD_MAX];
 static uint8_t snapLen[STEP_MAX];
 static uint8_t snapAttB[STEP_MAX];
+static uint8_t snapFxB[STEP_MAX];
 static uint8_t snapDrumA[STEP_MAX];
 static uint8_t snapDrumP[STEP_MAX];
 static uint8_t snapCh = 0;
@@ -615,6 +621,7 @@ void stepSnapshotTake() {
   for (uint8_t st = 0; st < STEP_MAX; st++) {
     snapLen[st] = stepChordLen[ch][st];
     snapAttB[st] = stepAtt[ch][st];
+    snapFxB[st] = stepFx[ch][st];
     snapDrumA[st] = drumAccent[ch][st];
     snapDrumP[st] = drumProbOn[ch][st];
     for (uint8_t i = 0; i < CHORD_MAX; i++)
@@ -632,6 +639,7 @@ int stepSnapshotRestore() {
   for (uint8_t st = 0; st < STEP_MAX; st++) {
     stepChordLen[ch][st] = snapLen[st];
     stepAtt[ch][st] = snapAttB[st];
+    stepFx[ch][st] = snapFxB[st];
     drumAccent[ch][st] = snapDrumA[st];
     drumProbOn[ch][st] = snapDrumP[st];
     for (uint8_t i = 0; i < CHORD_MAX; i++)
@@ -682,9 +690,36 @@ bool stepAttrToggle(uint8_t step, uint8_t att) {
   return (*a & att) != 0;
 }
 
+// type index (SUS2 SUS4 6 m7 M7 9 COLOR STRUM) -> bit in the FX byte:
+// SUS/COLOR/STRUM sit in the low nibble, the extension mask rides the top
+// nibble so (stepFx >> 4) is exactly a CHORD_EXT mask for chordFxApply
+uint8_t stepFxBit(uint8_t type) {
+  static const uint8_t bits[8] = { 0x01, 0x02, 0x10, 0x20,
+                                   0x40, 0x80, 0x04, 0x08 };
+  return bits[type & 7];
+}
+
+// toggle an FX type on the edit channel's POLY step; sus2 and sus4 are two
+// voicings of one idea, so arming one drops the other.  Returns the new
+// state of the requested type for "5 sus4 on" feedback
+bool stepFxToggle(uint8_t step, uint8_t type) {
+  if (step >= STEP_MAX) return false;
+  uint8_t bit = stepFxBit(type);
+  uint8_t *f = &stepFx[seqEditCh][step];
+  *f ^= bit;
+  bool on = (*f & bit) != 0;
+  if (on && (type == SEQ_FX_SUS2 || type == SEQ_FX_SUS4))
+    *f &= (uint8_t)~stepFxBit(type == SEQ_FX_SUS2 ? SEQ_FX_SUS4
+                                                  : SEQ_FX_SUS2);
+  return on;
+}
+
 // attribute mask of the EDIT channel's step (step LED pulse / display).
 // MONO/POLY read the step flags; on DRUM tracks the view follows the
-// SELECTED PART - switching the part select re-maps the yellow pulse live
+// SELECTED PART - switching the part select re-maps the yellow pulse live.
+// The FX target (POLY, target 5) pulses from bit 0x10 = 1 << (5 - 1), and
+// only when the step carries the SELECTED FX type (same "selected attribute
+// present" rule as the four classic flags)
 uint8_t stepAttrs(uint8_t step) {
   if (step >= STEP_MAX) return 0;
   if (seqTrack() == SEQ_TRACK_DRUM) {
@@ -696,7 +731,11 @@ uint8_t stepAttrs(uint8_t step) {
     if (drumProbOn[seqEditCh][step] & bit) m |= SEQ_ATT_PROB;
     return m;
   }
-  return stepAtt[seqEditCh][step];
+  uint8_t m = stepAtt[seqEditCh][step];
+  if (seqTrack() == SEQ_TRACK_POLY &&
+      (stepFx[seqEditCh][step] & stepFxBit(stepFxSel())))
+    m |= 0x10;
+  return m;
 }
 
 // notes the sequencer (playhead) currently has sounding, per channel
@@ -988,12 +1027,106 @@ static void monoApply() {
 
 void keyMonoPoll() { monoApply(); }
 
+// --- strum queue (POLY FX / MONO TYPE=STRUM) ------------------------------
+// staggered note-ons drained by seqStrumPoll() from loop context, beside
+// the gate timers.  A POLY strum accumulates - the chord rakes note by
+// note and the usual step-boundary release cuts the whole lot; a MONO
+// strum is a single voice walking the chord, every rake note cutting the
+// one before it (offOld = GLIDE: the old step's notes die AFTER the first
+// rake note, like the legato overlap does).  releaseCh() cancels it, so a
+// rest, a length change or transport stop drops the un-sent tail
+static struct {
+  uint8_t note[CHORD_MAX];
+  uint8_t vel[CHORD_MAX];
+  uint8_t n, i;              // queued notes / next to send
+  uint16_t every;            // ms between rake notes
+  uint32_t at;               // next note due (millis)
+  uint32_t arm;              // MONO gate stamp armed on completion (0 = none)
+  bool monoQ;
+  bool offOld;
+} strumQ[SEQ_CH_COUNT];
+
+static void strumCancel(uint8_t c) {
+  strumQ[c].n = 0;
+  strumQ[c].i = 0;
+}
+
+// stage one step's rake; notes arrive playback-shifted and velocity-shaped
+static void strumEnqueue(uint8_t c, const uint8_t *note, const uint8_t *vel,
+                         uint8_t n, uint16_t every, bool monoQ, bool offOld,
+                         uint32_t arm) {
+  strumQ[c].n = 0;
+  strumQ[c].i = 0;
+  if (n > CHORD_MAX) n = CHORD_MAX;
+  for (uint8_t k = 0; k < n; k++) {
+    strumQ[c].note[k] = note[k];
+    strumQ[c].vel[k] = vel[k];
+  }
+  strumQ[c].n = n;
+  strumQ[c].every = every ? every : 1;
+  strumQ[c].at = millis();
+  strumQ[c].arm = arm;
+  strumQ[c].monoQ = monoQ;
+  strumQ[c].offOld = offOld;
+}
+
+// drain due rake notes (called from the loop, next to seqGatePoll)
+void seqStrumPoll() {
+  uint32_t now = millis();
+  for (uint8_t c = 0; c < SEQ_CH_COUNT; c++) {
+    if (!strumQ[c].n) continue;
+    while (strumQ[c].i < strumQ[c].n && (int32_t)(now - strumQ[c].at) >= 0) {
+      uint8_t k = strumQ[c].i;
+      uint8_t note = strumQ[c].note[k];
+      uint8_t vel = strumQ[c].vel[k];
+      if (strumQ[c].monoQ) {
+        if (k == 0) {
+          // first rake note: on BEFORE the old notes go (legato overlap
+          // when GLIDE deferred them, plain cut otherwise - the latter
+          // cannot happen: the step-boundary release already ran)
+          usbMIDI.sendNoteOn(note, vel, c + 1);
+          if (strumQ[c].offOld) {
+            for (uint8_t j = 0; j < seqLen[c]; j++)
+              usbMIDI.sendNoteOff(seqNotes[c][j], 0, c + 1);
+            seqLen[c] = 0;
+            gateOffAt[c] = 0;
+            strumQ[c].offOld = false;
+          }
+        } else {
+          if (seqLen[c])
+            usbMIDI.sendNoteOff(seqNotes[c][0], 0, c + 1);
+          usbMIDI.sendNoteOn(note, vel, c + 1);
+        }
+        seqNotes[c][0] = note;
+        seqLen[c] = 1;
+      } else {
+        if (seqLen[c] < CHORD_MAX) {
+          seqNotes[c][seqLen[c]] = note;
+          seqLen[c]++;
+        }
+        usbMIDI.sendNoteOn(note, vel, c + 1);
+      }
+      strumQ[c].i++;
+      strumQ[c].at = now + strumQ[c].every;
+    }
+    if (strumQ[c].i >= strumQ[c].n) {
+      if (strumQ[c].arm) {              // MONO: the gate counts from the
+        gateOffAt[c] = strumQ[c].arm;   // STEP start, not the rake end
+        strumQ[c].arm = 0;
+      }
+      strumQ[c].n = 0;
+      strumQ[c].i = 0;
+    }
+  }
+}
+
 // release one sequence's sounding notes and cancel its gate timer
 static void releaseCh(uint8_t c) {
   for (uint8_t i = 0; i < seqLen[c]; i++)
     usbMIDI.sendNoteOff(seqNotes[c][i], 0, c + 1);
   seqLen[c] = 0;
   gateOffAt[c] = 0;
+  strumCancel(c);
 }
 
 static void seqRelease() {
@@ -1195,61 +1328,115 @@ static void seqAdvanceOnce(bool start, const bool *go,
     }
     uint8_t *ch = follow ? stepChord[seqInCh[c] - 1][fstp]
                          : stepChord[c][stp];
+    // step FX (POLY embellishments): SUS/ext reshape the chord and COLOR
+    // appends its raw approach note BEFORE the FScale snap below, so the
+    // ghost stays chromatic while the core follows the scale.  MONO picks
+    // one note (FX would only muddy it) and DRUM carries drum-map ids -
+    // both skip the transform
+    uint8_t mapped[CHORD_MAX];
+    uint8_t nCore = len;               // transformable core inside mapped[]
+    uint8_t fxm = (drumTrack || mono) ? 0 : stepFx[c][stp];
+    if (fxm) {
+      len = chordFxApply(ch, len, fxm, mapped, &nCore);
+      ch = mapped;
+    }
     // FScale: force-to-scale also governs PLAYBACK - with it ON the stored
     // notes are snapped to the current scale as they leave (duplicates
     // collapse, like buildNotes), so turning the scale recolors recorded
     // progressions live.  Stored notes stay raw; OFF/Chromatic = unchanged.
-    // DRUM steps keep their raw note numbers (they are drum-map ids)
-    uint8_t mapped[CHORD_MAX];
-    if (chordFScale() && !drumTrack) {
+    // DRUM steps keep their raw note numbers (they are drum-map ids).  The
+    // FX color tail (i >= nCore) bypasses the snap and dedups like the rest
+    if (fxm || (chordFScale() && !drumTrack)) {
+      bool snap = chordFScale();
       uint8_t m = 0;
+      uint8_t coreOut = 0;
       for (uint8_t i = 0; i < len && i < CHORD_MAX; i++) {
-        uint8_t v = chordForceNote(ch[i]);
+        uint8_t v = (snap && i < nCore) ? chordForceNote(ch[i]) : ch[i];
         bool dup = false;
         for (uint8_t j = 0; j < m; j++) if (mapped[j] == v) dup = true;
-        if (!dup) mapped[m++] = v;
+        if (!dup) {
+          if (i < nCore) coreOut++;
+          mapped[m++] = v;
+        }
       }
       if (m) { len = m; ch = mapped; }
+      if (fxm) nCore = coreOut;        // compaction may have shrunk the core
     }
     int8_t sh = seqOct[c];
     if (mono) {
-      uint8_t note;
-      if (seqMonoTypeOf(c) == SEQ_MONO_BASS) {
-        note = ch[0];
-        for (uint8_t i = 1; i < len; i++) if (ch[i] < note) note = ch[i];
-      } else if (seqMonoTypeOf(c) == SEQ_MONO_ARP) {
-        uint8_t elen = 0;
-        note = arpNoteAt(ch, len, c, arpIdx[c], &elen);
-        if (!elen) note = ch[0];         // degenerate walk: hold the chord
-        arpIdx[c]++;
-      } else {
-        note = rootOf(ch, len);         // SEQ_MONO_ROOT
-      }
-      note = shNote(note, sh);
       uint8_t vel = (att & SEQ_ATT_ACCENT) ? seqAccVel[c] : seqVel[c];
-      if (defer[c]) {
-        // GLIDE: new note-on BEFORE the old note-off (legato overlap)
-        usbMIDI.sendNoteOn(note, vel, c + 1);
-        for (uint8_t i = 0; i < seqLen[c]; i++)
-          usbMIDI.sendNoteOff(seqNotes[c][i], 0, c + 1);
-        seqLen[c] = 0;
-        gateOffAt[c] = 0;
-      } else {
-        usbMIDI.sendNoteOn(note, vel, c + 1);
-      }
-      seqNotes[c][0] = note;
-      seqLen[c] = 1;
       // gate timer: TIE/GLIDE hold to the boundary by definition
+      uint32_t arm = 0;
       if (sd && seqGate[c] < 100 && !(att & (SEQ_ATT_TIE | SEQ_ATT_GLIDE)))
-        gateOffAt[c] = now + (sd * (uint32_t)seqGate[c]) / 100;
+        arm = now + (sd * (uint32_t)seqGate[c]) / 100;
+      if (seqMonoTypeOf(c) == SEQ_MONO_STRUM) {
+        // TYPE=STRUM: rake through the whole chord INSIDE the step -
+        // ascending, each note cutting the last (the funk scratch), the
+        // last one held to the gate, which arms when the rake completes.
+        // The queue owns the voice from here
+        uint8_t order[CHORD_MAX];
+        uint8_t ovel[CHORD_MAX];
+        uint8_t n = 0;
+        for (uint8_t i = 0; i < len && i < CHORD_MAX; i++) order[n++] = ch[i];
+        for (uint8_t i = 1; i < n; i++) {          // ascending rake order
+          uint8_t v = order[i];
+          uint8_t j = i;
+          while (j > 0 && order[j - 1] > v) { order[j] = order[j - 1]; j--; }
+          order[j] = v;
+        }
+        for (uint8_t i = 0; i < n; i++) {
+          order[i] = shNote(order[i], sh);
+          ovel[i] = vel;
+        }
+        uint32_t e = n ? (sd / ((uint32_t)n * 2)) : sd;
+        if (e < 8) e = 8;
+        if (e > 40) e = 40;
+        strumEnqueue(c, order, ovel, n, (uint16_t)e, true, defer[c], arm);
+      } else {
+        uint8_t note;
+        if (seqMonoTypeOf(c) == SEQ_MONO_BASS) {
+          note = ch[0];
+          for (uint8_t i = 1; i < len; i++) if (ch[i] < note) note = ch[i];
+        } else if (seqMonoTypeOf(c) == SEQ_MONO_ARP) {
+          uint8_t elen = 0;
+          note = arpNoteAt(ch, len, c, arpIdx[c], &elen);
+          if (!elen) note = ch[0];       // degenerate walk: hold the chord
+          arpIdx[c]++;
+        } else {
+          note = rootOf(ch, len);         // SEQ_MONO_ROOT
+        }
+        note = shNote(note, sh);
+        if (defer[c]) {
+          // GLIDE: new note-on BEFORE the old note-off (legato overlap)
+          usbMIDI.sendNoteOn(note, vel, c + 1);
+          for (uint8_t i = 0; i < seqLen[c]; i++)
+            usbMIDI.sendNoteOff(seqNotes[c][i], 0, c + 1);
+          seqLen[c] = 0;
+          gateOffAt[c] = 0;
+        } else {
+          usbMIDI.sendNoteOn(note, vel, c + 1);
+        }
+        seqNotes[c][0] = note;
+        seqLen[c] = 1;
+        if (arm) gateOffAt[c] = arm;
+      }
     } else {
       if (defer[c]) releaseCh(c);       // track flipped mid-play: cut old
+      bool doStrum = (fxm & stepFxBit(SEQ_FX_STRUM)) != 0;
+      uint8_t snote[CHORD_MAX], svel[CHORD_MAX];
+      uint8_t sn = 0;
       for (uint8_t i = 0; i < len && i < CHORD_MAX; i++) {
         uint8_t raw = ch[i];
         // DRUM voices muted in the ENCMODE overlay stay silent (match the
         // stored note, like the part select - the octave shift applies after)
         if (drumTrack && drumVoiceMuted(raw)) continue;
         uint8_t dvel = (att & SEQ_ATT_ACCENT) ? seqAccVel[c] : KEY_VEL;
+        // FX color ghost: the approach note rides in at half velocity so
+        // it whispers under the chord it leads into (FX is never DRUM/MONO)
+        if (fxm && i >= nCore) {
+          dvel = (uint8_t)(dvel / 2);
+          if (!dvel) dvel = 1;
+        }
         // per-voice accent + probability (DRUM only; POLY reads stepAtt).
         // The mask picks WHICH parts are gated, the track's probability
         // says HOW OFTEN - both stay live under ENC8
@@ -1263,9 +1450,25 @@ static void seqAdvanceOnce(bool start, const bool *go,
           if ((drumAccent[c][stp] >> v) & 1) dvel = seqAccVel[c];
         }
         uint8_t note = shNote(raw, sh);
-        seqNotes[c][seqLen[c]] = note;
-        usbMIDI.sendNoteOn(note, dvel, c + 1);
-        seqLen[c]++;
+        if (doStrum) {                  // POLY FX strum: stage the rake
+          if (sn < CHORD_MAX) {
+            snote[sn] = note;
+            svel[sn] = dvel;
+            sn++;
+          }
+        } else {
+          seqNotes[c][seqLen[c]] = note;
+          usbMIDI.sendNoteOn(note, dvel, c + 1);
+          seqLen[c]++;
+        }
+      }
+      if (doStrum && sn) {
+        // stagger = half a note apart inside the step, capped so slow
+        // steps still finish the rake well before the boundary
+        uint32_t e = sd / ((uint32_t)sn * 2);
+        if (e < 8) e = 8;
+        if (e > 40) e = 40;
+        strumEnqueue(c, snote, svel, sn, (uint16_t)e, false, false, 0);
       }
     }
   }
@@ -1278,6 +1481,11 @@ static void seqAdvanceOnce(bool start, const bool *go,
     if (fTrk == SEQ_TRACK_MONO || fTrk == SEQ_TRACK_POLY) {
       fBlinkMask = stepChordLen[seqEditCh][fstp] > 0
                      ? stepAtt[seqEditCh][fstp] : 0;
+      // POLY FX steps blink F1 (the FX key) from bit 0 - TIE's slot is
+      // unused on a chord track, so the classic masks stay correct
+      if (fTrk == SEQ_TRACK_POLY && stepChordLen[seqEditCh][fstp] > 0 &&
+          stepFx[seqEditCh][fstp])
+        fBlinkMask |= 0x01;
     } else if (fTrk == SEQ_TRACK_DRUM) {
       if (stepChordLen[seqEditCh][fstp] > 0) {
         if (drumAccent[seqEditCh][fstp]) fBlinkMask |= SEQ_ATT_ACCENT;
@@ -1641,6 +1849,7 @@ static void seqEraseNotes(uint8_t s) {
     usbMIDI.sendNoteOff(seqNotes[s][i], 0, s + 1);
   seqLen[s] = 0;
   arpIdx[s] = 0;
+  strumCancel(s);              // an erase also drops the un-sent rake tail
 }
 
 void seqErase(uint8_t s) {

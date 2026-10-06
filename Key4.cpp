@@ -17,6 +17,9 @@
 // ---------------------------------------------------------------------------
 static uint8_t  sGenre = 0;                              // boot = genre 0
 static uint8_t  sKnob[7] = {50, 50, 50, 50, 50, 50, 50}; // MOOD..SURP
+static bool     sEmbMenu = false; // NEXT tap: the EMB/PLACE row is open
+static uint8_t  sEmbMode = 0;     // 0 = off, 1 = pass, 2 = pass + substitute
+static uint8_t  sEmbPlace = 0;    // 0 = every odd step, 1 = by bracket gap
 static bool     sWrite = false;  // M1: boots in AUDITION, land = opt-in
 static bool     sAuto = false;   // M2: boots with auto-advance off
 static bool     sLead = false;   // F3: minimal-bass-movement inversions
@@ -141,6 +144,15 @@ static uint8_t fwDeg(uint8_t pc) {
     if (df < bd) { bd = df; best = d; }
   }
   return (uint8_t)best;
+}
+
+// circular distance in scale degrees (0..3): how far apart two main
+// chords stand - the passing rule (PLACE = DIST) needs at least 2
+static uint8_t fwDist7(uint8_t a, uint8_t b) {
+  int d = (int)b - (int)a;
+  if (d < 0) d += 7;
+  int r = 7 - d;
+  return (uint8_t)(d < r ? d : r);
 }
 
 // quality of a framework degree: from the framework's own interval sizes,
@@ -442,6 +454,37 @@ void k4KnobAdjust(uint8_t idx, int16_t counts) {
 uint8_t k4Knob(uint8_t idx) { return idx < 7 ? sKnob[idx] : 0; }
 
 // ---------------------------------------------------------------------------
+// embellish menu (NEXT tap opens it, the encoder row shows EMB / PLACE)
+// ---------------------------------------------------------------------------
+void k4EmbMenuSet(bool on) { sEmbMenu = on; }
+bool k4EmbMenu()           { return sEmbMenu; }
+
+void k4EmbModeAdjust(int16_t counts) {
+  if (!counts) return;
+  int m = (int)sEmbMode + (int)counts;
+  m %= 3;                       // off / pass / pass + sub, wraps
+  if (m < 0) m += 3;
+  sEmbMode = (uint8_t)m;
+}
+
+uint8_t k4EmbMode() { return sEmbMode; }
+
+const char* k4EmbModeName() {
+  static const char* n[3] = { "OFF", "PASS", "P+S" };
+  return n[sEmbMode < 3 ? sEmbMode : 0];
+}
+
+void k4EmbPlaceAdjust(int16_t counts) {
+  if (counts) sEmbPlace = (counts > 0) ? 1 : 0;   // CW = dist, CCW = odd
+}
+
+uint8_t k4EmbPlace() { return sEmbPlace; }
+
+const char* k4EmbPlaceName() {
+  return sEmbPlace ? "DIST" : "ODD";
+}
+
+// ---------------------------------------------------------------------------
 // control buttons
 // ---------------------------------------------------------------------------
 bool k4WriteToggle() { sWrite = !sWrite; return sWrite; }
@@ -556,19 +599,44 @@ int k4KeyCommitted() {
 // ---------------------------------------------------------------------------
 // generation: M3 applies it, F1 reseeds + applies, M3 held undoes
 // ---------------------------------------------------------------------------
+// PASS+SUB substitution: one degree swapping another in the main
+// progression - I->iii, ii->IV, iii->I, IV->ii, V->bVII, vi->IV,
+// bVII->V (degree space; the swap lands on that degree's pitch class)
+static const uint8_t subSw[7] = {2, 3, 0, 1, 6, 3, 4};
+
 int k4ApplyAll() {
   int L = seqPatLen();
   if (L <= 0) return 0;
   stepSnapshotTake();
   sChain = false;                         // the pattern itself is the context
   buildFw();
-  uint8_t prev = 0;                         // start: the tonic
+  uint8_t prev = 0;                       // start: the tonic
   uint8_t prevBass = sFw[0];
   int written = 0;
+  // phase A: the main progression on every unlocked step (odd steps too -
+  // they keep this main chord when the passing rule declines it)
+  uint8_t mDeg[64], mBass[64];            // STEP_MAX: pattern max 64
+  bool mOk[64];
   for (uint8_t st = 0; st < (uint8_t)L; st++) {
-    if (k4Locked(st)) continue;
+    mOk[st] = false;
+    if (k4Locked(st)) {
+      // the kept chord still brackets a passing slot (empty lock = no)
+      uint8_t n = 0;
+      const uint8_t *nt = stepChordAt(st, &n);
+      if (n) {
+        mDeg[st] = decodeChord(nt, n, 0, 0);
+        mBass[st] = (uint8_t)(nt[0] % 12);
+        mOk[st] = true;
+      }
+      continue;
+    }
     uint8_t pc = pickPc(prev, st);
     if (pc > 11) continue;
+    if (sEmbMode == 2 && fwHas(pc)) {      // PASS+SUB: swap the degree,
+      uint32_t h = hash32(sSeed ^ ((uint32_t)st << 8) ^     // rolled once
+                          ((uint32_t)pc << 16) ^ 0xC2u);     // vs SURP
+      if ((h % 100u) < (uint32_t)k4Knob(6)) pc = sFw[subSw[fwDeg(pc)]];
+    }
     uint8_t q, ext, inv;
     deriveProposal(prev, pc, prevBass, &q, &ext, &inv);
     uint8_t root = (uint8_t)(12 * keyOctave() + 24 + pc);
@@ -577,8 +645,34 @@ int k4ApplyAll() {
     if (n == 0) continue;
     if (stepChordWrite(st, notes, n) < 0) continue;
     written++;
-    prev = fwDeg(pc);
-    prevBass = (uint8_t)(notes[0] % 12);    // the bass the build chose
+    mDeg[st] = fwDeg(pc);
+    mBass[st] = (uint8_t)(notes[0] % 12); // the bass the build chose
+    mOk[st] = true;
+    prev = mDeg[st];
+    prevBass = mBass[st];
+  }
+  // phase B (PASS/P+S): the odd steps become passing chords - a triad on
+  // the scale degree one below the FOLLOWING main chord, quality and
+  // inversion re-derived through the proposal scoring (genre + knobs +
+  // voice-lead), so the passing chord belongs to the same grammar
+  if (sEmbMode) {
+    for (uint8_t st = 1; st < (uint8_t)L; st += 2) {
+      if (k4Locked(st)) continue;
+      uint8_t pr = st - 1;                     // bracketing main chords
+      uint8_t nx = (st + 1 < (uint8_t)L) ? (uint8_t)(st + 1) : 0;
+      if (!mOk[pr] || !mOk[nx]) continue;      // no bracket = keep main
+      uint8_t passD = (uint8_t)((mDeg[nx] + 6) % 7);
+      if (passD == mDeg[pr]) continue;         // the passing chord IS prev
+      if (sEmbPlace == 1 && fwDist7(mDeg[pr], mDeg[nx]) < 2) continue;
+      uint8_t q, ext, inv;
+      deriveProposal(mDeg[pr], sFw[passD], mBass[pr], &q, &ext, &inv);
+      uint8_t root = (uint8_t)(12 * keyOctave() + 24 + sFw[passD]);
+      uint8_t notes[8];
+      uint8_t n = chordBuild(root, q, ext, inv, notes);
+      if (n == 0) continue;
+      if (stepChordWrite(st, notes, n) < 0) continue;
+      written++;
+    }
   }
   histRebuild();      // the context is the stored pattern again
   k4Refresh();
@@ -604,6 +698,7 @@ void k4Stop() {
   sChain = false;
   sHistN = 0;
   sHold = false;
+  sEmbMenu = false;            // the EMB row never outlives KEYMODE4
 }
 
 // entering KEYMODE4: the first chord of the progression is the chord

@@ -57,6 +57,13 @@ static const char* ctrlLegend(uint8_t i) {
       static const char* ed[2] = { "ACC", "PROB" };
       return ed[i - 7];
     }
+    // SEQMODE + POLY: F1 = FX (sus/ext/color/strum), F2 stays free,
+    // F3/F4 edit accent / probability
+    if (modeBase == MODE_SEQ && modeVariant != 3 &&
+        seqTrack() == SEQ_TRACK_POLY) {
+      static const char* ed[4] = { "FX", "", "ACC", "PROB" };
+      return ed[i - 5];
+    }
     if (key4) {          // KEYMODE4: VAR / LOCK / LEAD / HOLD
       static const char* k4r2[4] = { "VAR", "LOCK", "LEAD", "HOLD" };
       return k4r2[i - 5];
@@ -123,6 +130,8 @@ void refreshMainScreen() {
   // KEYMODE4: the genre row, or its OCT/SCALE/KEY overlay
   bool key4 = (modeBase == MODE_KEY && modeVariant == 4 && b.enc == ENC_KEY4);
   bool key4Ov = (b.enc == ENC_KEY4_PREV);
+  // ...or its sticky EMB menu (EMB / PLACE)
+  bool key4Emb = (b.enc == ENC_KEY4_EMB);
 
   for (uint8_t c = 0; c < 4; c++) {
     uint8_t x = c * 32 + 1;
@@ -161,6 +170,12 @@ void refreshMainScreen() {
     } else if (key4Ov && c == 3) {
       snprintf(val, sizeof(val), "%s",
                chordFScale() ? "ON" : "OFF");       // overlay ENC4 = FScale
+    } else if (key4Emb && c == 0) {
+      snprintf(val, sizeof(val), "%s", k4EmbModeName());  // ENC1 = EMB
+    } else if (key4Emb && c == 1) {
+      snprintf(val, sizeof(val), "%s", k4EmbPlaceName()); // ENC2 = PLACE
+    } else if (key4Emb) {
+      snprintf(val, sizeof(val), "---");                   // ENC3/4 idle
     } else if (modeBase == MODE_KEY && c == 0) {
       snprintf(val, sizeof(val), "%d", keyOctave());         // ENC1 = octave
     } else if (modeBase == MODE_KEY && c == 1) {
@@ -190,6 +205,8 @@ void refreshMainScreen() {
     }
     if (c == 1 && f3AccentActive()) l2 = "ACC";   // F3 held: ENC6 = accent
     if (arpP && 4 + c == 6) l2 = "INST";          // arp page: ENC7 = insert
+    if (seqDrumGe && 4 + c == 6 && stepEditSel() == 5)
+      l2 = "FX";                                  // POLY edit: ENC7 = FX type
     u8g2.drawStr(x, 38, l2);
     if (c == 1 && f3AccentActive()) {
       snprintf(val, sizeof(val), "%d", seqAccentVelocity()); // ENC6 = acc vel
@@ -217,7 +234,8 @@ void refreshMainScreen() {
     } else if (seqDrumGe && 4 + c == 5) {
       snprintf(val, sizeof(val), "---");                    // ENC6 free
     } else if (seqDrumGe && 4 + c == 6) {
-      snprintf(val, sizeof(val), "---");                    // ENC7 free
+      snprintf(val, sizeof(val), "%s",
+               stepEditSel() == 5 ? stepFxSelName() : "---"); // ENC7 = FX type
     } else if (seqDrumGe && 4 + c == 7) {
       snprintf(val, sizeof(val), "%d%%", seqProbPct());  // ENC8 = track probability
     } else if (key4 && 4 + c == 4) {
@@ -228,8 +246,8 @@ void refreshMainScreen() {
       snprintf(val, sizeof(val), "%u", k4Knob(5));          // ERA
     } else if (key4 && 4 + c == 7) {
       snprintf(val, sizeof(val), "%u", k4Knob(6));          // SURP
-    } else if (key4Ov) {
-      snprintf(val, sizeof(val), "---");                // overlay row 2 idle
+    } else if (key4Ov || key4Emb) {
+      snprintf(val, sizeof(val), "---");          // overlay row 2 idle
     } else if (keyOv && 4 + c == 4) {
       snprintf(val, sizeof(val), "%s", chordKeyLock() ? "ON" : "OFF");
     } else if (keyOv && 4 + c == 5) {

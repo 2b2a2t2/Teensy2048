@@ -47,6 +47,23 @@ void    chordPerfAdjust(int16_t counts);     // CW = Perf on, CCW = off (state o
 void    chordFScaleAdjust(int16_t counts);   // CW = FScale on, CCW = off
 bool    chordFScale();        // ON: every chord tone is snapped to the scale
 uint8_t chordForceNote(uint8_t note);  // the FScale snap (identity when off)
+
+// --- POLY step FX (playback-time embellishments) --------------------------
+// low-nibble flags of the per-step FX byte (its top nibble carries the
+// CHORD_EXT_* extension mask); written by stepFxBit() in Keyboard.cpp
+#define CHORD_FX_SUS2   0x01
+#define CHORD_FX_SUS4   0x02
+#define CHORD_FX_COLOR  0x04
+#define CHORD_FX_STRUM  0x08
+uint8_t chordFxApply(const uint8_t *in, uint8_t n, uint8_t fx,
+                     uint8_t *out, uint8_t *nCore);
+                    // reshape a stored chord the moment it plays: SUS swaps
+                    // the third for a 4th/2nd, the extension mask runs the
+                    // 6/m7/M7/9 colors, COLOR appends a raw half-step-below-
+                    // root approach note at the END of the list.  Returns
+                    // the total; *nCore = the transformable core - FScale
+                    // must snap [0, nCore) only (the tail stays chromatic)
+                    // and the tail must be deduped against the emitted notes
 bool    chordLatch();
 bool    chordKeyLock();
 bool    chordPerf();

@@ -167,6 +167,7 @@ void pollSeqClock() {
   else if (sAdv != 255) seqStepAdvance(false);
   keyMonoPoll();               // live MONO-track keyboard voice (TRACK/TYPE)
   seqGatePoll();               // track gate note-offs (MONO step-edit)
+  seqStrumPoll();              // staggered strum note-ons (FX / TYPE=STRUM)
 
   // redraw when the displayed position moved or the mode changed.  The
   // trigger must include the DOT's own source (edit track head): playStep
@@ -266,15 +267,15 @@ void seqMonoTypeAdjust(int16_t counts) {
   while (monoRes <= -4) { monoRes += 4;  step--; }
   if (!step) return;
   int16_t t = (int16_t)monoType[seqEditChannel() - 1] + step;
-  if (t < SEQ_MONO_ROOT) t = SEQ_MONO_ROOT;
-  if (t > SEQ_MONO_ARP)  t = SEQ_MONO_ARP;
+  if (t < SEQ_MONO_ROOT)  t = SEQ_MONO_ROOT;
+  if (t > SEQ_MONO_STRUM) t = SEQ_MONO_STRUM;
   monoType[seqEditChannel() - 1] = (uint8_t)t;
 }
 
 uint8_t seqMonoType() { return monoType[seqEditChannel() - 1]; }
 
 const char* seqMonoTypeName() {
-  static const char* names[3] = { "ROOT", "BASS", "ARP" };
+  static const char* names[4] = { "ROOT", "BASS", "ARP", "STRUM" };
   return names[seqMonoType()];
 }
 
@@ -284,7 +285,7 @@ uint8_t seqMonoTypeOf(uint8_t idx) {
 
 void seqSetMonoType(uint8_t idx, uint8_t m) {
   if (idx >= 16) return;
-  if (m > SEQ_MONO_ARP) m = SEQ_MONO_ARP;
+  if (m > SEQ_MONO_STRUM) m = SEQ_MONO_STRUM;
   monoType[idx] = m;
 }
 

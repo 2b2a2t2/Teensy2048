@@ -35,11 +35,14 @@ void seqSetTrackType(uint8_t idx, uint8_t t);  // raw set (EEPROM load), clamped
 // playback (steps keep storing the full incoming chord).
 // ROOT = chord-root detection (template based, fallback lowest note),
 // BASS = lowest note, ARP = chord notes ascending, 1 note per playhead
-// step, wraps; counter resets on transport stop.  Default ROOT everywhere.
-enum SeqMonoType : uint8_t { SEQ_MONO_ROOT = 0, SEQ_MONO_BASS = 1, SEQ_MONO_ARP = 2 };
+// step, wraps; counter resets on transport stop.  STRUM = the whole chord
+// raked inside each step (ascending, each note cutting the last, last note
+// held to the gate).  Default ROOT everywhere.
+enum SeqMonoType : uint8_t { SEQ_MONO_ROOT = 0, SEQ_MONO_BASS = 1,
+                             SEQ_MONO_ARP = 2, SEQ_MONO_STRUM = 3 };
 void seqMonoTypeAdjust(int16_t counts);  // edit channel; 4 counts = 1 step, no wrap
 uint8_t seqMonoType();                   // edit channel
-const char* seqMonoTypeName();           // "ROOT" / "BASS" / "ARP"
+const char* seqMonoTypeName();           // "ROOT" / "BASS" / "ARP" / "STRUM"
 uint8_t seqMonoTypeOf(uint8_t idx);      // sequence idx 0..15
 void seqSetMonoType(uint8_t idx, uint8_t m);   // raw set (EEPROM load), clamped
 

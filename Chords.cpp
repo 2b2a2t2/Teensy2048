@@ -277,6 +277,80 @@ static uint8_t forceScaleNote(uint8_t note) {
   return note;
 }
 
+// decode the root note and quality from a stored chord: match the triad
+// templates by pitch class (order = major, minor, diminished, sus4, sus2,
+// the same five families the MONO ROOT type knows), the LOWEST matching
+// note wins (root-position bias, inversions cannot fool it).  A chord with
+// no triad (dyads, quartal stacks) falls back to its lowest note as a
+// major root - the sus/ext transforms still land somewhere musical
+static void fxRootQ(const uint8_t *ch, uint8_t n, int *root, uint8_t *q) {
+  bool pc[12] = {false, false, false, false, false, false,
+                 false, false, false, false, false, false};
+  for (uint8_t i = 0; i < n; i++) pc[ch[i] % 12] = true;
+  int lo = ch[0];
+  for (uint8_t i = 1; i < n; i++) if (ch[i] < lo) lo = ch[i];
+  int best = -1;
+  uint8_t bq = CHORD_Q_MAJ;
+  for (uint8_t i = 0; i < n; i++) {
+    uint8_t r = (uint8_t)(ch[i] % 12);
+    uint8_t qTry = CHORD_Q_MAJ;
+    if (pc[(r + 4) % 12] && pc[(r + 7) % 12])      qTry = CHORD_Q_MAJ;
+    else if (pc[(r + 3) % 12] && pc[(r + 7) % 12]) qTry = CHORD_Q_MIN;
+    else if (pc[(r + 3) % 12] && pc[(r + 6) % 12]) qTry = CHORD_Q_DIM;
+    else if (pc[(r + 5) % 12] && pc[(r + 7) % 12]) qTry = CHORD_Q_SUS;
+    else if (pc[(r + 2) % 12] && pc[(r + 7) % 12]) qTry = CHORD_Q_SUS;
+    else continue;                                 // this note is no root
+    if (best < 0 || ch[i] < best) { best = ch[i]; bq = qTry; }
+  }
+  *root = (best >= 0) ? best : lo;
+  *q = bq;
+}
+
+// playback-time step FX for POLY tracks (the FX byte's SUS/COLOR/EXT bits;
+// STRUM is timing, handled by the caller).  Core = SUS + extensions,
+// color = one raw chromatic approach appended at the end.  See Chords.h
+uint8_t chordFxApply(const uint8_t *in, uint8_t n, uint8_t fx,
+                     uint8_t *out, uint8_t *nCore) {
+  if (nCore) *nCore = n;
+  if (!in || !out || !n) return 0;
+  if (n > CHORD_N) n = CHORD_N;
+  for (uint8_t i = 0; i < n; i++) out[i] = in[i];
+  uint8_t m = n;
+
+  int root;
+  uint8_t q;
+  fxRootQ(in, n, &root, &q);
+
+  if (fx & (CHORD_FX_SUS2 | CHORD_FX_SUS4)) {
+    // the sus re-voice removes the THIRD (by pitch class - a voicing may
+    // park it anywhere) and adds the 4th/2nd in the root's octave
+    uint8_t t3 = (uint8_t)((root + 3) % 12);
+    uint8_t t4 = (uint8_t)((root + 4) % 12);
+    uint8_t k = 0;
+    for (uint8_t i = 0; i < m; i++) {
+      uint8_t p = (uint8_t)(out[i] % 12);
+      if (p != t3 && p != t4) out[k++] = out[i];
+    }
+    m = k;
+    uint8_t w = clampNote(root + ((fx & CHORD_FX_SUS4) ? 5 : 2));
+    bool dup = false;
+    for (uint8_t i = 0; i < m; i++) if (out[i] == w) dup = true;
+    if (!dup && m < CHORD_N) out[m++] = w;
+  }
+  uint8_t ext = (uint8_t)((fx >> 4) & 0x0F);
+  if (ext) addExtensions(out, m, root, q, ext);
+  if (fx & CHORD_FX_COLOR) {
+    // one quiet approach note a half-step under the root - appended RAW,
+    // so the caller must not FScale-snap it (the chromatic IS the color)
+    uint8_t w = clampNote(root - 1);
+    bool dup = false;
+    for (uint8_t i = 0; i < m; i++) if (out[i] == w) dup = true;
+    if (!dup && m < CHORD_N) out[m++] = w;
+  }
+  if (nCore) *nCore = m;
+  return m;
+}
+
 // build the notes of a chord: triad from the quality row, extensions, then
 // the explicit spread/density/bass/voicing transforms and the FScale snap.
 // Shared by the live engine (playChordAt) and the KEYMODE4 apply path

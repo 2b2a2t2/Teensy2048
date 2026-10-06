@@ -35,13 +35,22 @@ static bool prevOvActive = false;
 
 // --- SEQMODE step-edit radio (all track types) -----------------------------
 // M1 toggles the edit on/off, F1-F4 pick the target (0=STEPS, 1=TIE,
-// 2=GLIDE, 3=ACCENT, 4=PROB).  The state persists across mode switches;
-// while ON, the step pads edit attributes instead of recording (STEPS
-// target = normal recording) and ENC5/6/8 shape gate/velocity/probability.
-// DRUM/POLY take ACCENT/PROB from F3/F4 only (M1 keeps its part-select
-// hold on DRUM).  ENCMODE keeps its CCs, KEYMODE its keys - never there
+// 2=GLIDE, 3=ACCENT, 4=PROB; POLY adds 5=FX).  The state persists across
+// mode switches; while ON, the step pads edit attributes instead of
+// recording (STEPS target = normal recording) and ENC5/6/8 shape
+// gate/velocity/probability.  DRUM/POLY take ACCENT/PROB from F3/F4 only,
+// POLY takes FX from F1 (M1 keeps its part-select hold on DRUM).
+// ENCMODE keeps its CCs, KEYMODE its keys - never there
 static bool    stepEditOn = true;     // boot: pads record (STEPS)
 static uint8_t stepEditTarget = 0;    // 0 = STEPS (normal step recording)
+// which FX type the pads/ENC7 edit while target 5 is engaged (StepFxType)
+static uint8_t stepFxType = SEQ_FX_SUS4;
+
+static const char* stepFxName(uint8_t t) {
+  static const char* n[8] = { "sus2", "sus4", "6", "m7",
+                              "M7", "9", "color", "strum" };
+  return n[t & 7];
+}
 
 // active in SEQMODE variants 1/2/4 while the edit track is MONO
 static bool stepEditCtx() {
@@ -57,13 +66,17 @@ static bool stepEditAccCtx() {
 }
 
 // true while an ATTRIBUTE target is engaged for the current track: MONO =
-// TIE/GLIDE/ACCENT/PROB (1..4), DRUM/POLY = ACCENT/PROB (3,4).  Drives
-// the header label, the step pulse and the attribute pad mode
+// TIE/GLIDE/ACCENT/PROB (1..4), POLY = ACCENT/PROB plus the FX target (5),
+// DRUM = ACCENT/PROB (3,4).  A target never matches a track that cannot
+// edit it (a POLY FX selection does not arm MONO/DRUM pads).  Drives the
+// header label, the step pulse and the attribute pad mode
 bool stepEditActive() {
-  return stepEditOn &&
-         ((seqTrack() == SEQ_TRACK_MONO && stepEditTarget != 0) ||
-          (stepEditAccCtx() && stepEditTarget >= 3)) &&
-         modeBase == MODE_SEQ && modeVariant != 3;
+  if (!stepEditOn || modeBase != MODE_SEQ || modeVariant == 3) return false;
+  uint8_t trk = seqTrack();
+  if (trk == SEQ_TRACK_MONO) return stepEditTarget >= 1 && stepEditTarget <= 4;
+  if (trk == SEQ_TRACK_POLY)
+    return stepEditTarget == 5 || (stepEditTarget >= 3 && stepEditTarget <= 4);
+  return stepEditTarget >= 3 && stepEditTarget <= 4;
 }
 
 static void stepEditSet(bool on, uint8_t target) {
@@ -73,6 +86,8 @@ static void stepEditSet(bool on, uint8_t target) {
 
 bool    stepEditIsOn() { return stepEditOn; }
 uint8_t stepEditSel()  { return stepEditTarget; }
+uint8_t stepFxSel()    { return stepFxType; }
+const char* stepFxSelName() { return stepFxName(stepFxType); }
 
 // --- SEQMODE M2 "ARP" page (variants 1/2/4) -------------------------------
 // Clicking M2 rebinds the encoder row while the edit track is a MONO
@@ -229,17 +244,24 @@ void handleButtonEvents() {
                                             SEQ_ATT_ACCENT, SEQ_ATT_PROB };
           static const char *const nmOf[4] = { "tie", "glide", "accent",
                                                "prob" };
-          uint8_t att = attOf[stepEditTarget - 1];
-          bool on = stepAttrToggle(stp, att);
           char ab[24];
-          if (seqTrack() == SEQ_TRACK_DRUM) {
-            // per voice: name the SELECTED PART and its short attribute
-            snprintf(ab, sizeof(ab), "%u %s %s %s", stp + 1,
-                     drumPartName(), att == SEQ_ATT_ACCENT ? "acc" : "prb",
-                     on ? "on" : "off");
-          } else {
+          if (stepEditTarget == 5) {
+            // POLY FX target: the pad arms the SELECTED FX type on it
+            bool on = stepFxToggle(stp, stepFxType);
             snprintf(ab, sizeof(ab), "%u %s %s", stp + 1,
-                     nmOf[stepEditTarget - 1], on ? "on" : "off");
+                     stepFxName(stepFxType), on ? "on" : "off");
+          } else {
+            uint8_t att = attOf[stepEditTarget - 1];
+            bool on = stepAttrToggle(stp, att);
+            if (seqTrack() == SEQ_TRACK_DRUM) {
+              // per voice: name the SELECTED PART and its short attribute
+              snprintf(ab, sizeof(ab), "%u %s %s %s", stp + 1,
+                       drumPartName(), att == SEQ_ATT_ACCENT ? "acc" : "prb",
+                       on ? "on" : "off");
+            } else {
+              snprintf(ab, sizeof(ab), "%u %s %s", stp + 1,
+                       nmOf[stepEditTarget - 1], on ? "on" : "off");
+            }
           }
           headerShow(ab);
           if (logRoom(48)) {
@@ -341,9 +363,19 @@ void handleButtonEvents() {
         } else {
           // master on: reuse the last attribute, default to ACCENT
           uint8_t t = (stepEditTarget >= 3) ? stepEditTarget : 3;
+          if (t == 5 && seqTrack() != SEQ_TRACK_POLY) t = 3; // FX is POLY-only
           stepEditSet(true, t);
-          headerShow(t == 3 ? "ACCENT" : "PROB");
-          if (logRoom(48)) Serial.println("  step edit on (accent)");
+          if (t == 3) headerShow("ACCENT");
+          else if (t == 4) headerShow("PROB");
+          else {
+            char hb[14];
+            snprintf(hb, sizeof(hb), "FX %s", stepFxName(stepFxType));
+            headerShow(hb);
+          }
+          if (logRoom(48)) {
+            Serial.print("  step edit on (");
+            Serial.println(t == 3 ? "accent)" : t == 4 ? "prob)" : "fx)");
+          }
         }
         refreshAllLeds();
       }
@@ -399,6 +431,24 @@ void handleButtonEvents() {
           if (logRoom(48)) {
             Serial.print("  edit target ");
             Serial.println(tn[idx]);
+          }
+        }
+      } else if (idx == 0 && seqTrack() == SEQ_TRACK_POLY) {
+        // POLY: F1 = the FX target (sus/ext/color/strum per step); the
+        // engaged one closes the radio again, like F3/F4 do.  F2 stays
+        // free (no fifth attribute)
+        if (stepEditOn && stepEditTarget == 5) {
+          stepEditSet(false, 0);
+          headerShow("EDIT OFF");
+          if (logRoom(48)) Serial.println("  step edit off");
+        } else {
+          stepEditSet(true, 5);
+          char hb[16];
+          snprintf(hb, sizeof(hb), "FX %s", stepFxName(stepFxType));
+          headerShow(hb);
+          if (logRoom(48)) {
+            Serial.print("  edit target fx ");
+            Serial.println(stepFxName(stepFxType));
           }
         }
       }
@@ -530,7 +580,9 @@ void handleButtonEvents() {
       }
     }
 
-    // KEYMODE4 control row: NEXT = focus+1, M1 = write latch (WRITE lands
+    // KEYMODE4 control row: NEXT tap = the EMB menu (sticky: the encoder
+    // row becomes EMB/PLACE, tap again to close), NEXT hold = focus+1,
+    // M1 = write latch (WRITE lands
     // the proposal on the focused step / AUDITION plays it only), M2 =
     // auto-advance after every write, M3 tap = apply the generator to every
     // unlocked step / M3 hold = undo, F1 = variation (reseed + generate),
@@ -541,6 +593,15 @@ void handleButtonEvents() {
       if (groupControls[i] == kl) k4ci = (int8_t)i;
     if (modeBase == MODE_KEY && modeVariant == 4) {
       if (k4ci == 1 && ev == EV_CLICKED) {
+        bool on = !k4EmbMenu();
+        k4EmbMenuSet(on);
+        if (on) setOverlay(G_ENC, ENC_KEY4_EMB);
+        else clearOverlay(G_ENC);
+        headerShow(on ? "EMB MENU" : "MENU OFF");
+        refreshMainScreen();   // the row swaps to EMB/PLACE labels
+        if (logRoom(48))
+          Serial.println(on ? "  emb menu on" : "  emb menu off");
+      } else if (k4ci == 1 && ev == EV_HOLD) {
         k4FocusStep(1);            // announces focus + progression itself
         refreshAllLeds();
         if (logRoom(48)) Serial.println("  focus next");
@@ -613,7 +674,10 @@ void handleButtonEvents() {
         refreshMainScreen();
         if (logRoom(48)) Serial.println("  overlay KEY4 PREV");
       } else if (ev == EV_RELEASED && prevOvActive) {
-        clearOverlay(G_ENC);
+        // PREV lets go: back to the EMB menu row when it is still open
+        // (the menu is sticky, the PREV row above was only borrowed)
+        if (k4EmbMenu()) setOverlay(G_ENC, ENC_KEY4_EMB);
+        else clearOverlay(G_ENC);
         prevOvActive = false;
         refreshMainScreen();
         if (logRoom(48)) Serial.println("  overlay off");
@@ -850,6 +914,27 @@ void handleEncoderEvents() {
       any = true;
     }
 
+    // KEYMODE4: the sticky EMB menu row = ENC1 = embellish mode (off ->
+    // pass -> pass+sub, wraps), ENC2 = passing placement (odd / distance,
+    // two-state: CW one way, CCW the other).  The other six are "--"
+    if (modeBase == MODE_KEY && modeVariant == 4 && k4EmbMenu() && ed != 0 &&
+        currentBinding().enc == ENC_KEY4_EMB) {
+      if (ei == 0) {
+        k4EmbModeAdjust(ed);
+        char eb[8];
+        snprintf(eb, sizeof(eb), "EMB %s", k4EmbModeName());
+        headerShow(eb);
+        if (logRoom(48)) { Serial.print("  "); Serial.println(eb); }
+      } else if (ei == 1) {
+        k4EmbPlaceAdjust(ed);
+        char pb[8];
+        snprintf(pb, sizeof(pb), "PLC %s", k4EmbPlaceName());
+        headerShow(pb);
+        if (logRoom(48)) { Serial.print("  "); Serial.println(pb); }
+      }
+      any = true;
+    }
+
     // KEYMODE2: ENC4 = Force-to-scale (FScale), ENC5..ENC7 = bass/spread/
     // density, ENC8 = latch.  With PREV held the row remaps: ENC4 = latch,
     // ENC5 = KeyLock, ENC6 = Perf (state only)
@@ -968,9 +1053,10 @@ void handleEncoderEvents() {
           }
         // F3 held: ENC6 = ACCENT velocity of the edit track (every track
         // type).  Otherwise the step-edit value encoders: ENC5 = gate %,
-        // ENC6 = default velocity (MONO only), ENC8 = the probability of
-        // the edit track itself - live, so every PROB step of that track
-        // re-rolls at the new rate.  ENC7 stays free
+        // ENC6 = default velocity (MONO only), ENC7 = the FX type while the
+        // FX target is engaged (POLY), ENC8 = the probability of the edit
+        // track itself - live, so every PROB step of that track re-rolls at
+        // the new rate
         } else if (ei == 5 && ed != 0 && f3AccentActive()) {
           seqAccentVelocityAdjust(ed);
           if (logRoom(48)) {
@@ -990,6 +1076,20 @@ void handleEncoderEvents() {
             if (logRoom(48)) {
               Serial.print("  vel ");
               Serial.println(seqVelocity());
+            }
+          } else if (ei == 6 && stepEditTarget == 5 &&
+                     seqTrack() == SEQ_TRACK_POLY) {
+            // FX type of the pads: sus2 sus4 6 m7 M7 9 color strum (wrap)
+            uint8_t t = (uint8_t)((stepFxType + (ed > 0 ? 1 : 7)) & 7);
+            if (t != stepFxType) {
+              stepFxType = t;
+              char hb[16];
+              snprintf(hb, sizeof(hb), "FX %s", stepFxName(stepFxType));
+              headerShow(hb);
+              if (logRoom(48)) {
+                Serial.print("  fx type ");
+                Serial.println(stepFxName(stepFxType));
+              }
             }
           } else if (ei == 7 &&
                      (stepEditCtx() || stepEditAccCtx())) {

@@ -25,13 +25,16 @@ void encCcSave();
 void encCcLoad();
 
 // SEQMODE step-edit radio (variants 1/2/4): is the edit on, which target
-// is selected (0=STEPS, 1=TIE, 2=GLIDE, 3=ACCENT, 4=PROB), and whether an
-// attribute target is engaged for the current track (MONO = 1..4, DRUM =
-// ACCENT/PROB only).  The probability % itself is per track (ENC8 ->
-// seqProbAdjust / seqProbPct in Keyboard.h)
+// is selected (0=STEPS, 1=TIE, 2=GLIDE, 3=ACCENT, 4=PROB; POLY adds
+// 5=FX), and whether an attribute target is engaged for the current track
+// (MONO = 1..4, POLY = 3/4/5, DRUM = ACCENT/PROB only).  The probability
+// % itself is per track (ENC8 -> seqProbAdjust / seqProbPct in Keyboard.h)
 bool    stepEditIsOn();
 uint8_t stepEditSel();
 bool    stepEditActive();
+uint8_t stepFxSel();    // selected FX type for the FX target (StepFxType,
+                        // 0..7 - which FX the pads/ENC7 edit)
+const char* stepFxSelName();  // its display name (sus2 ... strum)
 
 // HOLD F3 in SEQMODE (variants 1/2/4): ENC6 edits the track's ACCENT
 // velocity instead of its default velocity (release restores ENC6)
