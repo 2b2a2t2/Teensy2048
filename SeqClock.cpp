@@ -289,6 +289,43 @@ void seqSetMonoType(uint8_t idx, uint8_t m) {
   monoType[idx] = m;
 }
 
+// SEQMODE3 TYPE (ENC7) on a POLY track: the track's default step playback
+// type, stored in the same byte as the MONO transform (0..2 is always a
+// valid POLY value; a stale 3 from a MONO edit reads as STEP and the first
+// adjust snaps back into range).  STEP = chords play as blocks (as before),
+// STRUM = every step is raked with the fixed tempo spread, HAND = the
+// keyboard performs: silent chord build, white keys strum, REC captures
+// the gesture for playback.  A step can override this per step (F2 TYPE).
+static int16_t polyRes = 0;               // leftover encoder counts (own)
+
+void seqPolyTypeAdjust(int16_t counts) {
+  polyRes += counts;
+  int8_t step = 0;
+  while (polyRes >= 4)  { polyRes -= 4;  step++; }
+  while (polyRes <= -4) { polyRes += 4;  step--; }
+  if (!step) return;
+  int16_t t = (int16_t)seqPolyType() + step;
+  if (t < SEQ_POLY_STEP) t = SEQ_POLY_STEP;
+  if (t > SEQ_POLY_HAND) t = SEQ_POLY_HAND;
+  monoType[seqEditChannel() - 1] = (uint8_t)t;
+}
+
+uint8_t seqPolyType() {
+  uint8_t t = monoType[seqEditChannel() - 1];
+  return (t > SEQ_POLY_HAND) ? SEQ_POLY_STEP : t;
+}
+
+const char* seqPolyTypeName() {
+  static const char* names[3] = { "STEP", "STRUM", "HAND" };
+  return names[seqPolyType()];
+}
+
+uint8_t seqPolyTypeOf(uint8_t idx) {
+  if (idx >= 16) return SEQ_POLY_STEP;
+  uint8_t t = monoType[idx];
+  return (t > SEQ_POLY_HAND) ? SEQ_POLY_STEP : t;
+}
+
 // --- ARP options (SEQMODE M2 page), per track -----------------------------
 // span = octaves extended on top of the chord (Arpie allows 3 more),
 // mode = walk order, inst = Arpie's note-insert patterns, skip = rests

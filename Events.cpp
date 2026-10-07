@@ -47,9 +47,9 @@ static uint8_t stepEditTarget = 0;    // 0 = STEPS (normal step recording)
 static uint8_t stepFxType = SEQ_FX_SUS4;
 
 static const char* stepFxName(uint8_t t) {
-  static const char* n[8] = { "sus2", "sus4", "6", "m7",
-                              "M7", "9", "color", "strum" };
-  return n[t & 7];
+  static const char* n[7] = { "sus2", "sus4", "6", "m7",
+                              "M7", "9", "color" };
+  return n[t % 7];
 }
 
 // active in SEQMODE variants 1/2/4 while the edit track is MONO
@@ -66,16 +66,18 @@ static bool stepEditAccCtx() {
 }
 
 // true while an ATTRIBUTE target is engaged for the current track: MONO =
-// TIE/GLIDE/ACCENT/PROB (1..4), POLY = ACCENT/PROB plus the FX target (5),
-// DRUM = ACCENT/PROB (3,4).  A target never matches a track that cannot
-// edit it (a POLY FX selection does not arm MONO/DRUM pads).  Drives the
-// header label, the step pulse and the attribute pad mode
+// TIE/GLIDE/ACCENT/PROB (1..4), POLY = ACCENT/PROB plus the FX target (5)
+// and the TYPE target (6), DRUM = ACCENT/PROB (3,4).  A target never
+// matches a track that cannot edit it (a POLY FX/TYPE selection does not
+// arm MONO/DRUM pads).  Drives the header label, the step pulse and the
+// attribute pad mode
 bool stepEditActive() {
   if (!stepEditOn || modeBase != MODE_SEQ || modeVariant == 3) return false;
   uint8_t trk = seqTrack();
   if (trk == SEQ_TRACK_MONO) return stepEditTarget >= 1 && stepEditTarget <= 4;
   if (trk == SEQ_TRACK_POLY)
-    return stepEditTarget == 5 || (stepEditTarget >= 3 && stepEditTarget <= 4);
+    return stepEditTarget == 5 || stepEditTarget == 6 ||
+           (stepEditTarget >= 3 && stepEditTarget <= 4);
   return stepEditTarget >= 3 && stepEditTarget <= 4;
 }
 
@@ -88,6 +90,26 @@ bool    stepEditIsOn() { return stepEditOn; }
 uint8_t stepEditSel()  { return stepEditTarget; }
 uint8_t stepFxSel()    { return stepFxType; }
 const char* stepFxSelName() { return stepFxName(stepFxType); }
+
+// which per-step TYPE the F2/arm flow stamps on a POLY track while the
+// TYPE target is engaged (0..2 = SEQ_POLY_STEP / STRUM / HAND).  Stays
+// across takes like the FX selection (both live in RAM only)
+static uint8_t stepTypeArmV = SEQ_POLY_STEP;
+
+void stepTypeArmAdjust(int16_t counts) {
+  int t = (int)stepTypeArmV;
+  int steps = counts > 0 ? (int)counts : -(int)counts;
+  if (steps > 0) {
+    if (counts > 0) t = (t + steps) % 3;
+    else t = ((t - steps) % 3 + 3) % 3;
+    stepTypeArmV = (uint8_t)t;
+  }
+}
+uint8_t stepTypeArm() { return stepTypeArmV; }
+const char* stepTypeArmName() {
+  static const char *const n[3] = { "STEP", "STRUM", "HAND" };
+  return n[stepTypeArmV % 3];
+}
 
 // --- SEQMODE M2 "ARP" page (variants 1/2/4) -------------------------------
 // Clicking M2 rebinds the encoder row while the edit track is a MONO
@@ -250,6 +272,13 @@ void handleButtonEvents() {
             bool on = stepFxToggle(stp, stepFxType);
             snprintf(ab, sizeof(ab), "%u %s %s", stp + 1,
                      stepFxName(stepFxType), on ? "on" : "off");
+          } else if (stepEditTarget == 6) {
+            // POLY TYPE target: the pad stamps the ARMED override on it
+            // (a second tap clears back to inherit-the-track)
+            bool on = stepTypeToggle(stp, stepTypeArmV);
+            snprintf(ab, sizeof(ab), "%u %s %s", stp + 1,
+                     on ? stepTypeArmName() : "type",
+                     on ? "on" : "inherit");
           } else {
             uint8_t att = attOf[stepEditTarget - 1];
             bool on = stepAttrToggle(stp, att);
@@ -364,17 +393,20 @@ void handleButtonEvents() {
           // master on: reuse the last attribute, default to ACCENT
           uint8_t t = (stepEditTarget >= 3) ? stepEditTarget : 3;
           if (t == 5 && seqTrack() != SEQ_TRACK_POLY) t = 3; // FX is POLY-only
+          if (t == 6 && seqTrack() != SEQ_TRACK_POLY) t = 3; // TYPE is POLY-only
           stepEditSet(true, t);
           if (t == 3) headerShow("ACCENT");
           else if (t == 4) headerShow("PROB");
           else {
-            char hb[14];
-            snprintf(hb, sizeof(hb), "FX %s", stepFxName(stepFxType));
+            char hb[16];
+            snprintf(hb, sizeof(hb), "%s %s", t == 6 ? "TYPE" : "FX",
+                     t == 6 ? stepTypeArmName() : stepFxName(stepFxType));
             headerShow(hb);
           }
-          if (logRoom(48)) {
+          if (logRoom(80)) {
             Serial.print("  step edit on (");
-            Serial.println(t == 3 ? "accent)" : t == 4 ? "prob)" : "fx)");
+            Serial.println(t == 3 ? "accent)" : t == 4 ? "prob)"
+                           : t == 6 ? "type)" : "fx)");
           }
         }
         refreshAllLeds();
@@ -407,7 +439,8 @@ void handleButtonEvents() {
 
     // F1-F4 in SEQMODE (MONO): pick the edit target and switch the radio
     // on (TIE/GLIDE/ACCENT/PROB).  DRUM/POLY tracks only take ACCENT/PROB
-    // from F3/F4 - clicking the selected one again closes the radio there.
+    // from F3/F4 - clicking the selected one again closes the radio there;
+    // POLY adds F1 = FX and F2 = TYPE (STEP/STRUM/HAND override per step).
     // SEQMODE only: ENCMODE/KEYMODE keep their F-pad jobs
     if (ev == EV_CLICKED && (stepEditCtx() || stepEditAccCtx()) &&
         kl >= groupControls[5] && kl <= groupControls[8]) {
@@ -420,7 +453,7 @@ void handleButtonEvents() {
           Serial.print("  edit target ");
           Serial.println(tn[idx]);
         }
-      } else if (idx >= 2) {               // DRUM: ACCENT (F3) / PROB (F4)
+      } else if (idx >= 2) {               // DRUM/POLY: ACCENT (F3) / PROB (F4)
         if (stepEditOn && stepEditTarget == idx + 1) {
           stepEditSet(false, 0);
           headerShow("EDIT OFF");
@@ -434,9 +467,8 @@ void handleButtonEvents() {
           }
         }
       } else if (idx == 0 && seqTrack() == SEQ_TRACK_POLY) {
-        // POLY: F1 = the FX target (sus/ext/color/strum per step); the
-        // engaged one closes the radio again, like F3/F4 do.  F2 stays
-        // free (no fifth attribute)
+        // POLY: F1 = the FX target (sus/ext/color per step); the
+        // engaged one closes the radio again, like F3/F4 do
         if (stepEditOn && stepEditTarget == 5) {
           stepEditSet(false, 0);
           headerShow("EDIT OFF");
@@ -449,6 +481,23 @@ void handleButtonEvents() {
           if (logRoom(48)) {
             Serial.print("  edit target fx ");
             Serial.println(stepFxName(stepFxType));
+          }
+        }
+      } else if (idx == 1 && seqTrack() == SEQ_TRACK_POLY) {
+        // POLY: F2 = the TYPE target (STEP/STRUM/HAND per step); ENC7 picks
+        // the armed value, a tap on a step stamps it (tap again = inherit)
+        if (stepEditOn && stepEditTarget == 6) {
+          stepEditSet(false, 0);
+          headerShow("EDIT OFF");
+          if (logRoom(48)) Serial.println("  step edit off");
+        } else {
+          stepEditSet(true, 6);
+          char hb[16];
+          snprintf(hb, sizeof(hb), "TYPE %s", stepTypeArmName());
+          headerShow(hb);
+          if (logRoom(48)) {
+            Serial.print("  edit target type ");
+            Serial.println(stepTypeArmName());
           }
         }
       }
@@ -1053,10 +1102,10 @@ void handleEncoderEvents() {
           }
         // F3 held: ENC6 = ACCENT velocity of the edit track (every track
         // type).  Otherwise the step-edit value encoders: ENC5 = gate %,
-        // ENC6 = default velocity (MONO only), ENC7 = the FX type while the
-        // FX target is engaged (POLY), ENC8 = the probability of the edit
-        // track itself - live, so every PROB step of that track re-rolls at
-        // the new rate
+        // ENC6 = default velocity (MONO only), ENC7 = the FX type or the
+        // armed step TYPE while those targets are engaged (POLY),
+        // ENC8 = the probability of the edit track itself - live, so every
+        // PROB step of that track re-rolls at the new rate
         } else if (ei == 5 && ed != 0 && f3AccentActive()) {
           seqAccentVelocityAdjust(ed);
           if (logRoom(48)) {
@@ -1079,8 +1128,8 @@ void handleEncoderEvents() {
             }
           } else if (ei == 6 && stepEditTarget == 5 &&
                      seqTrack() == SEQ_TRACK_POLY) {
-            // FX type of the pads: sus2 sus4 6 m7 M7 9 color strum (wrap)
-            uint8_t t = (uint8_t)((stepFxType + (ed > 0 ? 1 : 7)) & 7);
+            // FX type of the pads: sus2 sus4 6 m7 M7 9 color (wrap, 7)
+            uint8_t t = (uint8_t)((stepFxType + (ed > 0 ? 1 : 6)) % 7);
             if (t != stepFxType) {
               stepFxType = t;
               char hb[16];
@@ -1090,6 +1139,17 @@ void handleEncoderEvents() {
                 Serial.print("  fx type ");
                 Serial.println(stepFxName(stepFxType));
               }
+            }
+          } else if (ei == 6 && stepEditTarget == 6 &&
+                     seqTrack() == SEQ_TRACK_POLY) {
+            // armed step TYPE of the pads: STEP STRUM HAND (wrap)
+            stepTypeArmAdjust(ed);
+            char hb[16];
+            snprintf(hb, sizeof(hb), "TYPE %s", stepTypeArmName());
+            headerShow(hb);
+            if (logRoom(48)) {
+              Serial.print("  type arm ");
+              Serial.println(stepTypeArmName());
             }
           } else if (ei == 7 &&
                      (stepEditCtx() || stepEditAccCtx())) {
@@ -1158,12 +1218,22 @@ void handleEncoderEvents() {
           Serial.println(seqTrackName());
         }
         any = true;
-      } else if (ei == 6 && ed != 0 && seqTrack() == SEQ_TRACK_MONO) {
-        seqMonoTypeAdjust(ed);             // TYPE: ROOT/BASS/ARP (no wrap)
-        if (seqMonoType() != SEQ_MONO_ARP) arpPageDismiss();
-        if (logRoom(48)) {
-          Serial.print("  mono ");
-          Serial.println(seqMonoTypeName());
+      } else if (ei == 6 && ed != 0 &&
+                 (seqTrack() == SEQ_TRACK_MONO ||
+                  seqTrack() == SEQ_TRACK_POLY)) {
+        if (seqTrack() == SEQ_TRACK_MONO) {
+          seqMonoTypeAdjust(ed);           // TYPE: ROOT/BASS/ARP/STRUM (no wrap)
+          if (seqMonoType() != SEQ_MONO_ARP) arpPageDismiss();
+          if (logRoom(48)) {
+            Serial.print("  mono ");
+            Serial.println(seqMonoTypeName());
+          }
+        } else {
+          seqPolyTypeAdjust(ed);           // TYPE: STEP/STRUM/HAND (no wrap)
+          if (logRoom(48)) {
+            Serial.print("  poly ");
+            Serial.println(seqPolyTypeName());
+          }
         }
         any = true;
       }

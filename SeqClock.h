@@ -46,6 +46,21 @@ const char* seqMonoTypeName();           // "ROOT" / "BASS" / "ARP" / "STRUM"
 uint8_t seqMonoTypeOf(uint8_t idx);      // sequence idx 0..15
 void seqSetMonoType(uint8_t idx, uint8_t m);   // raw set (EEPROM load), clamped
 
+// SEQMODE3 TYPE (ENC7) on a POLY track: the track default for every step
+// that carries no per-step override (F2 TYPE).
+// STEP = chords play as blocks (the workflow as before), STRUM = each step
+// is raked ascending with the fixed tempo-based spread (8-40 ms), HAND =
+// the keyboard performs: chord building is silent (incoming chords still
+// update it), the 7 white keys strum the chord, REC captures the strum
+// gesture (note order + real timing) for playback.  Stored in the same
+// byte as the MONO transform; stale MONO values > 2 read as STEP.
+enum SeqPolyType : uint8_t { SEQ_POLY_STEP = 0, SEQ_POLY_STRUM = 1,
+                             SEQ_POLY_HAND = 2 };
+void seqPolyTypeAdjust(int16_t counts);  // edit channel; 4 counts = 1 step, no wrap
+uint8_t seqPolyType();                   // edit channel, clamped 0..2
+const char* seqPolyTypeName();           // "STEP" / "STRUM" / "HAND"
+uint8_t seqPolyTypeOf(uint8_t idx);      // sequence idx 0..15, clamped 0..2
+
 // ARP options (SEQMODE M2 page, edit track must be MONO + TYPE=ARP):
 // span = octaves the arp is stretched over (Arpie: up to 3 more octaves on
 // top of the chord), mode = the order they play in, inst = Arpie's note

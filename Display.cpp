@@ -57,11 +57,11 @@ static const char* ctrlLegend(uint8_t i) {
       static const char* ed[2] = { "ACC", "PROB" };
       return ed[i - 7];
     }
-    // SEQMODE + POLY: F1 = FX (sus/ext/color/strum), F2 stays free,
-    // F3/F4 edit accent / probability
+    // SEQMODE + POLY: F1 = FX (sus/ext/color per step), F2 = TYPE
+    // (STEP/STRUM/HAND override per step), F3/F4 edit accent / probability
     if (modeBase == MODE_SEQ && modeVariant != 3 &&
         seqTrack() == SEQ_TRACK_POLY) {
-      static const char* ed[4] = { "FX", "", "ACC", "PROB" };
+      static const char* ed[4] = { "FX", "TYPE", "ACC", "PROB" };
       return ed[i - 5];
     }
     if (key4) {          // KEYMODE4: VAR / LOCK / LEAD / HOLD
@@ -75,7 +75,8 @@ static const char* ctrlLegend(uint8_t i) {
     static const char* ext[4] = { "6", "m7", "M7", "9" };
     return ext[i - 5];
   }
-  if (i == 1) return key2 ? "Sus" : "NEXT";   // KEYMODE4 keeps NEXT
+  // KEYMODE4 advertises the EMB menu on the NEXT key itself
+  if (i == 1) return key2 ? "Sus" : (key4 ? "EMB" : "NEXT");
   if (i == 2) {
     // hold M1 = DRUM part-select (beats the KEYMODE2 quality, like Events);
     // SEQMODE+MONO = step-edit radio; ENCMODE hold M1 = drum-VOICE mute
@@ -207,6 +208,8 @@ void refreshMainScreen() {
     if (arpP && 4 + c == 6) l2 = "INST";          // arp page: ENC7 = insert
     if (seqDrumGe && 4 + c == 6 && stepEditSel() == 5)
       l2 = "FX";                                  // POLY edit: ENC7 = FX type
+    if (seqDrumGe && 4 + c == 6 && stepEditSel() == 6)
+      l2 = "TYPE";                                // POLY edit: ENC7 = TYPE arm
     u8g2.drawStr(x, 38, l2);
     if (c == 1 && f3AccentActive()) {
       snprintf(val, sizeof(val), "%d", seqAccentVelocity()); // ENC6 = acc vel
@@ -219,6 +222,8 @@ void refreshMainScreen() {
       snprintf(val, sizeof(val), "%s", seqTrackName());   // ENC6 = TRACK
     } else if (seq3 && 4 + c == 6 && seqTrack() == SEQ_TRACK_MONO) {
       snprintf(val, sizeof(val), "%s", seqMonoTypeName()); // ENC7 = TYPE
+    } else if (seq3 && 4 + c == 6 && seqTrack() == SEQ_TRACK_POLY) {
+      snprintf(val, sizeof(val), "%s", seqPolyTypeName()); // ENC7 = TYPE
     } else if (seq3 && 4 + c == 7) {
       snprintf(val, sizeof(val), "%u", seqTempo());         // ENC8 = BPM
     } else if (seqGe && 4 + c == 4) {
@@ -235,7 +240,8 @@ void refreshMainScreen() {
       snprintf(val, sizeof(val), "---");                    // ENC6 free
     } else if (seqDrumGe && 4 + c == 6) {
       snprintf(val, sizeof(val), "%s",
-               stepEditSel() == 5 ? stepFxSelName() : "---"); // ENC7 = FX type
+               stepEditSel() == 5 ? stepFxSelName()
+               : stepEditSel() == 6 ? stepTypeArmName() : "---"); // ENC7
     } else if (seqDrumGe && 4 + c == 7) {
       snprintf(val, sizeof(val), "%d%%", seqProbPct());  // ENC8 = track probability
     } else if (key4 && 4 + c == 4) {
@@ -282,14 +288,17 @@ void drawHeaderText() {
   u8g2.setFont(u8g2_font_6x12_tf);   // header always uses its own font
   clearHeader();
   // SEQMODE step-edit: while an attribute target is engaged, the left
-  // header slot shows it instead of the mode name (TIE/GLIDE/ACCENT/PROB);
-  // an open ARP page wins over both so the rebind is always visible
+  // header slot shows it instead of the mode name (TIE/GLIDE/ACCENT/PROB
+  // on MONO, FX/TYPE/ACCENT/PROB on POLY); an open ARP page wins over both
+  // so the rebind is always visible
   const char* left = headerLeft;
   if (arpPageActive()) {
     left = "ARP";
   } else if (stepEditActive()) {
     static const char* ed[4] = { "TIE", "GLIDE", "ACCENT", "PROB" };
-    left = ed[stepEditSel() - 1];
+    if (stepEditSel() == 5) left = "FX";
+    else if (stepEditSel() == 6) left = "TYPE";
+    else left = ed[stepEditSel() - 1];
   }
   // a transient message owns the whole strip: long strings (the KEY4
   // progression) right-align over the left slot, so drop the label

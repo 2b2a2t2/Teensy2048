@@ -240,6 +240,18 @@ static CRGB modeLedHook(uint8_t pad, bool isTouched, CRGB defaultColor) {
       g.nscale8(64);
       return g;
     }
+    // HAND perform: the 7 white keys become the strummed strings - a
+    // pink -> seagreen gradient left to right (C..B, hue 247..107); the
+    // black keys are not strings and stay dark.  It wins over the kv2
+    // chord tint and the kv4 proposal rainbow so the keyboard reads as one
+    // instrument (touch above still flashes white first)
+    if (handLive()) {
+      if (k < 0) return CRGB::Black;
+      CRGB g = CHSV((uint8_t)(247 - (uint8_t)((led - 25) * 140 / 6)),
+                    255, 255);
+      g.nscale8(KEY_DIM);
+      return g;
+    }
     // sounding chord keys tint cyan (they win over the scale's dark keys)
     if (kv == 2 && chordPlaysPitch((uint8_t)k)) return CRGB(0, 90, 160);
     // KEYMODE4: the whole scored degree set lights - hue-mapped by key as
@@ -272,21 +284,26 @@ static CRGB modeLedHook(uint8_t pad, bool isTouched, CRGB defaultColor) {
     c.nscale8(KEY_DIM);
     return c;
   }
-  // SEQMODE step-edit radio: M1 + F1-F4 (MONO) or M1 + F3/F4 (DRUM/POLY)
-  // keep their mode visible at all times - bright white = the target the
-  // pads currently edit (M1 while no attribute is selected), dim dark blue
-  // background otherwise.  Touch wins over everything
+  // SEQMODE step-edit radio: M1 + F1-F4 (MONO) or M1 + F3/F4 (DRUM) keep
+  // their mode visible at all times; POLY lights F1-F4 too (FX/TYPE/ACC/
+  // PROB) - bright white = the target the pads currently edit (M1 while no
+  // attribute is selected), dim dark blue background otherwise.  Touch wins
+  // over everything
   bool seqMonoRadio = (modeBase == MODE_SEQ && modeVariant != 3 &&
                        seqTrack() == SEQ_TRACK_MONO);
+  bool seqPolyRadio = (modeBase == MODE_SEQ && modeVariant != 3 &&
+                       seqTrack() == SEQ_TRACK_POLY);
   bool seqDrumRadio = (modeBase == MODE_SEQ && modeVariant != 3 &&
-                       (seqTrack() == SEQ_TRACK_DRUM ||
-                        seqTrack() == SEQ_TRACK_POLY));
+                       seqTrack() == SEQ_TRACK_DRUM);
   if ((seqMonoRadio &&
        (led == groupControls[2] ||
         (led >= groupControls[5] && led <= groupControls[8]))) ||
-      (seqDrumRadio && (led == groupControls[2] ||
-                        led == groupControls[5] + 2 ||
-                        led == groupControls[5] + 3))) {
+      ((seqDrumRadio || seqPolyRadio) &&
+       (led == groupControls[2] ||
+        (seqPolyRadio && led >= groupControls[5] &&
+                        led <= groupControls[8]) ||
+        (!seqPolyRadio && (led == groupControls[5] + 2 ||
+                           led == groupControls[5] + 3))))) {
     if (isTouched) return CRGB::White;
     if ((seqMonoRadio || stepEditActive()) &&
         led >= groupControls[5] && fBlinkOn &&
@@ -295,9 +312,18 @@ static CRGB modeLedHook(uint8_t pad, bool isTouched, CRGB defaultColor) {
       g.nscale8(64);
       return g;
     }
-    if ((stepEditSel() == 0 && led == groupControls[2]) ||
-        (stepEditSel() != 0 &&
-         stepEditSel() == (uint8_t)(led - groupControls[5] + 1))) {
+    // which F pad carries the selected target (MONO: F1-F4 = targets 1-4;
+    // DRUM: F3/F4 = 3/4; POLY: F1 = FX (5), F2 = TYPE (6), F3/F4 = 3/4)
+    uint8_t sel = stepEditSel();
+    uint8_t wantF = 0;
+    if (sel != 0) {
+      if (seqPolyRadio && sel == 5) wantF = 1;
+      else if (seqPolyRadio && sel == 6) wantF = 2;
+      else wantF = sel;
+    }
+    if ((sel == 0 && led == groupControls[2]) ||
+        (wantF != 0 && led >= groupControls[5] &&
+         wantF == (uint8_t)(led - groupControls[5] + 1))) {
       CRGB s = CRGB::White;
       s.nscale8(80);
       return s;

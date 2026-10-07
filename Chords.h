@@ -54,7 +54,6 @@ uint8_t chordForceNote(uint8_t note);  // the FScale snap (identity when off)
 #define CHORD_FX_SUS2   0x01
 #define CHORD_FX_SUS4   0x02
 #define CHORD_FX_COLOR  0x04
-#define CHORD_FX_STRUM  0x08
 uint8_t chordFxApply(const uint8_t *in, uint8_t n, uint8_t fx,
                      uint8_t *out, uint8_t *nCore);
                     // reshape a stored chord the moment it plays: SUS swaps

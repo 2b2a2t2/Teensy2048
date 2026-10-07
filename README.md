@@ -100,7 +100,7 @@ Each mode/variant combination selects an `EncSet`, `CtrlSet`, `StepSet`, `KeySet
 - ENC4: Pattern speed (1/16 … 1 … 4, default 1)
 - ENC5: Input channel (1–16)
 - ENC6: Track type (DRUM/MONO/POLY)
-- ENC7: Mono type (ROOT/BASS/ARP/STRUM) — MONO only
+- ENC7: Mono type (ROOT/BASS/ARP/STRUM) — MONO only; Poly type (STEP/STRUM/HAND) — POLY only
 - ENC8: Tempo (40–240 BPM)
 
 ## Workflows
@@ -131,6 +131,13 @@ Each mode/variant combination selects an `EncSet`, `CtrlSet`, `StepSet`, `KeySet
   - **PLAY** works here too: start/stop the transport without leaving KEYMODE4
   - Nothing persists across a reboot (RAM only, by design); the progression grammar follows the current scale (7-note scales exactly, otherwise major degrees from the root)
 
+#### HAND Strum Keyboard (POLY track, TYPE = HAND)
+- With the keyboard channel on a **POLY** sequence whose **TYPE = HAND** (ENC7 in SEQMODE3), the keyboard becomes a **strummed instrument**: the **7 white keys are the strings** (C…B, low to high), the **black keys are dark and silent**. Each white-key pluck sounds the string's note of the current chord — the **fill** derived from the sequence's pending chord (engine snapshot in KEYMODE2/4, held keys / input chord elsewhere), walking the chord's pitch classes up from its bass at the keyboard octave with octave wraps, so **every string always has a note** (no chord yet = silent but lit)
+- **Every key still BUILDS**: KEYMODE2 quality/extensions, KEYMODE4 proposals and the pending-chord feed all keep working — the chord engine is just **muted** (silent build); only the plucks sound. The pluck bypasses the scale filter (chord tones may sit outside it) and feeds neither pending nor the block recorder — the gesture does
+- **Recording**: with REC on, a pluck appends the note to the gesture with its **real timing** — the first touch = onset 0, every later note = ms elapsed (u16, up to ~65 s, never squeezed). All notes of one gesture (**first touch → all keys up**) anchor to the step where it **started**, even if the playhead moved on; playback schedules the onsets from that origin step across the following steps/bars. A block-written step (assign mode, all timings zero) falls back to an **even ≈ 8–40 ms spread**. The block-record path is suppressed in HAND — only plucks record, so a strum never doubles up as a block chord
+- **Let-ring**: a HAND chord keeps sounding (retriggering the same string cuts it) until the next strum lands, a non-empty STEP-block step plays, or it stops via REC / transport stop / erase / mute / leaving the pattern window. Steps with no override follow the **track** TYPE (the live gate is track-level; per-step TYPE shapes playback only)
+- **LEDs**: the white keys show a **pink → seagreen gradient** (hue 247 → 107, left to right, dimmed); black keys stay dark — the gradient wins over the KEYMODE2 chord tint and the KEYMODE4 proposal rainbow while HAND is live (touch still flashes white first; playback blink still wins)
+
 ### 2. Sequencer (SEQMODE)
 
 **Playhead** advances on MIDI clock (24 PPQN external or internal master at tempo). 16 steps per sequence, 16 sequences (one per MIDI channel 1–16).
@@ -146,6 +153,7 @@ Each mode/variant combination selects an `EncSet`, `CtrlSet`, `StepSet`, `KeySet
 - **LED**: dim dark red = idle, **bright red** = armed / recording (touch = white)
 - The keyboard channel must match the edit track — otherwise arming is refused (`kbd ch mismatch`); changing the keyboard channel mid-record disarms
 - Each gesture writes the step under the playhead: **POLY/MONO replace** (fresh gesture clears step + attributes, held notes build the chord), **DRUM overdubs** (notes are added, never removed, duplicates skipped)
+  - **POLY gestures are anchored**: all notes of one gesture (first touch → all keys up) land on the step where it **started** — on a HAND step each pluck carries its real onset (ms since the first touch, u16), so a long strum replays exactly as performed across later steps/bars
 - Press **REC again** = cancel (`rec off`); **transport stop** interrupts the pass and re-arms it for the next start
 - **PLAY starts in SEQMODE or KEYMODE4** — start the transport there first (or feed an external clock), then switch to KEYMODE to arm and play
 
@@ -168,6 +176,7 @@ Each mode/variant combination selects an `EncSet`, `CtrlSet`, `StepSet`, `KeySet
 - **ENC7**: MONO transform — **ROOT** (chord root), **BASS** (lowest note), **ARP** (ascending arpeggio), **STRUM** (the whole chord raked inside the step)
   - Selecting **ARP** lights **M2 purple** in SEQMODE 1/2/4 — click it for the [ARP options](#arp-options-seqmode-124-mono-track-with-type--arp)
   - **STRUM** sends the stored chord's notes ascending, one after another across the step (stagger ≈ 8–40 ms each, scaling with the step), every note-on cutting the one before it and the last held to the gate — a quick strum instead of one block chord. TIE, GLIDE, PROB and the gate behave as on the other types; TYPE is per track and saved with SEQMODE4+REC
+- **ENC7 (POLY track)**: playback TYPE of the whole track — **STEP** (block chord per step, as before), **STRUM** (auto-strum: every step rakes ascending at a fixed ≈ 8–40 ms stagger scaling with the step), **HAND** (see [HAND keyboard](#hand-strum-keyboard-poly-track-type--hand) — steps ring until the next chord, the keyboard strums live). Clamp 0..2 (no wrap), per track, RAM only — a stale value normalizes to STEP at boot
 - **ENC8**: Tempo 40–240 BPM (INT sync only)
 - **Step-pad channel selector**: while SEQ is held into SEQMODE3 the 16 steps are the edit-channel selector (dim yellow, selected channel bright yellow). **Any encoder movement dismisses it** — the pads immediately show the normal sequencer again (playhead, recorded steps, pattern length) and stay that way until SEQ is held into SEQMODE3 once more
   - **Choosing a channel always returns to step edit**: the edit radio switches back on with **M1 (STEPS)** selected on the newly selected channel, whatever attribute it had on the previous one
@@ -177,19 +186,21 @@ Each mode/variant combination selects an `EncSet`, `CtrlSet`, `StepSet`, `KeySet
 |-------|----------|----------------|
 | **DRUM** | Each step holds drum parts (voices C1–D#2). Playhead sends all active parts on channel. | Press step = toggle selected part (M1 hold = part-select overlay) |
 | **MONO** | One note per step: root/lowest/arp of stored chord + sequence octave shift | Records pending chord; MONO also follows **input track's timeline** (last active step at/before position) |
-| **POLY** | Full chord per step + sequence octave shift + per-step FX (sus/ext/color/strum, see Step Edit) | Records pending chord; if input≠own, prefers **held gesture** (keys/latched chord/ext notes) over timeline |
+| **POLY** | Full chord per step + sequence octave shift + per-step FX (sus/ext/color, see Step Edit) | Records pending chord; if input≠own, prefers **held gesture** (keys/latched chord/ext notes) over timeline |
 
 #### Step Edit Radio (SEQMODE 1/2/4)
 - **M1 (edit)**: off = pads record steps, on = pads edit attributes on ACTIVE steps (PROB arms the gate; ENC8 sets the **track** probability that gate re-reads live every hit)
   - **MONO**: click cycles OFF → STEPS → OFF; **F1–F4** pick TIE / GLIDE / ACCENT / PROB; ENC5/6 shape gate/velocity  - **DRUM/POLY**: quick M1 tap toggles edit (on reuses ACCENT/PROB, default ACCENT); **F3 = ACCENT, F4 = PROB** (click selected again = off); M1 **hold** on DRUM still opens the part-select; ENC8 = track probability
-- **POLY step FX (F1 = `FX`)**: on a POLY track with the radio on, **F1** switches the target to **FX** (the control legend reads `FX`, the ENC7 slot reads `FX` and shows the current type; F1 again closes the radio). **ENC7** cycles the selected type with wrap: **sus2 · sus4 · 6 · m7 · M7 · 9 · color · strum** — the header names every turn. Tap a step pad to toggle the selected FX on that step; the yellow attribute pulse shows only the steps carrying the **currently selected** type, and **F1 blinks while the track holds any FX**. **sus2/sus4 are mutually exclusive** (arming one clears the other); the extension types can stack with them. FX live only with the pattern (RAM, by design — patterns are never stored)
-  - **Playback (POLY only — MONO/DRUM steps are never transformed)**: **sus2** replaces the chord's third with a second, **sus4** with a fourth; **6 / m7 / M7 / 9** add the extension on top of the stored triad; **color** appends a quiet ghost note a **half step below the root** (half velocity, half delay, sent raw — a chromatic color tone that bypasses the scale snap); **strum** rakes the chord like MONO's STRUM type: the notes go out ascending inside the step and are released together at the step boundary. FX are applied at send time — the stored notes stay untouched
-- **LED**: M1 bright white while no attribute is selected, selected F-pad white, all radio pads carry a dim dark-blue background (F-pads blink green while the playhead reads an attributed step)
+- **POLY step FX (F1 = `FX`)**: on a POLY track with the radio on, **F1** switches the target to **FX** (the control legend reads `FX`, the ENC7 slot reads `FX` and shows the current type; F1 again closes the radio). **ENC7** cycles the selected type with wrap: **sus2 · sus4 · 6 · m7 · M7 · 9 · color** — the header names every turn. Tap a step pad to toggle the selected FX on that step; the yellow attribute pulse shows only the steps carrying the **currently selected** type, and **F1 blinks while the track holds any FX**. **sus2/sus4 are mutually exclusive** (arming one clears the other); the extension types can stack with them. FX live only with the pattern (RAM, by design — patterns are never stored)
+  - **Playback (POLY only — MONO/DRUM steps are never transformed)**: **sus2** replaces the chord's third with a second, **sus4** with a fourth; **6 / m7 / M7 / 9** add the extension on top of the stored triad; **color** appends a quiet ghost note a **half step below the root** (half velocity, half delay, sent raw — a chromatic color tone that bypasses the scale snap). FX are applied at send time — the stored notes stay untouched
+- **POLY step TYPE (F2 = `TYPE`)**: on a POLY track with the radio on, **F2** switches the target to **TYPE** (legend `TYPE`, ENC7 slot reads `TYPE` + the armed value; F2 again closes the radio). **ENC7** cycles the armed value with wrap: **STEP · STRUM · HAND**. Tap a step pad to **stamp** that override onto the step; **tap again = clear** back to inherit-the-track (`… type inherit`). The yellow pulse shows the steps carrying an override and **F2 blinks** while any step of the track has one. The override wins over the track default (ENC7 in SEQMODE3) for that step's playback only
+  - **step TYPE playback**: **STEP** = the plain block chord (as always); **STRUM** = auto-strum — that step rakes ascending at ≈ 8–40 ms stagger scaling with the step; **HAND** = the gesture replays as performed (see below), regardless of the track default
+- **LED**: M1 bright white while no attribute is selected, selected F-pad white (on POLY all four F-pads are radio pads: FX / TYPE / ACC / PROB — DRUM and MONO follow their own subsets), all radio pads carry a dim dark-blue background (F-pads blink green while the playhead reads an attributed step)
 - **Accent velocity (per track, boot 101, 1–127)**: an accented step sends this instead of a hard-wired 127 — applies to MONO, POLY and the DRUM step/per-voice accent alike (the other notes keep their own velocity)
   - **Hold F3** in SEQMODE 1/2/4: the ENC6 row switches **VEL → ACC** and ENC6 edits the edit track's accent velocity (header shows `ACCENT VEL`); release restores ENC6 to VEL
 - **Probability (per track, boot 100, 0–100%)**: ENC8 edits the edit track's own playback probability. Every step carrying **PROB** re-reads it on each advance, so a turn changes the odds from the very next hit — no re-toggling the attribute. On DRUM the mask still picks *which* parts are gated, only the % is per track
   - Saved/restored with SEQMODE4+REC
-  - F1–F4 in SEQMODE are radio keys only — they no longer trigger chord extensions there (DRUM/POLY with the radio off used to leak into the KEY behaviour); the one extra job is POLY's **F1 = FX target** above
+  - F1–F4 in SEQMODE are radio keys only — they no longer trigger chord extensions there (DRUM/POLY with the radio off used to leak into the KEY behaviour); the one extra job is POLY's **F1 = FX target** and **F2 = TYPE target** above
 
 #### ARP Options (SEQMODE 1/2/4, MONO track with TYPE = ARP)
 - **M2** becomes an **ARP** key on such a track: click toggles the ARP encoder page (header shows `ARP` while it is open, the control legend reads `ARP`)
@@ -257,7 +268,7 @@ When a track's step chords are written, all MONO/POLY sequences **listening to t
 **Header** (y 0–15): Mode name (left), temporary messages (right, 2s timeout)  
 **Main screen** (y 16–63):
 - Encoder grid 4×2: labels (top) + values (bottom)
-- Control button labels: row1 PREV NEXT M1 M2 M3, row2 M1 M2 M3 M4
+- Control button labels: row1 PREV NEXT M1 M2 M3, row2 M1 M2 M3 M4 (KEYMODE4 labels NEXT as **EMB** — the sticky EMB menu)
 
 Paged I2C write (1 page per `displayUpdate()` call, ~4 ms @ 400 kHz) to avoid blocking MIDI pump.
 
@@ -265,7 +276,7 @@ Paged I2C write (1 page per `displayUpdate()` call, ~4 ms @ 400 kHz) to avoid bl
 
 - **Mode LEDs** (32/33/34): Purple/Blue/Green dim; selected = white/pulse/blink per variant
 - **Step pads**: Green playhead; dim green = active step; dim blue = empty; yellow channel overlay (variant 3); orange drum part overlay; KEYMODE4 adds white = focus in AUDITION / red = focus in WRITE, amber = locked step (bright = both)
-- **Keyboard pads**: Dark blue (KEY1/3), blue-violet (KEY2 chord mode), degree map in KEYMODE4 (hue-mapped C = blue … B = red, rank 0 hottest, dimming down the rank, orange = borrowed, dark = not scored); in-scale only lit (KEY1/2/3); out-of-scale = dark; sounding chord keys tint cyan; playback on keyboard channel blinks dim green
+- **Keyboard pads**: Dark blue (KEY1/3), blue-violet (KEY2 chord mode), degree map in KEYMODE4 (hue-mapped C = blue … B = red, rank 0 hottest, dimming down the rank, orange = borrowed, dark = not scored); in-scale only lit (KEY1/2/3); out-of-scale = dark; sounding chord keys tint cyan; playback on keyboard channel blinks dim green; **HAND perform** (POLY TYPE = HAND): white keys = pink → seagreen string gradient (hue 247 → 107), black keys dark
 - **Touch**: White while touched (wins over mode colors)
 
 ## Building & Flashing

@@ -108,7 +108,10 @@ void seqEraseAll();
 // default), PROB gates the step by its stored 0..100% chance.  Track note
 // shaping via ENC5/ENC6 in SEQMODE: gate = % of one step (100 = hold to
 // the next step), velocity = default note velocity (boot 100).  Storage
-// clears with the step (record / tap-disable / erase)
+// clears with the step (record / tap-disable / erase).
+// Bits 6-7 are the POLY step TYPE override (F2 target): 00 = inherit the
+// track's TYPE, 01/10/11 = STEP/STRUM/HAND - never stored as the classic
+// flags, so the LED pulse masks (bits 0..5) stay clean
 #define SEQ_ATT_TIE    0x01
 #define SEQ_ATT_GLIDE  0x02
 #define SEQ_ATT_ACCENT 0x04
@@ -121,21 +124,32 @@ bool stepAttrToggle(uint8_t step, uint8_t att);
                                       // from the track's own probability)
 uint8_t stepAttrs(uint8_t step);      // edit channel's attribute mask for the
                                       // LED pulse - DRUM follows the part select
+bool stepTypeToggle(uint8_t step, uint8_t type);
+                                      // stamp / clear the bits6-7 override
+                                      // (type 0..2 = STEP/STRUM/HAND): true =
+                                      // the step now carries an override
 
 // POLY step FX (embellishments, F1 = FX target in SEQMODE): one byte per
 // step beside stepAtt - SUS2/SUS4, COLOR (quiet half-step-below-root ghost)
-// and STRUM (staggered note-ons) in the low nibble, a CHORD_EXT-style
-// extension mask (6/m7/M7/9) in the top nibble.  Playback transforms the
-// chord as it leaves (buildNotes keeps writing plain triads/extensions).
+// in the low nibble, a CHORD_EXT-style extension mask (6/m7/M7/9) in the
+// top nibble.  Playback transforms the chord as it leaves (buildNotes
+// keeps writing plain triads/extensions).  Strumming moved to the TYPE
+// system (track default on ENC7 / per-step override on F2).
 // Same lifecycle as the attributes: RAM only, dies with the step
 enum StepFxType : uint8_t {
   SEQ_FX_SUS2 = 0, SEQ_FX_SUS4, SEQ_FX_EXT6, SEQ_FX_EXTm7,
-  SEQ_FX_EXTM7, SEQ_FX_EXT9, SEQ_FX_COLOR, SEQ_FX_STRUM
+  SEQ_FX_EXTM7, SEQ_FX_EXT9, SEQ_FX_COLOR
 };
 uint8_t stepFxBit(uint8_t type);      // type index -> bit in the FX byte
 bool stepFxToggle(uint8_t step, uint8_t type);
                                       // true = FX now on; the SUS pair is
                                       // mutually exclusive (sus2 vs sus4)
+
+// HAND performs RIGHT NOW: the keyboard channel reaches a POLY sequence
+// whose TRACK type is HAND (live gate is track-level - per-step overrides
+// only shape the sequence's playback).  White keys strum the7-note fill,
+// the chord engine stays muted (chordMute) so keys build silently
+bool handLive();
 
 // SEQMODE4 + REC: persist all SEQ settings to EEPROM - track type, mono
 // type, octave, input channel, velocity, accent velocity, gate, mutes,

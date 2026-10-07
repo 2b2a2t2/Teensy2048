@@ -26,15 +26,22 @@ void encCcLoad();
 
 // SEQMODE step-edit radio (variants 1/2/4): is the edit on, which target
 // is selected (0=STEPS, 1=TIE, 2=GLIDE, 3=ACCENT, 4=PROB; POLY adds
-// 5=FX), and whether an attribute target is engaged for the current track
-// (MONO = 1..4, POLY = 3/4/5, DRUM = ACCENT/PROB only).  The probability
-// % itself is per track (ENC8 -> seqProbAdjust / seqProbPct in Keyboard.h)
+// 5=FX on F1 and 6=TYPE on F2), and whether an attribute target is engaged
+// for the current track (MONO = 1..4, POLY = 3/4/5/6, DRUM = ACCENT/PROB
+// only).  The probability % itself is per track (ENC8 -> seqProbAdjust /
+// seqProbPct in Keyboard.h)
 bool    stepEditIsOn();
 uint8_t stepEditSel();
 bool    stepEditActive();
 uint8_t stepFxSel();    // selected FX type for the FX target (StepFxType,
-                        // 0..7 - which FX the pads/ENC7 edit)
-const char* stepFxSelName();  // its display name (sus2 ... strum)
+                        // 0..6 - which FX the pads/ENC7 edit)
+const char* stepFxSelName();  // its display name (sus2 ... color)
+// TYPE arm of the F2 target: which value a pad tap stamps onto the step
+// (0..2 = STEP/STRUM/HAND; tap again clears back to inherit-the-track).
+// ENC7 cycles it while target 6 is engaged, like ENC7 picks the FX type
+void    stepTypeArmAdjust(int16_t counts);
+uint8_t stepTypeArm();
+const char* stepTypeArmName();   // "STEP" / "STRUM" / "HAND"
 
 // HOLD F3 in SEQMODE (variants 1/2/4): ENC6 edits the track's ACCENT
 // velocity instead of its default velocity (release restores ENC6)

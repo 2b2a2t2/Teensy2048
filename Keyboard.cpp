@@ -118,12 +118,20 @@ static bool tapCandidate[STEP_MAX] = {false};
 // --- step-edit attributes (SEQMODE radio on a MONO track) -------------------
 // per-step flags (zero-init = none).  Track note shaping:
 // seqVel = default velocity (boot 100, accent step = 127), seqGate = gate
-// time in % of one step (100 = hold until the next step = today's behavior)
+// time in % of one step (100 = hold until the next step = today's behavior).
+// Bits 6-7 double as the POLY step TYPE override (F2 target): 00 = inherit
+// the track's TYPE, 01/10/11 = STEP/STRUM/HAND (stepTypeToggle below)
 static uint8_t stepAtt[SEQ_CH_COUNT][STEP_MAX];
-// POLY-only step FX (embellishments): SUS2/SUS4, COLOR (ghost approach),
-// STRUM (staggered note-ons) and a CHORD_EXT-style extension mask in the
-// top nibble.  Same lifecycle as stepAtt: RAM only, dies with the step
+// POLY-only step FX (embellishments): SUS2/SUS4, COLOR (ghost approach)
+// and a CHORD_EXT-style extension mask in the top nibble.  Same lifecycle
+// as stepAtt: RAM only, dies with the step
 static uint8_t stepFx[SEQ_CH_COUNT][STEP_MAX];
+// HAND strum timing: onset of each stored note in ms since the gesture's
+// first touch (u16 - a strum may span several steps/bars; playback never
+// squeezes it into one step).  Zero = no recorded timing (block press or
+// hand-written step) -> HAND falls back to the fixed even spread.
+// Cleared with the step (stepAttClear), copied by the undo snapshot
+static uint16_t stepStrumDt[SEQ_CH_COUNT][STEP_MAX][CHORD_MAX];
 // DRUM tracks split accent/probability PER VOICE: mask bits say which of
 // the 16 parts (notes 36..51) is accented / probability-gated in a step.
 // Zero-init: no accents, no probability gates (mask bit = attribute present)
@@ -155,14 +163,28 @@ static uint8_t recCh = 0;        // track captured when armed
 static uint8_t recLeft = 0;      // steps left in the record pass
 static bool    recStarted = false;  // current gesture already wrote the step
 static bool    recDone = false;  // one-shot: a pass finished by itself
+static uint8_t recGestStep = 0;  // POLY: the step a gesture started on (one
+                                 // gesture = one origin step, even while the
+                                 // playhead walks on - a strum keeps timing)
+static uint32_t recGestureT0 = 0;  // ms of the gesture's first touch
 
 // a step's attributes live and die with its content (both the MONO flags
-// and the DRUM per-voice accent/probability masks; the POLY FX byte too)
+// and the DRUM per-voice accent/probability masks; the POLY FX byte and
+// the HAND strum onsets too)
 static void stepAttClear(uint8_t ch, uint8_t st) {
   stepAtt[ch][st] = 0;
   stepFx[ch][st] = 0;
   drumAccent[ch][st] = 0;
   drumProbOn[ch][st] = 0;
+  for (uint8_t i = 0; i < CHORD_MAX; i++) stepStrumDt[ch][st][i] = 0;
+}
+
+// does this step carry a recorded HAND strum (any nonzero onset)?
+static bool stepStrumTimed(uint8_t ch, uint8_t st) {
+  if (ch >= SEQ_CH_COUNT || st >= STEP_MAX) return false;
+  for (uint8_t i = 0; i < CHORD_MAX; i++)
+    if (stepStrumDt[ch][st][i]) return true;
+  return false;
 }
 
 // source step on track x for listener position n: the last active step at
@@ -285,16 +307,18 @@ static void setOctave(int8_t o) {
   }
   // re-trigger every sounding key so no note is stranded in the old octave;
   // keys held under the mono voice stay silent (their keyNote follows so
-  // the voice and the pending chord track the octave change)
-  for (uint8_t k = 0; k < 12; k++) {
-    if (keySounding[k]) {
-      usbMIDI.sendNoteOff(keyNote[k], 0, keyCh);
-      keyNote[k] = noteFor(k, octave);
-      usbMIDI.sendNoteOn(keyNote[k], KEY_VEL, keyCh);
-    } else if (keyActive[k]) {
-      keyNote[k] = noteFor(k, octave);
+  // the voice and the pending chord track the octave change).  HAND strings
+  // keep their sounding pitch - the fill re-derives for the next pluck
+  if (!handLive())
+    for (uint8_t k = 0; k < 12; k++) {
+      if (keySounding[k]) {
+        usbMIDI.sendNoteOff(keyNote[k], 0, keyCh);
+        keyNote[k] = noteFor(k, octave);
+        usbMIDI.sendNoteOn(keyNote[k], KEY_VEL, keyCh);
+      } else if (keyActive[k]) {
+        keyNote[k] = noteFor(k, octave);
+      }
     }
-  }
   monoApply();   // ROOT/BASS voice re-voices with the octave change
 }
 
@@ -338,12 +362,14 @@ uint8_t seqRecToggle() {
   if (recState) {
     recState = 0;
     recStarted = false;
+    recGestStep = 0;
     return 2;
   }
   if (keyCh != (uint8_t)(seqEditCh + 1)) return 0;
   recCh = seqEditCh;
   recLeft = 0;
   recStarted = false;
+  recGestStep = 0;
   recState = 1;
   return 1;
 }
@@ -351,20 +377,33 @@ uint8_t seqRecToggle() {
 // live record: the keyboard gesture lands on the step the playhead sits
 // on.  POLY/MONO = replace (the first note of a fresh gesture clears the
 // step and its attributes), DRUM = overdub (notes are added, never
-// removed); the octave pre-compensation mirrors the hold-to-assign record
-static void liveRecAppend(const uint8_t *notes, uint8_t n) {
-  if (recState != 2 || n == 0) return;
-  if (assignStep >= 0) return;               // a held step pad owns the write
-  if (keyCh != (uint8_t)(recCh + 1)) return; // defensive (disarm on switch)
-  uint8_t st = chStep[recCh];
-  if (st >= STEP_MAX) return;
+// removed); the octave pre-compensation mirrors the hold-to-assign record.
+// POLY gestures are ANCHORED: every note of one gesture (first touch ->
+// all keys up) joins the step where it STARTED even after the playhead
+// moved on, so a long strum lives on one origin step with its real u16
+// onsets (dt, ms since the gesture's first touch; block presses pass 0 =
+// no timing -> the fixed even spread).  MONO keeps the classic behavior
+// (each press lands on the current step, so legato runs walk the pattern).
+// Returns true when a note was written
+static bool liveRecAppend(const uint8_t *notes, uint8_t n, uint16_t dt = 0) {
+  if (recState != 2 || n == 0) return false;
+  if (assignStep >= 0) return false;               // a held step pad owns the write
+  if (keyCh != (uint8_t)(recCh + 1)) return false; // defensive (disarm on switch)
   bool drum = (seqTrackOf(recCh) == SEQ_TRACK_DRUM);
+  bool poly = (seqTrackOf(recCh) == SEQ_TRACK_POLY);
+  uint8_t st = chStep[recCh];
+  if (poly) {                       // one gesture = one origin step
+    if (recStarted) st = recGestStep;
+    else recGestStep = st;
+  }
+  if (st >= STEP_MAX) return false;
   if (!drum && !recStarted) {
     stepChordLen[recCh][st] = 0;   // fresh gesture replaces the stored chord
-    stepAttClear(recCh, st);       // ...and starts attribute-free
+    stepAttClear(recCh, st);       // ...and starts attribute/timing-free
     recStarted = true;
   }
   int pre = -12 * (int)seqOct[recCh];
+  bool wrote = false;
   for (uint8_t i = 0; i < n && stepChordLen[recCh][st] < CHORD_MAX; i++) {
     int v = (int)notes[i] + pre;
     if (v < 0) v = 0;
@@ -373,40 +412,168 @@ static void liveRecAppend(const uint8_t *notes, uint8_t n) {
     bool dup = false;             // never store the same note twice
     for (uint8_t j = 0; j < stepChordLen[recCh][st]; j++)
       if (stepChord[recCh][st][j] == note) dup = true;
-    if (!dup) stepChord[recCh][st][stepChordLen[recCh][st]++] = note;
+    if (!dup) {
+      stepChord[recCh][st][stepChordLen[recCh][st]] = note;
+      stepStrumDt[recCh][st][stepChordLen[recCh][st]] = dt;
+      stepChordLen[recCh][st]++;
+      wrote = true;
+    }
   }
   seqOctClamp(recCh);
   stepSyncFrom(recCh);
+  return wrote;
+}
+
+// HAND pluck during REC: the note joins the gesture with its real onset -
+// 0 for the first touch, ms elapsed for every note after it (u16, up to
+// ~65 s, so a slow multi-bar strum keeps its true timing; playback clamps
+// by scheduling from the origin step, never by compressing the onsets)
+static void handRecPluck(uint8_t note) {
+  if (recState != 2) return;
+  bool fresh = !recStarted;
+  uint16_t dt = 0;
+  if (!fresh) {
+    uint32_t el = millis() - recGestureT0;
+    dt = (el > 65535UL) ? 65535 : (uint16_t)el;
+  }
+  if (liveRecAppend(&note, 1, dt) && fresh)
+    recGestureT0 = millis();
+}
+
+// HAND performs right now: the keyboard channel reaches a POLY sequence
+// whose TRACK type is HAND (live gate is track-level; per-step overrides
+// only shape the sequence's playback)
+bool handLive() {
+  uint8_t s = (uint8_t)(keyCh - 1);
+  if (s >= SEQ_CH_COUNT) return false;
+  return seqTrackOf(s) == SEQ_TRACK_POLY &&
+         seqPolyTypeOf(s) == SEQ_POLY_HAND;
+}
+
+// the 7 white keys are the strummed strings: C..B -> 0..6, black keys -1
+static int8_t handStringOf(uint8_t idx) {
+  static const int8_t w[12] = { 0, -1, 1, -1, 2, 3, -1, 4, -1, 5, -1, 6 };
+  return w[idx & 11];
+}
+
+// HAND fill: the7 white keys' notes - the chord's pitch classes starting
+// from its bass PC at the keyboard octave, walking up with octave wraps so
+// every string always has a note (returns the count, 0 = no chord yet).
+// Source = the keyboard sequence's pending chord (engine snapshot in
+// KEYMODE2/4, held keys in KEYMODE1/3, incoming input chords everywhere),
+// falling back to the engine itself
+static uint8_t handFill(uint8_t *out) {
+  const uint8_t *src = 0;
+  uint8_t n = 0;
+  if (keyCh >= 1 && keyCh <= SEQ_CH_COUNT && pendingLen[keyCh - 1]) {
+    src = pending[keyCh - 1];
+    n = pendingLen[keyCh - 1];
+  } else if (keyChordMode() && chordCount()) {
+    src = chordNotes();
+    n = chordCount();
+  }
+  if (!n) return 0;
+  uint8_t pc[CHORD_MAX], pn = 0;
+  for (uint8_t i = 0; i < n && pn < CHORD_MAX; i++) {
+    uint8_t p = (uint8_t)(src[i] % 12);
+    bool dup = false;
+    for (uint8_t j = 0; j < pn; j++) if (pc[j] == p) dup = true;
+    if (!dup) pc[pn++] = p;
+  }
+  if (!pn) return 0;
+  uint8_t bass = src[0];
+  for (uint8_t i = 1; i < n; i++) if (src[i] < bass) bass = src[i];
+  int note = 12 * (int)octave + 24 + (int)(bass % 12);
+  if (note < 0) note = 0;
+  if (note > 127) note = 127;
+  for (uint8_t i = 0; i < 7; i++) {
+    if (i) {
+      int cand = note + 1;
+      for (uint8_t k = 0; k < 13 && cand <= 127; k++, cand++) {
+        bool hit = false;
+        for (uint8_t j = 0; j < pn; j++)
+          if ((uint8_t)(cand % 12) == pc[j]) { hit = true; break; }
+        if (hit) break;
+      }
+      if (cand > 127) cand = note;   // degenerate top: hold the last string
+      note = cand;
+    }
+    out[i] = (uint8_t)note;
+  }
+  return 7;
+}
+
+// sound one HAND string (the caller has already checked handFill())
+static void handPluck(uint8_t idx, uint8_t note) {
+  keyNote[idx] = note;
+  keyActive[idx] = true;
+  keySounding[idx] = true;
+  usbMIDI.sendNoteOn(note, KEY_VEL, keyCh);
+  handRecPluck(note);           // REC: append with the gesture's real onset
 }
 
 int keyPadPress(uint8_t idx) {
   if (idx >= 12) return -1;
   monoApply();   // reconcile with the keyboard channel's track first
+  // HAND track: the white keys strum the fill; every key below still BUILDS
+  // the chord (silent - chordMute), only the pluck sounds.  Block recording
+  // is suppressed in HAND: a strum gesture is captured note by note with
+  // its timing (handRecPluck), so the stored step replays as performed
+  bool hand = handLive();
+  int8_t sw = hand ? handStringOf(idx) : -1;
+  bool plucked = false;
+  uint8_t pnote = 0;
+  if (sw >= 0) {
+    uint8_t fill[7];
+    if (handFill(fill) > (uint8_t)sw) {
+      pnote = fill[sw];
+      plucked = true;
+    }
+  }
   // KEYMODE2: the chord engine owns the gesture (quality/diatonic chords,
   // latch, KeyLock) - it sends its own notes and feeds the pending chord
-  // (muted while the mono voice is engaged; the state still builds)
+  // (muted while the mono voice or HAND is engaged; the state still builds)
   if (keyBehaviorVariant() == 2) {
-    keyNote[idx] = noteFor(idx, octave);
-    keyActive[idx] = true;
-    keySounding[idx] = false;   // the chord engine, not us, sends the sound
-    int r = chordPadPress(idx, keyNote[idx]);
+    uint8_t dyn = noteFor(idx, octave);
+    if (plucked) handPluck(idx, pnote);
+    else {
+      keyNote[idx] = dyn;
+      keyActive[idx] = true;
+      keySounding[idx] = false;   // the chord engine, not us, sends the sound
+    }
+    int r = chordPadPress(idx, dyn);
     assignAppend(chordNotes(), chordCount());
-    liveRecAppend(chordNotes(), chordCount());
+    if (!hand) liveRecAppend(chordNotes(), chordCount());
     return r;
   }
   // KEYMODE4: the genre engine proposes; an unproposed key is silent and
-  // untracked (rank -1), a proposed one sounds its whole chord
+  // untracked (rank -1), a proposed one sounds its whole chord.  In HAND
+  // the pluck still sounds on any white key - the proposal only steers the
+  // chord behind it
   if (keyBehaviorVariant() == 4) {
-    keyNote[idx] = noteFor(idx, octave);
+    if (plucked) handPluck(idx, pnote);
     int r = k4KeyOn((uint8_t)idx);
-    if (r < 0) return -1;       // not proposed: silent, no write, no advance
-    keyActive[idx] = true;
-    keySounding[idx] = false;   // the chord engine, not us, sends the sound
+    if (r < 0) return plucked ? pnote : -1;   // not proposed: no write/advance
+    if (!plucked) {
+      keyNote[idx] = noteFor(idx, octave);
+      keyActive[idx] = true;
+      keySounding[idx] = false;   // the chord engine, not us, sends the sound
+    }
     assignAppend(chordNotes(), chordCount());
-    liveRecAppend(chordNotes(), chordCount());
+    if (!hand) liveRecAppend(chordNotes(), chordCount());
     if (assignStep < 0) k4KeyCommitted();   // a held step owns the target
     return r;
   }
+  // chordless variants (KEYMODE1/3): in HAND only the strings speak - the
+  // pluck bypasses the scale filter (chord tones may sit outside it) and
+  // feeds neither pending nor the block recorder (the gesture does), black
+  // keys are dark and silent
+  if (plucked) {
+    handPluck(idx, pnote);
+    assignAppend(&pnote, 1);
+    return pnote;
+  }
+  if (hand) return -1;
   // scale filter: an out-of-scale key is silent and untracked (KeyLock
   // bypasses it); Chromatic (the default) has every key in scale = no change
   if (keyScale() != 0 && !chordKeyLock() && !keyIsInScale(idx)) return -1;
@@ -604,13 +771,15 @@ const uint8_t* stepChordAt(uint8_t step, uint8_t *len) {
 
 // one-level undo of the last KEYMODE4 write batch (apply / key write /
 // variation): a full snapshot of the edit sequence - chords, lengths, the
-// step attributes and the drum accent/probability masks (~769 B static)
+// step attributes (incl. the TYPE override), the per-note HAND strum
+// onsets and the drum accent/probability masks (~1.8 KB static)
 static uint8_t snapChord[STEP_MAX][CHORD_MAX];
 static uint8_t snapLen[STEP_MAX];
 static uint8_t snapAttB[STEP_MAX];
 static uint8_t snapFxB[STEP_MAX];
 static uint8_t snapDrumA[STEP_MAX];
 static uint8_t snapDrumP[STEP_MAX];
+static uint16_t snapStrumB[STEP_MAX][CHORD_MAX];
 static uint8_t snapCh = 0;
 static bool    snapValid = false;
 
@@ -624,8 +793,10 @@ void stepSnapshotTake() {
     snapFxB[st] = stepFx[ch][st];
     snapDrumA[st] = drumAccent[ch][st];
     snapDrumP[st] = drumProbOn[ch][st];
-    for (uint8_t i = 0; i < CHORD_MAX; i++)
+    for (uint8_t i = 0; i < CHORD_MAX; i++) {
       snapChord[st][i] = stepChord[ch][st][i];
+      snapStrumB[st][i] = stepStrumDt[ch][st][i];
+    }
   }
   snapValid = true;
 }
@@ -642,8 +813,10 @@ int stepSnapshotRestore() {
     stepFx[ch][st] = snapFxB[st];
     drumAccent[ch][st] = snapDrumA[st];
     drumProbOn[ch][st] = snapDrumP[st];
-    for (uint8_t i = 0; i < CHORD_MAX; i++)
+    for (uint8_t i = 0; i < CHORD_MAX; i++) {
       stepChord[ch][st][i] = snapChord[st][i];
+      stepStrumDt[ch][st][i] = snapStrumB[st][i];
+    }
   }
   stepSyncFrom(ch);
   return 0;
@@ -690,8 +863,32 @@ bool stepAttrToggle(uint8_t step, uint8_t att) {
   return (*a & att) != 0;
 }
 
-// type index (SUS2 SUS4 6 m7 M7 9 COLOR STRUM) -> bit in the FX byte:
-// SUS/COLOR/STRUM sit in the low nibble, the extension mask rides the top
+// stamp / clear the POLY step TYPE override (bits6-7 of stepAtt): a tap on
+// the F2-armed step writes the ENC7 arm (type 0..2 = STEP/STRUM/HAND), a
+// second tap clears back to inherit-the-track.  Returns true when the step
+// now carries an override (for "7 strum on" feedback)
+bool stepTypeToggle(uint8_t step, uint8_t type) {
+  if (step >= STEP_MAX || type > SEQ_POLY_HAND) return false;
+  uint8_t *a = &stepAtt[seqEditCh][step];
+  if (*a & 0xC0) {
+    *a &= 0x3F;
+    return false;
+  }
+  *a |= (uint8_t)((type + 1) << 6);
+  return true;
+}
+
+// effective POLY playback type of a step: the bits6-7 override, else the
+// track default (SEQ_POLY_STEP / SEQ_POLY_STRUM / SEQ_POLY_HAND)
+static uint8_t effStepType(uint8_t ch, uint8_t st) {
+  if (ch >= SEQ_CH_COUNT || st >= STEP_MAX) return SEQ_POLY_STEP;
+  uint8_t a = (uint8_t)(stepAtt[ch][st] >> 6) & 3;
+  if (a) return a - 1;
+  return seqPolyTypeOf(ch);
+}
+
+// type index (SUS2 SUS4 6 m7 M7 9 COLOR) -> bit in the FX byte:
+// SUS/COLOR sit in the low nibble, the extension mask rides the top
 // nibble so (stepFx >> 4) is exactly a CHORD_EXT mask for chordFxApply
 uint8_t stepFxBit(uint8_t type) {
   static const uint8_t bits[8] = { 0x01, 0x02, 0x10, 0x20,
@@ -719,7 +916,8 @@ bool stepFxToggle(uint8_t step, uint8_t type) {
 // SELECTED PART - switching the part select re-maps the yellow pulse live.
 // The FX target (POLY, target 5) pulses from bit 0x10 = 1 << (5 - 1), and
 // only when the step carries the SELECTED FX type (same "selected attribute
-// present" rule as the four classic flags)
+// present" rule as the four classic flags); the TYPE target (6) pulses from
+// bit 0x20 whenever the step carries any bits6-7 override
 uint8_t stepAttrs(uint8_t step) {
   if (step >= STEP_MAX) return 0;
   if (seqTrack() == SEQ_TRACK_DRUM) {
@@ -732,9 +930,10 @@ uint8_t stepAttrs(uint8_t step) {
     return m;
   }
   uint8_t m = stepAtt[seqEditCh][step];
-  if (seqTrack() == SEQ_TRACK_POLY &&
-      (stepFx[seqEditCh][step] & stepFxBit(stepFxSel())))
-    m |= 0x10;
+  if (seqTrack() == SEQ_TRACK_POLY) {
+    if (stepFx[seqEditCh][step] & stepFxBit(stepFxSel())) m |= 0x10;
+    if (m & 0xC0) m |= 0x20;          // TYPE override present -> target 6
+  }
   return m;
 }
 
@@ -971,9 +1170,10 @@ static void cutRaw() {
 }
 
 // ...and MONO -> POLY while keys are held: they sound raw again (single
-// mode only - in chord modes the engine re-sends via chordMute(false))
+// mode only - in chord modes the engine re-sends via chordMute(false); in
+// HAND the strings are already sounding and the engine stays muted)
 static void strikeRaw() {
-  if (keyChordMode()) return;
+  if (keyChordMode() || handLive()) return;
   for (uint8_t k = 0; k < 12; k++)
     if (keyActive[k]) {
       keyNote[k] = noteFor(k, octave);
@@ -1008,59 +1208,75 @@ static void monoLiveUpdate() {
 }
 
 // reconcile the voice with the keyboard channel's TRACK/TYPE and the held
-// gesture; called from the loop poll, every gesture and every octave change
+// gesture; called from the loop poll, every gesture and every octave change.
+// The chord engine is muted while the MONO voice runs OR while HAND
+// performs (chordMute is idempotent, so reconciling every call is free):
+// state keeps building - incoming chords, the KEYMODE2/4 gesture and the
+// KEY4 proposals all stay live - only the sound is cut
 static void monoApply() {
   bool eng = monoEngaged();
   if (eng != monoEng) {
     monoEng = eng;
     if (eng) {
       cutRaw();
-      chordMute(true);
     } else {
       monoVoiceOff();
-      chordMute(false);
       strikeRaw();
     }
   }
+  chordMute(eng || handLive());
   if (eng) monoLiveUpdate();
 }
 
 void keyMonoPoll() { monoApply(); }
 
-// --- strum queue (POLY FX / MONO TYPE=STRUM) ------------------------------
+// --- strum queue (POLY FX / MONO TYPE=STRUM / POLY TYPE=STRUM) ------------
 // staggered note-ons drained by seqStrumPoll() from loop context, beside
-// the gate timers.  A POLY strum accumulates - the chord rakes note by
-// note and the usual step-boundary release cuts the whole lot; a MONO
-// strum is a single voice walking the chord, every rake note cutting the
-// one before it (offOld = GLIDE: the old step's notes die AFTER the first
-// rake note, like the legato overlap does).  releaseCh() cancels it, so a
-// rest, a length change or transport stop drops the un-sent tail
+// the gate timers.  Two flavors: the fixed-tempo rake (POLY FX, MONO/POLY
+// STRUM - `timed` = false, notes go out every `every` ms) and the HAND
+// gesture replay (`timed` = true: the recorded u16 onsets sit in `off[]`
+// and are relative to the queue's start - the real timing the player
+// performed, clamped only by step scheduling).  A POLY strum accumulates -
+// the chord rakes note by note and the usual step-boundary release cuts
+// the whole lot; a MONO strum is a single voice walking the chord, every
+// rake note cutting the one before it (offOld = GLIDE: the old step's
+// notes die AFTER the first rake note, like the legato overlap does).
+// releaseCh() cancels it, so a rest, a length change or transport stop
+// drops the un-sent tail
 static struct {
   uint8_t note[CHORD_MAX];
   uint8_t vel[CHORD_MAX];
   uint8_t n, i;              // queued notes / next to send
-  uint16_t every;            // ms between rake notes
+  uint16_t every;            // ms between rake notes (fixed-tempo mode)
+  uint16_t off[CHORD_MAX];   // timed mode: onset of each note (ms from start)
   uint32_t at;               // next note due (millis)
   uint32_t arm;              // MONO gate stamp armed on completion (0 = none)
   bool monoQ;
   bool offOld;
+  bool timed;                // true = use off[] onsets, keep `at` as start
 } strumQ[SEQ_CH_COUNT];
+
+// HAND's current sounding chord (set when its notes went out via a
+// HAND-typed step or live pluck); the boundary release lets it ring
+static bool handRing[SEQ_CH_COUNT];
 
 static void strumCancel(uint8_t c) {
   strumQ[c].n = 0;
   strumQ[c].i = 0;
 }
 
-// stage one step's rake; notes arrive playback-shifted and velocity-shaped
+// stage one step's rake; notes arrive playback-shifted and velocity-shaped.
+// dts = per-note onsets (ms, u16) for HAND replay; null = fixed-tempo rake
 static void strumEnqueue(uint8_t c, const uint8_t *note, const uint8_t *vel,
                          uint8_t n, uint16_t every, bool monoQ, bool offOld,
-                         uint32_t arm) {
+                         uint32_t arm, const uint16_t *dts = 0) {
   strumQ[c].n = 0;
   strumQ[c].i = 0;
   if (n > CHORD_MAX) n = CHORD_MAX;
   for (uint8_t k = 0; k < n; k++) {
     strumQ[c].note[k] = note[k];
     strumQ[c].vel[k] = vel[k];
+    strumQ[c].off[k] = dts ? dts[k] : 0;
   }
   strumQ[c].n = n;
   strumQ[c].every = every ? every : 1;
@@ -1068,6 +1284,7 @@ static void strumEnqueue(uint8_t c, const uint8_t *note, const uint8_t *vel,
   strumQ[c].arm = arm;
   strumQ[c].monoQ = monoQ;
   strumQ[c].offOld = offOld;
+  strumQ[c].timed = dts != 0;
 }
 
 // drain due rake notes (called from the loop, next to seqGatePoll)
@@ -1075,7 +1292,11 @@ void seqStrumPoll() {
   uint32_t now = millis();
   for (uint8_t c = 0; c < SEQ_CH_COUNT; c++) {
     if (!strumQ[c].n) continue;
-    while (strumQ[c].i < strumQ[c].n && (int32_t)(now - strumQ[c].at) >= 0) {
+    while (strumQ[c].i < strumQ[c].n) {
+      uint32_t due = strumQ[c].timed
+                       ? strumQ[c].at + strumQ[c].off[strumQ[c].i]
+                       : strumQ[c].at;
+      if ((int32_t)(now - due) < 0) break;
       uint8_t k = strumQ[c].i;
       uint8_t note = strumQ[c].note[k];
       uint8_t vel = strumQ[c].vel[k];
@@ -1107,7 +1328,7 @@ void seqStrumPoll() {
         usbMIDI.sendNoteOn(note, vel, c + 1);
       }
       strumQ[c].i++;
-      strumQ[c].at = now + strumQ[c].every;
+      if (!strumQ[c].timed) strumQ[c].at = now + strumQ[c].every;
     }
     if (strumQ[c].i >= strumQ[c].n) {
       if (strumQ[c].arm) {              // MONO: the gate counts from the
@@ -1127,6 +1348,7 @@ static void releaseCh(uint8_t c) {
   seqLen[c] = 0;
   gateOffAt[c] = 0;
   strumCancel(c);
+  handRing[c] = false;
 }
 
 static void seqRelease() {
@@ -1252,6 +1474,7 @@ static void seqAdvanceOnce(bool start, const bool *go,
                    ? stepAtt[c][advPrev[c]] : 0;
     if (pf & SEQ_ATT_TIE) { tied[c] = true; continue; }
     if (pf & SEQ_ATT_GLIDE) { defer[c] = true; continue; }
+    if (handRing[c]) continue;        // HAND chord rings across the boundary
     releaseCh(c);
   }
   // carry the current pending chords forward into the new position: the
@@ -1323,7 +1546,9 @@ static void seqAdvanceOnce(bool start, const bool *go,
       if (!seqIsMuted(c) && seqTrackOf(c) == SEQ_TRACK_MONO &&
           seqMonoTypeOf(c) == SEQ_MONO_ARP && seqArpSkipOf(c))
         arpIdx[c]++;
-      releaseCh(c);                     // also ends a deferred glide
+      // a rest / probability miss keeps HAND's ring sounding (the next
+      // chord, a mute or leaving the window cuts it)
+      if (!handRing[c] || seqIsMuted(c)) releaseCh(c);   // also ends a glide
       continue;
     }
     uint8_t *ch = follow ? stepChord[seqInCh[c] - 1][fstp]
@@ -1335,7 +1560,17 @@ static void seqAdvanceOnce(bool start, const bool *go,
     // both skip the transform
     uint8_t mapped[CHORD_MAX];
     uint8_t nCore = len;               // transformable core inside mapped[]
-    uint8_t fxm = (drumTrack || mono) ? 0 : stepFx[c][stp];
+    // effective POLY playback type of this step: HAND/STRUM ride the
+    // step's bits6-7 override, else the track default (DRUM/MONO = STEP)
+    uint8_t et = (mono || drumTrack) ? SEQ_POLY_STEP : effStepType(c, stp);
+    bool handStep = (et == SEQ_POLY_HAND);
+    bool strumStep = (et == SEQ_POLY_STRUM);
+    // a HAND gesture recorded with real timing replays literally: the stored
+    // u16 onsets index the STORED chord order, so a timed step bypasses the
+    // FX reshape and the FScale snap (order and dt survive).  All-zero dts
+    // (block-written chord) fall back to the even 8..40 ms spread below
+    bool handTimed = (handStep && !follow && stepStrumTimed(c, stp));
+    uint8_t fxm = (drumTrack || mono || handTimed) ? 0 : stepFx[c][stp];
     if (fxm) {
       len = chordFxApply(ch, len, fxm, mapped, &nCore);
       ch = mapped;
@@ -1344,9 +1579,10 @@ static void seqAdvanceOnce(bool start, const bool *go,
     // notes are snapped to the current scale as they leave (duplicates
     // collapse, like buildNotes), so turning the scale recolors recorded
     // progressions live.  Stored notes stay raw; OFF/Chromatic = unchanged.
-    // DRUM steps keep their raw note numbers (they are drum-map ids).  The
+    // DRUM steps keep their raw note numbers (they are drum-map ids), timed
+    // HAND steps keep their literal pitch (that is what was performed).  The
     // FX color tail (i >= nCore) bypasses the snap and dedups like the rest
-    if (fxm || (chordFScale() && !drumTrack)) {
+    if (fxm || (chordFScale() && !drumTrack && !handTimed)) {
       bool snap = chordFScale();
       uint8_t m = 0;
       uint8_t coreOut = 0;
@@ -1421,9 +1657,14 @@ static void seqAdvanceOnce(bool start, const bool *go,
         if (arm) gateOffAt[c] = arm;
       }
     } else {
-      if (defer[c]) releaseCh(c);       // track flipped mid-play: cut old
-      bool doStrum = (fxm & stepFxBit(SEQ_FX_STRUM)) != 0;
+      // new content cuts HAND's ring (or a deferred glide) first
+      if (defer[c] || handRing[c]) releaseCh(c);
+      // STRUM rakes at the fixed 8..40 ms tempo (ascending), HAND replays
+      // the gesture with its recorded onsets - or the even spread when the
+      // chord was block-written (all dts zero)
+      bool doStrum = strumStep || handStep;
       uint8_t snote[CHORD_MAX], svel[CHORD_MAX];
+      uint16_t sdts[CHORD_MAX];
       uint8_t sn = 0;
       for (uint8_t i = 0; i < len && i < CHORD_MAX; i++) {
         uint8_t raw = ch[i];
@@ -1450,10 +1691,13 @@ static void seqAdvanceOnce(bool start, const bool *go,
           if ((drumAccent[c][stp] >> v) & 1) dvel = seqAccVel[c];
         }
         uint8_t note = shNote(raw, sh);
-        if (doStrum) {                  // POLY FX strum: stage the rake
+        if (doStrum) {                  // stage the rake (STRUM / HAND)
           if (sn < CHORD_MAX) {
             snote[sn] = note;
             svel[sn] = dvel;
+            // timed HAND: the stored onset for this STORED index (untimed
+            // steps carry all zeros -> handled by the spread below)
+            sdts[sn] = handTimed ? stepStrumDt[c][stp][i] : 0;
             sn++;
           }
         } else {
@@ -1463,12 +1707,31 @@ static void seqAdvanceOnce(bool start, const bool *go,
         }
       }
       if (doStrum && sn) {
-        // stagger = half a note apart inside the step, capped so slow
-        // steps still finish the rake well before the boundary
-        uint32_t e = sd / ((uint32_t)sn * 2);
-        if (e < 8) e = 8;
-        if (e > 40) e = 40;
-        strumEnqueue(c, snote, svel, sn, (uint16_t)e, false, false, 0);
+        if (handStep && handTimed) {
+          // literal replay: the performed order and the u16 onsets, so a
+          // long strum spills across the following steps/bars as recorded
+          strumEnqueue(c, snote, svel, sn, 0, false, false, 0, sdts);
+        } else {
+          // stagger = half a note apart inside the step, capped so slow
+          // steps still finish the rake well before the boundary.  STRUM
+          // and the block-built HAND spread both rake ascending
+          for (uint8_t i = 1; i < sn; i++) {
+            uint8_t vn = snote[i], vv = svel[i];
+            uint8_t j = i;
+            while (j > 0 && snote[j - 1] > vn) {
+              snote[j] = snote[j - 1];
+              svel[j] = svel[j - 1];
+              j--;
+            }
+            snote[j] = vn;
+            svel[j] = vv;
+          }
+          uint32_t e = sd / ((uint32_t)sn * 2);
+          if (e < 8) e = 8;
+          if (e > 40) e = 40;
+          strumEnqueue(c, snote, svel, sn, (uint16_t)e, false, false, 0);
+        }
+        if (handStep) handRing[c] = true;   // rings until next content
       }
     }
   }
@@ -1479,13 +1742,17 @@ static void seqAdvanceOnce(bool start, const bool *go,
     uint8_t fTrk = seqTrackOf(seqEditCh);
     uint8_t fstp = chStep[seqEditCh];
     if (fTrk == SEQ_TRACK_MONO || fTrk == SEQ_TRACK_POLY) {
+      // only the four classic attribute bits (0..3 = F1..F4); the TYPE
+      // override lives in bits6-7 and never maps to a key on its own
       fBlinkMask = stepChordLen[seqEditCh][fstp] > 0
-                     ? stepAtt[seqEditCh][fstp] : 0;
-      // POLY FX steps blink F1 (the FX key) from bit 0 - TIE's slot is
-      // unused on a chord track, so the classic masks stay correct
-      if (fTrk == SEQ_TRACK_POLY && stepChordLen[seqEditCh][fstp] > 0 &&
-          stepFx[seqEditCh][fstp])
-        fBlinkMask |= 0x01;
+                     ? (uint8_t)(stepAtt[seqEditCh][fstp] & 0x0F) : 0;
+      // POLY steps carrying FX blink F1 (the FX key) from bit 0, steps
+      // with a TYPE override blink F2 - TIE/GLIDE's slots are unused on a
+      // chord track, so the classic masks stay correct
+      if (fTrk == SEQ_TRACK_POLY && stepChordLen[seqEditCh][fstp] > 0) {
+        if (stepFx[seqEditCh][fstp]) fBlinkMask |= 0x01;
+        if (stepAtt[seqEditCh][fstp] & 0xC0) fBlinkMask |= 0x02;
+      }
     } else if (fTrk == SEQ_TRACK_DRUM) {
       if (stepChordLen[seqEditCh][fstp] > 0) {
         if (drumAccent[seqEditCh][fstp]) fBlinkMask |= SEQ_ATT_ACCENT;
@@ -1837,6 +2104,7 @@ void seqMuteToggle(uint8_t seq) {
     usbMIDI.sendNoteOff(seqNotes[seq][i], 0, seq + 1);
   seqLen[seq] = 0;
   arpIdx[seq] = 0;
+  handRing[seq] = false;        // a mute cuts the HAND ring too
 }
 
 // --- SEQMODE3 erase --------------------------------------------------------
@@ -1850,6 +2118,7 @@ static void seqEraseNotes(uint8_t s) {
   seqLen[s] = 0;
   arpIdx[s] = 0;
   strumCancel(s);              // an erase also drops the un-sent rake tail
+  handRing[s] = false;
 }
 
 void seqErase(uint8_t s) {
@@ -2040,14 +2309,14 @@ void keySetChannel(uint8_t ch) {
   } else {
     // was POLY before the switch: held keys re-strike raw here (a MONO->
     // POLY switch restores them instead via monoApply's strikeRaw, so the
-    // two never double-send)
-    if (!monoEng && !keyChordMode())
+    // two never double-send; HAND strings are plucks - never re-struck)
+    if (!monoEng && !keyChordMode() && !handLive())
       for (uint8_t k = 0; k < 12; k++)
         if (keyActive[k]) {
           usbMIDI.sendNoteOn(keyNote[k], KEY_VEL, keyCh);
           keySounding[k] = true;
         }
-    chordRestore();               // chord engine notes, new channel
+    if (!handLive()) chordRestore();  // HAND: the engine stays muted
   }
   monoApply();                    // re-sync engage state + voice for ch
 }
