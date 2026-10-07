@@ -226,6 +226,9 @@ static CRGB modeLedHook(uint8_t pad, bool isTouched, CRGB defaultColor) {
     uint8_t kv = keyBehaviorVariant();
     bool inScale = (keyScale() == 0) || keyIsInScale((uint8_t)k);
     if (isTouched) {
+      // HAND strum zone: every key touch is a pluck/toggle feedback flash
+      // (plucks bypass the scale filter, black keys toggle options)
+      if (handLive()) return CRGB::White;
       // a key the scale filter silences flashes red (chord mode / KeyLock
       // play it, so they flash white; KEYMODE4 plays any PROPOSED key -
       // out-of-scale keys included, so they never flash red either)
@@ -234,22 +237,35 @@ static CRGB modeLedHook(uint8_t pad, bool isTouched, CRGB defaultColor) {
       return CRGB::White;
     }
     // sequence playing on the keyboard channel: those pitch classes blink
-    // dim green - wins over the chord tint and the scale (playback feedback)
-    if (kbBlinkOn && kbSeqPlays((uint8_t)k)) {
+    // dim green - wins over the chord tint and the scale (playback feedback).
+    // HAND strums instead of hearing playback - its strings keep the display
+    if (kbBlinkOn && kbSeqPlays((uint8_t)k) && !handLive()) {
       CRGB g = CRGB::Green;
       g.nscale8(64);
       return g;
     }
-    // HAND perform: the 7 white keys become the strummed strings - a
-    // pink -> seagreen gradient left to right (C..B, hue 247..107); the
-    // black keys are not strings and stay dark.  It wins over the kv2
-    // chord tint and the kv4 proposal rainbow so the keyboard reads as one
-    // instrument (touch above still flashes white first)
+    // HAND strum zone: the 7 white keys are the strings - a pink ->
+    // seagreen gradient left to right (C..B, hue 247..107); strings without
+    // a chord or with a guitar gap dim to almost nothing.  The 5 black keys
+    // are the silent Le Strum option toggles: violet when on, dim dark
+    // violet when off.  Wins over the kv2 chord tint and the kv4 proposal
+    // rainbow so the keyboard reads as one instrument (touch flashes white)
     if (handLive()) {
-      if (k < 0) return CRGB::Black;
+      static const int8_t wStr[12] = { 0, -1, 1, -1, 2, 3, -1, 4, -1, 5, -1, 6 };
+      static const int8_t bIdx[12] = { -1, 0, -1, 1, -1, -1, 2, -1, 3, -1, 4, -1 };
+      static const uint8_t obit[5] = { STRUM_OPT_GUITAR, STRUM_OPT_GUITAR2,
+                                       STRUM_OPT_ADDS, STRUM_OPT_SUS,
+                                       STRUM_OPT_SUSCOM };
+      if (k < 0) return CRGB::Black;          // gap LEDs between the keys
+      int8_t bi = bIdx[k & 11];
+      if (bi >= 0)                           // black key = option toggle
+        return (strumOptsGet() & obit[bi]) ? CRGB(110, 0, 190)
+                                           : CRGB(14, 0, 26);
+      uint8_t note = handStrNote((uint8_t)wStr[k & 11]);
       CRGB g = CHSV((uint8_t)(247 - (uint8_t)((led - 25) * 140 / 6)),
                     255, 255);
       g.nscale8(KEY_DIM);
+      if (note == 0 || note == 0xFF) g.nscale8(32);   // silent / gap string
       return g;
     }
     // sounding chord keys tint cyan (they win over the scale's dark keys)
@@ -305,6 +321,23 @@ static CRGB modeLedHook(uint8_t pad, bool isTouched, CRGB defaultColor) {
         (!seqPolyRadio && (led == groupControls[5] + 2 ||
                            led == groupControls[5] + 3))))) {
     if (isTouched) return CRGB::White;
+    // strum ADDS row open: F1..F3 light violet when their color is armed
+    // (sus4/add6/add9), F4 lights while anything is armed (it clears),
+    // dim dark blue otherwise - the step-edit radio and its blink stay out
+    if (strumFRowActive() && led >= groupControls[5] &&
+        led <= groupControls[8]) {
+      uint8_t fi = (uint8_t)(led - groupControls[5]);
+      uint8_t ext = strumExtGet();
+      bool lit = (fi < 3) ? (((ext >> fi) & 1) != 0) : (ext != 0);
+      if (lit) {
+        CRGB e = CRGB(110, 0, 190);        // the option-toggle violet
+        e.nscale8(160);
+        return e;
+      }
+      CRGB d = CRGB::DarkBlue;
+      d.nscale8(32);
+      return d;
+    }
     if ((seqMonoRadio || stepEditActive()) &&
         led >= groupControls[5] && fBlinkOn &&
         (seqFMask() & (uint8_t)(1 << (led - groupControls[5])))) {
@@ -342,6 +375,23 @@ static CRGB modeLedHook(uint8_t pad, bool isTouched, CRGB defaultColor) {
     if (isTouched) return CRGB::White;
     CRGB p = CRGB::Purple;
     if (arpPageActive()) {
+      uint8_t s = sin8((uint32_t)millis() * 256UL / PULSE_PERIOD_MS);
+      p.nscale8((uint8_t)(48 + scale8(s, 144)));  // 48..192 breathing
+    } else {
+      p.nscale8(48);
+    }
+    return p;
+  }
+  // SEQMODE M2 on a POLY STRUM/HAND track: purple = the strum ADDS row
+  // lives behind that pad, and it BREATHES purple while the row is open
+  // (same rule as the ARP page's M2 - M2 is otherwise idle on POLY)
+  if (modeBase == MODE_SEQ && modeVariant != 3 &&
+      seqTrack() == SEQ_TRACK_POLY &&
+      (seqPolyType() == SEQ_POLY_STRUM || seqPolyType() == SEQ_POLY_HAND) &&
+      led == groupControls[3]) {
+    if (isTouched) return CRGB::White;
+    CRGB p = CRGB::Purple;
+    if (strumFRowActive()) {
       uint8_t s = sin8((uint32_t)millis() * 256UL / PULSE_PERIOD_MS);
       p.nscale8((uint8_t)(48 + scale8(s, 144)));  // 48..192 breathing
     } else {
@@ -648,6 +698,7 @@ void modeOnEvent(uint8_t pad, uint8_t ev) {
   encMuteHold(false);       // the M2 mute overlay never outlives the ENC mode
   drumMuteHold(false);      // nor the M1 drum-voice mute overlay
   arpPageDismiss();         // nor the M2 arp encoder page
+  strumFRowDismiss();       // nor the M2 strum ADDS row
 
   applyModeLeds();
   headerSetLeft(modeName());

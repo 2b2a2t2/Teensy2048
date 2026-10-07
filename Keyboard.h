@@ -147,9 +147,29 @@ bool stepFxToggle(uint8_t step, uint8_t type);
 
 // HAND performs RIGHT NOW: the keyboard channel reaches a POLY sequence
 // whose TRACK type is HAND (live gate is track-level - per-step overrides
-// only shape the sequence's playback).  White keys strum the7-note fill,
+// only shape the sequence's playback).  The track's chords resolve into a
+// silent string BUFFER (the keyboard strums instead of hearing them), the
+// 7 white keys are the strings, the black keys toggle the strum options,
 // the chord engine stays muted (chordMute) so keys build silently
 bool handLive();
+
+// strum options - the black keys while handLive() (tap toggles, RAM only,
+// booted as SUS+SUSCOMMON): Le Strum's set ported from StrumController.c
+#define STRUM_OPT_GUITAR  0x01  // guitar chord voicing (6-string shapes)
+#define STRUM_OPT_GUITAR2 0x02  // upper-octave layer on the high strings
+#define STRUM_OPT_ADDS    0x04  // master: the F-row ADDS colors apply
+#define STRUM_OPT_SUS     0x08  // strum rings till the buffered chord changes
+#define STRUM_OPT_SUSCOM  0x10  // common tones survive that chord change
+uint8_t strumOptsGet();             // current option bitfield
+// selected ADDS colors (temporary F-row, gated by STRUM_OPT_ADDS):
+// bit0 = sus4 (replaces the 3rd), bit1 = add6, bit2 = add9 - combinable
+uint8_t strumExtGet();
+void    strumExtSet(uint8_t v);
+// note of white-key string s (0..6): 0 = no chord yet, 0xFF = this string
+// has no note (guitar shape gap) - the LED dims those strings
+uint8_t handStrNote(uint8_t s);
+// cut a ringing HAND track (POLY TYPE change / keyboard channel change)
+void    handRingCut(uint8_t c);
 
 // SEQMODE4 + REC: persist all SEQ settings to EEPROM - track type, mono
 // type, octave, input channel, velocity, accent velocity, gate, mutes,

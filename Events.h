@@ -56,3 +56,11 @@ bool    f3AccentActive();
 void arpPageToggle();
 void arpPageDismiss();
 bool arpPageActive();
+
+// SEQMODE M2 (variants 1/2/4) on a POLY STRUM/HAND edit track: a click
+// toggles the strum ADDS row - F1 = sus4, F2 = add6, F3 = add9 (each a
+// toggle), F4 clears.  Same composite rule as the arp page: the row only
+// reads active while the panel is on SEQMODE and the track still strums
+void strumFRowToggle();
+void strumFRowDismiss();
+bool strumFRowActive();

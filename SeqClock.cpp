@@ -232,11 +232,20 @@ void seqTrackAdjust(int16_t counts) {
   while (trackRes >= 4)  { trackRes -= 4;  step++; }
   while (trackRes <= -4) { trackRes += 4;  step--; }
   if (!step) return;
-  uint8_t cur = trackType[seqEditChannel() - 1];
+  uint8_t ch = seqEditChannel();
+  if (ch < 1 || ch > 16) return;
+  uint8_t ec = (uint8_t)(ch - 1);
+  uint8_t cur = trackType[ec];
+  // leaving or entering the HAND strum mode: cut the ringing strings and
+  // drop the buffered chord (the strum state must not outlive the mode)
+  bool wasHand = cur == SEQ_TRACK_POLY && seqPolyTypeOf(ec) == SEQ_POLY_HAND;
   int16_t t = (int16_t)cur + step;
   if (t < SEQ_TRACK_DRUM) t = SEQ_TRACK_DRUM;
   if (t > SEQ_TRACK_POLY) t = SEQ_TRACK_POLY;
-  trackType[seqEditChannel() - 1] = (uint8_t)t;
+  trackType[ec] = (uint8_t)t;
+  bool nowHand = trackType[ec] == SEQ_TRACK_POLY &&
+                 seqPolyTypeOf(ec) == SEQ_POLY_HAND;
+  if (wasHand != nowHand) handRingCut(ec);
 }
 
 uint8_t seqTrack() { return trackType[seqEditChannel() - 1]; }
@@ -304,10 +313,16 @@ void seqPolyTypeAdjust(int16_t counts) {
   while (polyRes >= 4)  { polyRes -= 4;  step++; }
   while (polyRes <= -4) { polyRes += 4;  step--; }
   if (!step) return;
+  uint8_t ec = seqEditChannel();
+  if (ec < 1 || ec > 16) return;
+  ec = (uint8_t)(ec - 1);
+  // a HAND track changes its playback mode: cut ringing strings + buffer
+  bool wasHand = seqPolyTypeOf(ec) == SEQ_POLY_HAND;
   int16_t t = (int16_t)seqPolyType() + step;
   if (t < SEQ_POLY_STEP) t = SEQ_POLY_STEP;
   if (t > SEQ_POLY_HAND) t = SEQ_POLY_HAND;
-  monoType[seqEditChannel() - 1] = (uint8_t)t;
+  monoType[ec] = (uint8_t)t;
+  if (wasHand != (seqPolyTypeOf(ec) == SEQ_POLY_HAND)) handRingCut(ec);
 }
 
 uint8_t seqPolyType() {

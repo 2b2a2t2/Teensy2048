@@ -45,6 +45,12 @@ static const char* ctrlLegend(uint8_t i) {
   bool key2 = keyBehaviorVariant() == 2;   // quality / extension momentaries
   bool key4 = (modeBase == MODE_KEY && modeVariant == 4);  // genre row
   if (i >= 5) {
+    // SEQMODE + strum ADDS row (open with M2 on a POLY STRUM/HAND track):
+    // F1..F4 = sus4 / add6 / add9 / clear - wins over the step-edit legend
+    if (strumFRowActive()) {
+      static const char* ad[4] = { "sus4", "add6", "add9", "off" };
+      return ad[i - 5];
+    }
     // SEQMODE + MONO step-edit: F1-F4 select TIE/GLIDE/ACCENT/PROB
     if (modeBase == MODE_SEQ && modeVariant != 3 &&
         seqTrack() == SEQ_TRACK_MONO) {
@@ -294,6 +300,8 @@ void drawHeaderText() {
   const char* left = headerLeft;
   if (arpPageActive()) {
     left = "ARP";
+  } else if (strumFRowActive()) {
+    left = "EXT";               // strum ADDS row: the F row edits colors
   } else if (stepEditActive()) {
     static const char* ed[4] = { "TIE", "GLIDE", "ACCENT", "PROB" };
     if (stepEditSel() == 5) left = "FX";

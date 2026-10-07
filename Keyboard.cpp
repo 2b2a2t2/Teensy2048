@@ -3,6 +3,7 @@
 #include "Modes.h"      // keyBehaviorVariant() - KEYMODE2 = chord mode
 #include "Chords.h"     // chord engine + scale filter state
 #include "Events.h"     // prob clipboard accessors (SEQ save/load)
+#include "Display.h"    // headerShow (strum option / string feedback)
 #include "Key4.h"       // KEYMODE4 proposal gesture (press/release/commit)
 #include <EEPROM.h>
 
@@ -456,59 +457,251 @@ static int8_t handStringOf(uint8_t idx) {
   return w[idx & 11];
 }
 
-// HAND fill: the7 white keys' notes - the chord's pitch classes starting
-// from its bass PC at the keyboard octave, walking up with octave wraps so
-// every string always has a note (returns the count, 0 = no chord yet).
-// Source = the keyboard sequence's pending chord (engine snapshot in
-// KEYMODE2/4, held keys in KEYMODE1/3, incoming input chords everywhere),
-// falling back to the engine itself
-static uint8_t handFill(uint8_t *out) {
+// --- strum voicing (Le Strum port) ----------------------------------------
+// The keyboard track's STRING BUFFER: what the playhead resolved at the
+// last played POLY step (post-FX/FScale = what WOULD have sounded), kept
+// per channel.  HAND is silent now - the keyboard STRUMS this buffer
+// (source priority in handStrings(): buffer first = the progression,
+// then the pending chord = manual build / input, then the engine snapshot)
+static uint8_t handBuf[SEQ_CH_COUNT][CHORD_MAX];
+static uint8_t handBufN[SEQ_CH_COUNT];
+
+// strum options (black keys while handLive(), RAM only): Le Strum's set,
+// booted as SUS+SUSCOMMON (ring the strum till the chord changes, keep
+// its common tones through the change)
+static uint8_t strumOpts = STRUM_OPT_SUS | STRUM_OPT_SUSCOM;
+static uint8_t strumExt = 0;   // F-row ADDS colors: bit0 sus4, bit1 add6, bit2 add9
+
+uint8_t strumOptsGet() { return strumOpts; }
+uint8_t strumExtGet() { return strumExt; }
+void strumExtSet(uint8_t v) { strumExt = (uint8_t)(v & 7); }
+static bool strumSus() { return (strumOpts & STRUM_OPT_SUS) != 0; }
+
+// guitar shapes: [shape][string] MIDI bases (0xFF = string not used),
+// then the per-extension fret shifts - arithmetic ported 1:1 from the
+// guitarXShape() functions in Voici-Le-Strum-master 2/src/StrumController.c
+// (shapes: C C7 A Am A7 D Dm D7 E Em E7 G; no-bass-string option not ported)
+static const uint8_t gtrShapeN[12][6] = {
+  { 0xFF, 48, 52, 55, 60, 64 },   // C
+  { 0xFF, 48, 52, 58, 60, 64 },   // C7
+  { 40, 45, 52, 57, 61, 64 },     // A
+  { 40, 45, 52, 57, 60, 64 },     // Am
+  { 40, 45, 52, 55, 61, 64 },     // A7
+  { 0xFF, 45, 50, 57, 62, 66 },   // D
+  { 0xFF, 45, 50, 57, 62, 65 },   // Dm
+  { 0xFF, 45, 50, 57, 60, 66 },   // D7
+  { 40, 47, 52, 56, 59, 64 },     // E
+  { 40, 47, 52, 55, 59, 64 },     // Em
+  { 40, 47, 50, 56, 59, 64 },     // E7
+  { 43, 47, 50, 55, 59, 67 }      // G
+};
+static const int8_t gtrSus4[12][6] = {
+  { 0, 0, 1, 0, 0, 1 },   { 0, 0, 1, 0, 0, 1 },
+  { 0, 0, 0, 0, 1, 0 },   { 0, 0, 0, 0, 2, 0 },
+  { 0, 0, 0, 0, 1, 0 },   { 0, 0, 0, 0, 0, 1 },
+  { 0, 0, 0, 0, 0, 1 },   { 0, 0, 0, 0, 0, 1 },
+  { 0, 0, 0, 1, 0, 0 },   { 0, 0, 0, 1, 0, 0 },
+  { 0, 0, 0, 1, 0, 0 },   { 0, 1, 0, 0, 1, 0 }
+};
+static const int8_t gtrAdd6[12][6] = {
+  { 0, 0, 0, 2, 0, 0 },   { 0, 0, 0, -1, 0, 0 },
+  { 0, 0, 2, 0, 0, 0 },   { 0, 0, 2, 0, 0, 0 },
+  { 0, 0, 2, 0, 0, 0 },   { 0, 0, 0, 2, 0, 0 },
+  { 0, 0, 0, 2, 0, 0 },   { 0, 0, 0, 2, 0, 0 },
+  { 0, 0, 0, 0, 2, 0 },   { 0, 0, 0, 0, 2, 0 },
+  { 0, 0, 0, 0, 2, 0 },   { 0, 0, 2, 0, 0, 0 }
+};
+static const int8_t gtrAdd9[12][6] = {
+  { 0, 0, 0, 0, 2, 0 },   { 0, 0, 0, 0, 2, 0 },
+  { 0, 0, 0, 2, 0, 0 },   { 0, 0, 0, 2, 0, 0 },
+  { 0, 0, 0, 4, 0, 0 },   { 0, 0, 0, 0, 0, -2 },
+  { 0, 0, 0, 0, 0, -1 },  { 0, 0, 0, 0, 0, -2 },
+  { 0, 0, 2, 0, 0, 0 },   { 0, 0, 2, 0, 0, 0 },
+  { 0, 0, 4, 0, 0, 0 },   { 0, 0, 0, 2, 0, 0 }
+};
+// root + quality -> shape index / fret offset (port of guitarChord());
+// rows 0..2 = MAJ / MIN / DOM7, columns = root pc 0 = C .. 11 = B
+static const uint8_t gtrMapShape[3][12] = {
+  { 0, 2, 5, 2, 8, 8, 8, 11, 8, 2, 2, 2 },
+  { 3, 3, 6, 3, 9, 9, 9, 9, 9, 3, 3, 3 },
+  { 1, 4, 7, 4, 10, 10, 10, 10, 10, 4, 4, 10 }
+};
+static const uint8_t gtrMapOfs[3][12] = {
+  { 0, 4, 0, 6, 0, 1, 2, 0, 4, 0, 1, 2 },
+  { 3, 4, 0, 6, 0, 1, 2, 3, 4, 0, 1, 2 },
+  { 0, 4, 0, 6, 0, 1, 2, 3, 4, 0, 1, 2 }
+};
+
+// string map from an explicit chord: 7 notes, one per white key (0xFF =
+// string has no note - a guitar gap stays dark).  The chord's intervals
+// ride from its FIRST note (root convention); GUITAR picks a shape for
+// MAJ/MIN/DOM7, everything else falls back to stacked triads (the
+// reference's guitarChord() returning 0 into stackTriads())
+static uint8_t handStringsFrom(const uint8_t *src, uint8_t n, uint8_t *out) {
+  uint8_t root = (uint8_t)(src[0] % 12);
+  int8_t ivs[12];
+  uint8_t ivn = 0;
+  for (uint8_t i = 0; i < n && ivn < 12; i++) {
+    int8_t d = (int8_t)(((src[i] % 12) + 12 - root) % 12);
+    bool dup = false;
+    for (uint8_t j = 0; j < ivn; j++) if (ivs[j] == d) dup = true;
+    if (!dup) ivs[ivn++] = d;
+  }
+  if (!ivn) ivs[ivn++] = 0;
+  // ADDS colors (temporary F-row, gated by the black ADDS master):
+  // sus4 replaces the 3rd with the 4th, add6 appends the 6th, add9 the 9th
+  uint8_t ext = (strumOpts & STRUM_OPT_ADDS) ? strumExt : 0;
+  if ((ext & 1) && ivn < 12) {
+    bool had3 = false;
+    for (uint8_t i = 0; i < ivn; i++)
+      if (ivs[i] == 3 || ivs[i] == 4) { ivs[i] = 5; had3 = true; }
+    if (!had3) ivs[ivn++] = 5;
+  }
+  if ((ext & 2) && ivn < 12) {
+    bool has = false;
+    for (uint8_t i = 0; i < ivn; i++) if (ivs[i] == 9) has = true;
+    if (!has) ivs[ivn++] = 9;
+  }
+  if ((ext & 4) && ivn < 12) {
+    bool has = false;
+    for (uint8_t i = 0; i < ivn; i++) if (ivs[i] == 2) has = true;
+    if (!has) ivs[ivn++] = 2;
+  }
+  // sort + dedup the interval set
+  for (uint8_t i = 1; i < ivn; i++) {
+    int8_t v = ivs[i];
+    uint8_t j = i;
+    while (j && ivs[j - 1] > v) { ivs[j] = ivs[j - 1]; j--; }
+    ivs[j] = v;
+  }
+  uint8_t m = 0;
+  for (uint8_t i = 0; i < ivn; i++)
+    if (!m || ivs[m - 1] != ivs[i]) ivs[m++] = ivs[i];
+  ivn = m;
+
+  int base = 12 * (int)octave + 24 + (int)root;  // root at the keyboard octave
+  if (base < 0) base = 0;
+  if (base > 120) base = 120;
+  uint8_t str[7];
+  bool guitar = false;
+  if (strumOpts & STRUM_OPT_GUITAR) {
+    // quality: b7 without a b3 = DOM7, b3 = MIN, else MAJ; maj7 / dim /
+    // aug / b3+b7 clash / b3&M3 clash have no shape in the reference -> stacked
+    uint8_t q = 0;
+    bool m3 = false, M3 = false, b7 = false, none = false;
+    for (uint8_t i = 0; i < ivn; i++) {
+      if (ivs[i] == 3) m3 = true;
+      if (ivs[i] == 4) M3 = true;
+      if (ivs[i] == 10) b7 = true;
+      if (ivs[i] == 6 || ivs[i] == 8 || ivs[i] == 11) none = true;
+    }
+    if (none || (m3 && M3) || (b7 && m3)) q = 3;
+    else if (b7) q = 2;
+    else if (m3) q = 1;
+    if (q < 3) {
+      guitar = true;
+      uint8_t sh = gtrMapShape[q][root];
+      uint8_t ofs = gtrMapOfs[q][root];
+      int8_t raw[6];
+      for (uint8_t i = 0; i < 6; i++) {
+        if (gtrShapeN[sh][i] == 0xFF) { raw[i] = -1; continue; }
+        int v = (int)gtrShapeN[sh][i] + (int)ofs;
+        if (ext & 1) v += gtrSus4[sh][i];
+        if (ext & 2) v += gtrAdd6[sh][i];
+        if (ext & 4) v += gtrAdd9[sh][i];
+        raw[i] = (int8_t)v;
+      }
+      // shift the whole shape so its root lands at the keyboard octave
+      int delta = 0;
+      for (uint8_t i = 0; i < 6; i++)
+        if (raw[i] >= 0 && (uint8_t)(raw[i] % 12) == root) { delta = base - raw[i]; break; }
+      for (uint8_t i = 0; i < 6; i++) {
+        if (raw[i] < 0) { str[i] = 0xFF; continue; }
+        int v = (int)raw[i] + delta;
+        str[i] = (v < 0) ? 0 : (v > 127) ? 127 : (uint8_t)v;
+      }
+      if (strumOpts & STRUM_OPT_GUITAR2) {
+        // the real shape notes an octave up fill D..B; the lowest real
+        // note of the shape keeps C (bass) - compact fill, so a bassless
+        // shape (C/A/D) leaves no hole in the middle of the run
+        uint8_t up[6];
+        for (uint8_t i = 0; i < 6; i++)
+          up[i] = (str[i] == 0xFF) ? 0xFF
+                  : (uint8_t)((str[i] + 12 > 127) ? 127 : str[i] + 12);
+        uint8_t low = 0xFF;
+        for (uint8_t i = 0; i < 6; i++) if (str[i] != 0xFF) { low = str[i]; break; }
+        str[0] = low;
+        uint8_t k = 1;
+        for (uint8_t i = 0; i < 6 && k < 7; i++)
+          if (up[i] != 0xFF) str[k++] = up[i];
+        while (k < 7) str[k++] = 0xFF;
+      }
+    }
+  }
+  if (!guitar) {
+    // stacked triads: the interval set fills the 7 strings with octave
+    // wraps (every string always has a note); GTR2 alone raises the top
+    // half (F..B) an octave
+    int note = base;
+    for (uint8_t i = 0; i < 7; i++) {
+      if (i) {
+        int cand = note + 1;
+        for (uint8_t k = 0; k < 13 && cand <= 127; k++, cand++) {
+          bool hit = false;
+          for (uint8_t j = 0; j < ivn; j++)
+            if ((cand % 12) == (uint8_t)((root + ivs[j]) % 12)) { hit = true; break; }
+          if (hit) break;
+        }
+        if (cand > 127) cand = note;   // degenerate top: hold the last string
+        note = cand;
+      }
+      str[i] = (uint8_t)note;
+    }
+    if (strumOpts & STRUM_OPT_GUITAR2)
+      for (uint8_t i = 3; i < 7; i++)
+        str[i] = (uint8_t)((str[i] + 12 > 127) ? 127 : str[i] + 12);
+  }
+  for (uint8_t i = 0; i < 7; i++) out[i] = str[i];
+  return 7;
+}
+
+// live string map: the HAND buffer first (the progression the playhead
+// resolved), then the pending chord (manual build / input), then the
+// chord engine snapshot.  Returns 0 = no chord at all (strings silent)
+static uint8_t handStrings(uint8_t *out) {
   const uint8_t *src = 0;
   uint8_t n = 0;
-  if (keyCh >= 1 && keyCh <= SEQ_CH_COUNT && pendingLen[keyCh - 1]) {
-    src = pending[keyCh - 1];
-    n = pendingLen[keyCh - 1];
+  uint8_t c = (uint8_t)(keyCh - 1);
+  if (c < SEQ_CH_COUNT && handBufN[c]) {
+    src = handBuf[c];
+    n = handBufN[c];
+  } else if (c < SEQ_CH_COUNT && pendingLen[c]) {
+    src = pending[c];
+    n = pendingLen[c];
   } else if (keyChordMode() && chordCount()) {
     src = chordNotes();
     n = chordCount();
   }
   if (!n) return 0;
-  uint8_t pc[CHORD_MAX], pn = 0;
-  for (uint8_t i = 0; i < n && pn < CHORD_MAX; i++) {
-    uint8_t p = (uint8_t)(src[i] % 12);
-    bool dup = false;
-    for (uint8_t j = 0; j < pn; j++) if (pc[j] == p) dup = true;
-    if (!dup) pc[pn++] = p;
-  }
-  if (!pn) return 0;
-  uint8_t bass = src[0];
-  for (uint8_t i = 1; i < n; i++) if (src[i] < bass) bass = src[i];
-  int note = 12 * (int)octave + 24 + (int)(bass % 12);
-  if (note < 0) note = 0;
-  if (note > 127) note = 127;
-  for (uint8_t i = 0; i < 7; i++) {
-    if (i) {
-      int cand = note + 1;
-      for (uint8_t k = 0; k < 13 && cand <= 127; k++, cand++) {
-        bool hit = false;
-        for (uint8_t j = 0; j < pn; j++)
-          if ((uint8_t)(cand % 12) == pc[j]) { hit = true; break; }
-        if (hit) break;
-      }
-      if (cand > 127) cand = note;   // degenerate top: hold the last string
-      note = cand;
-    }
-    out[i] = (uint8_t)note;
-  }
-  return 7;
+  return handStringsFrom(src, n, out);
 }
 
-// sound one HAND string (the caller has already checked handFill())
+uint8_t handStrNote(uint8_t s) {
+  uint8_t f[7];
+  if (s >= 7 || !handStrings(f)) return 0;
+  return f[s];
+}
+
+static void handRingAdd(uint8_t note);   // defined with releaseCh below
+static bool handRingHas(uint8_t note);   // is the note alive in the ring?
+
+// sound one HAND string (the caller has already checked handStrings())
 static void handPluck(uint8_t idx, uint8_t note) {
   keyNote[idx] = note;
   keyActive[idx] = true;
   keySounding[idx] = true;
   usbMIDI.sendNoteOn(note, KEY_VEL, keyCh);
+  handRingAdd(note);            // the track's ring must see strummed notes
   handRecPluck(note);           // REC: append with the gesture's real onset
 }
 
@@ -520,12 +713,32 @@ int keyPadPress(uint8_t idx) {
   // is suppressed in HAND: a strum gesture is captured note by note with
   // its timing (handRecPluck), so the stored step replays as performed
   bool hand = handLive();
+  // HAND: the 5 black keys are the silent strum-option toggles (Le Strum
+  // GUITAR / GTR2 / ADDS / SUS / SUSCOMMON) - tap flips the bit, the
+  // header says on/off, nothing is written to the pattern and no chord
+  // build happens on the black row while the strum owns the keyboard
+  if (hand && (idx == 1 || idx == 3 || idx == 6 || idx == 8 || idx == 10)) {
+    static const char *const nm[5] = { "GUITAR", "GTR2", "ADDS", "SUS", "SUSCOMMON" };
+    static const uint8_t bit[5] = { STRUM_OPT_GUITAR, STRUM_OPT_GUITAR2,
+                                    STRUM_OPT_ADDS, STRUM_OPT_SUS, STRUM_OPT_SUSCOM };
+    uint8_t k = (idx == 1) ? 0 : (idx == 3) ? 1 : (idx == 6) ? 2 : (idx == 8) ? 3 : 4;
+    strumOpts = (uint8_t)(strumOpts ^ bit[k]);
+    bool on = (strumOpts & bit[k]) != 0;
+    char hb[24];
+    snprintf(hb, sizeof(hb), "%s %s", nm[k], on ? "on" : "off");
+    headerShow(hb);
+    if (Serial.availableForWrite() >= 48) {
+      Serial.print("  strum ");
+      Serial.println(hb);
+    }
+    return -1;
+  }
   int8_t sw = hand ? handStringOf(idx) : -1;
   bool plucked = false;
   uint8_t pnote = 0;
   if (sw >= 0) {
     uint8_t fill[7];
-    if (handFill(fill) > (uint8_t)sw) {
+    if (handStrings(fill) && fill[sw] != 0xFF) {
       pnote = fill[sw];
       plucked = true;
     }
@@ -595,9 +808,12 @@ int keyPadRelease(uint8_t idx) {
   if (idx >= 12 || !keyActive[idx]) return -1;
   keyActive[idx] = false;
   // this key's own single note (only ever sent outside chord mode): covers
-  // a mode change while the key was held - never a stuck note
+  // a mode change while the key was held - never a stuck note.  HAND: a
+  // strummed string the track's ring still owns must NOT die on release
+  // (SUS rings it to the chord change / boundary / mute / stop)
   if (keySounding[idx]) {
-    usbMIDI.sendNoteOff(keyNote[idx], 0, keyCh);
+    if (!(handLive() && handRingHas(keyNote[idx])))
+      usbMIDI.sendNoteOff(keyNote[idx], 0, keyCh);
     keySounding[idx] = false;
   }
   if (keyBehaviorVariant() == 2) {
@@ -1256,9 +1472,14 @@ static struct {
   bool timed;                // true = use off[] onsets, keep `at` as start
 } strumQ[SEQ_CH_COUNT];
 
-// HAND's current sounding chord (set when its notes went out via a
-// HAND-typed step or live pluck); the boundary release lets it ring
-static bool handRing[SEQ_CH_COUNT];
+// HAND's currently RINGING notes per track (bitmask): what a pluck or a
+// replayed gesture left sounding, bookkept against boundaries and chord
+// changes.  STRUM = plucked strings sustaining under SUS (they skip the
+// step boundary and ring until the buffered chord changes); GEST = a timed
+// recorded gesture ringing until the next content step
+#define HAND_RING_STRUM 0x01
+#define HAND_RING_GEST  0x02
+static uint8_t handRing[SEQ_CH_COUNT];
 
 static void strumCancel(uint8_t c) {
   strumQ[c].n = 0;
@@ -1348,11 +1569,80 @@ static void releaseCh(uint8_t c) {
   seqLen[c] = 0;
   gateOffAt[c] = 0;
   strumCancel(c);
-  handRing[c] = false;
+  handRing[c] = 0;
 }
 
 static void seqRelease() {
   for (uint8_t c = 0; c < SEQ_CH_COUNT; c++) releaseCh(c);
+}
+
+// a pluck joins the keyboard track's ring: the boundary / chord-change
+// bookkeeping has to see the strummed notes (dedup - a re-plucked string
+// only retriggers; a full ring restarts clean)
+static void handRingAdd(uint8_t note) {
+  uint8_t c = (uint8_t)(keyCh - 1);
+  if (c >= SEQ_CH_COUNT) return;
+  bool dup = false;
+  for (uint8_t i = 0; i < seqLen[c] && !dup; i++)
+    dup = (seqNotes[c][i] == note);
+  if (!dup) {
+    if (seqLen[c] >= CHORD_MAX) releaseCh(c);
+    if (seqLen[c] < CHORD_MAX) {
+      seqNotes[c][seqLen[c]] = note;
+      seqLen[c]++;
+    }
+  }
+  if (strumSus()) handRing[c] |= HAND_RING_STRUM;
+}
+
+// buffer the step's chord: this is what the keyboard strums from here on
+// (post-FX/FScale = what WOULD have sounded).  A chord CHANGE decides what
+// happens to the notes already ringing: SUS off cuts everything (per-step
+// length), SUS on without SUSCOMMON swaps clean, SUS+SUSCOMMON keeps the
+// ringing notes whose pitch class survives in the new voicing
+static void handBufStore(uint8_t c, const uint8_t *src, uint8_t n) {
+  if (c >= SEQ_CH_COUNT || !n) return;
+  if (n > CHORD_MAX) n = CHORD_MAX;
+  if (handRing[c] && seqLen[c]) {
+    uint8_t np[CHORD_MAX], npn = 0;
+    if (strumSus() && (strumOpts & STRUM_OPT_SUSCOM))
+      for (uint8_t i = 0; i < n; i++) {
+        uint8_t p = (uint8_t)(src[i] % 12);
+        bool dup = false;
+        for (uint8_t j = 0; j < npn && !dup; j++) dup = (np[j] == p);
+        if (!dup && npn < CHORD_MAX) np[npn++] = p;
+      }
+    uint8_t m = 0;
+    for (uint8_t i = 0; i < seqLen[c]; i++) {
+      bool keep = false;
+      for (uint8_t j = 0; j < npn && !keep; j++)
+        keep = ((uint8_t)(seqNotes[c][i] % 12) == np[j]);
+      if (keep) seqNotes[c][m++] = seqNotes[c][i];
+      else usbMIDI.sendNoteOff(seqNotes[c][i], 0, c + 1);
+    }
+    seqLen[c] = m;
+    handRing[c] = (m && strumSus()) ? HAND_RING_STRUM : 0;
+  }
+  for (uint8_t i = 0; i < n; i++) handBuf[c][i] = src[i];
+  handBufN[c] = n;
+}
+
+// is this note currently kept alive by the keyboard track's ring?  A pad
+// release must not cut a strummed string the ring still owns
+static bool handRingHas(uint8_t note) {
+  uint8_t c = (uint8_t)(keyCh - 1);
+  if (c >= SEQ_CH_COUNT || !handRing[c]) return false;
+  for (uint8_t i = 0; i < seqLen[c]; i++)
+    if (seqNotes[c][i] == note) return true;
+  return false;
+}
+
+// cut a ringing HAND track AND drop its string buffer: POLY TYPE change
+// away from HAND (the strum mode is gone - full reset)
+void handRingCut(uint8_t c) {
+  if (c >= SEQ_CH_COUNT) return;
+  releaseCh(c);
+  handBufN[c] = 0;
 }
 
 // playback note = stored note + 12 * the sequence's octave shift, kept in
@@ -1474,7 +1764,12 @@ static void seqAdvanceOnce(bool start, const bool *go,
                    ? stepAtt[c][advPrev[c]] : 0;
     if (pf & SEQ_ATT_TIE) { tied[c] = true; continue; }
     if (pf & SEQ_ATT_GLIDE) { defer[c] = true; continue; }
-    if (handRing[c]) continue;        // HAND chord rings across the boundary
+    // strummed strings ring across the boundary while SUS is on; a timed
+    // recorded gesture rings until the next content step (release below
+    // cuts both when SUS goes off / mute / stop / erase)
+    if ((handRing[c] & HAND_RING_GEST) ||
+        ((handRing[c] & HAND_RING_STRUM) && strumSus()))
+      continue;
     releaseCh(c);
   }
   // carry the current pending chords forward into the new position: the
@@ -1503,8 +1798,13 @@ static void seqAdvanceOnce(bool start, const bool *go,
     if (follow) {
       uint8_t fx = (uint8_t)(seqInCh[c] - 1);
       bool own = len > 0;              // activation stays the listener's
+      // HAND zone: an empty OWN step still resolves the feeder - the strum
+      // follows the progression over a blank pattern too; written own steps
+      // keep gating the rhythm
+      bool handZone = !own && seqTrackOf(c) == SEQ_TRACK_POLY &&
+                      effStepType(c, stp) == SEQ_POLY_HAND;
       len = 0;
-      if (own && inRng[fx]) {          // feeder must be inside its range
+      if ((own || handZone) && inRng[fx]) {   // feeder must be inside its range
         fstp = chStep[fx];
         len = stepChordLen[fx][fstp];
         if (len == 0) {
@@ -1598,6 +1898,12 @@ static void seqAdvanceOnce(bool start, const bool *go,
       if (m) { len = m; ch = mapped; }
       if (fxm) nCore = coreOut;        // compaction may have shrunk the core
     }
+    // HAND POLY buffers instead of sounding: the step's chord (post-FX,
+    // post-FScale = what WOULD have sounded) becomes the keyboard's string
+    // buffer, the rhythm still gates WHEN it refreshes.  Only an explicit
+    // recorded gesture (stored u16 dts) still auto-replays note by note
+    if (handStep) handBufStore(c, ch, len);
+    if (handStep && !handTimed) continue;
     int8_t sh = seqOct[c];
     if (mono) {
       uint8_t vel = (att & SEQ_ATT_ACCENT) ? seqAccVel[c] : seqVel[c];
@@ -1731,7 +2037,7 @@ static void seqAdvanceOnce(bool start, const bool *go,
           if (e > 40) e = 40;
           strumEnqueue(c, snote, svel, sn, (uint16_t)e, false, false, 0);
         }
-        if (handStep) handRing[c] = true;   // rings until next content
+        if (handStep) handRing[c] |= HAND_RING_GEST;   // rings until next content
       }
     }
   }
@@ -2104,7 +2410,7 @@ void seqMuteToggle(uint8_t seq) {
     usbMIDI.sendNoteOff(seqNotes[seq][i], 0, seq + 1);
   seqLen[seq] = 0;
   arpIdx[seq] = 0;
-  handRing[seq] = false;        // a mute cuts the HAND ring too
+  handRing[seq] = 0;            // a mute cuts the HAND ring too
 }
 
 // --- SEQMODE3 erase --------------------------------------------------------
@@ -2118,7 +2424,8 @@ static void seqEraseNotes(uint8_t s) {
   seqLen[s] = 0;
   arpIdx[s] = 0;
   strumCancel(s);              // an erase also drops the un-sent rake tail
-  handRing[s] = false;
+  handRing[s] = 0;
+  handBufN[s] = 0;             // and the buffered string map (pattern gone)
 }
 
 void seqErase(uint8_t s) {
@@ -2300,6 +2607,7 @@ void keySetChannel(uint8_t ch) {
       keySounding[k] = false;
     }
   chordCut();                     // chord engine notes, old channel
+  releaseCh((uint8_t)(keyCh - 1));  // strummed strings ringing on the OLD channel
   keyCh = ch;
   if (monoEngaged()) {
     // new channel is a MONO track: held keys stay silent, the chord engine

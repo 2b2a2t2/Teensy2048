@@ -126,6 +126,23 @@ void arpPageToggle() { arpPageOn = !arpPageOn; }
 void arpPageDismiss() { arpPageOn = false; }
 bool arpPageActive()  { return arpPageOn && arpTrackCtx(); }
 
+// --- SEQMODE M2 strum ADDS row (variants 1/2/4) ----------------------------
+// Clicking M2 on a POLY STRUM/HAND edit track swaps the F row to the Le
+// Strum ADDS colors: F1 = sus4, F2 = add6, F3 = add9 (independent RAM
+// toggles), F4 clears all.  Composite active check like the arp page - a
+// mid-hold track/TYPE/mode switch drops the row by itself
+static bool strumFRowOn = false;
+
+static bool strumFRowCtx() {
+  return modeBase == MODE_SEQ && modeVariant != 3 &&
+         seqTrack() == SEQ_TRACK_POLY &&
+         (seqPolyType() == SEQ_POLY_STRUM || seqPolyType() == SEQ_POLY_HAND);
+}
+
+void strumFRowToggle() { strumFRowOn = !strumFRowOn; }
+void strumFRowDismiss() { strumFRowOn = false; }
+bool strumFRowActive() { return strumFRowOn && strumFRowCtx(); }
+
 // HOLD F3 in SEQMODE: ENC6 rebinds from the track's default velocity to
 // its ACCENT velocity (the quick tap still picks the ACCENT target)
 static bool f3AccentSel = false;
@@ -223,6 +240,7 @@ void handleButtonEvents() {
             // channel: M1 (STEPS target) selected, radio on
             stepEditSet(true, 0);
             arpPageDismiss();       // the new track may not be an arp
+            strumFRowDismiss();     // ...and it may not strum either
             refreshAllLeds();        // M1 + F-row follow the radio again
             // the whole grid belongs to the new channel (length, speed,
             // follow, gate/vel/prob, ...) and the header may have been
@@ -415,8 +433,9 @@ void handleButtonEvents() {
 
     // HOLD F3 in SEQMODE: ENC6 becomes the track's ACCENT velocity knob
     // (the quick tap below still picks the ACCENT target - a hold ends in
-    // EV_RELEASED and never reaches EV_CLICKED)
-    if (modeBase == MODE_SEQ && modeVariant != 3 &&
+    // EV_RELEASED and never reaches EV_CLICKED).  The strum ADDS row owns
+    // F3 while it is open (add9) - the accent hold stays out of its way
+    if (modeBase == MODE_SEQ && modeVariant != 3 && !strumFRowActive() &&
         kl >= groupControls[5] && kl <= groupControls[8] &&
         (uint8_t)(kl - groupControls[5]) == 2) {
       if (ev == EV_PRESSED) {
@@ -437,12 +456,37 @@ void handleButtonEvents() {
       }
     }
 
+    // STRUM ADDS row (open via M2): F1..F3 toggle sus4 / add6 / add9,
+    // F4 clears the selection - independent bits, combinable, RAM only
+    if (ev == EV_CLICKED && strumFRowActive() &&
+        kl >= groupControls[5] && kl <= groupControls[8]) {
+      uint8_t idx = (uint8_t)(kl - groupControls[5]);      // 0..3
+      static const char *const xn[3] = { "sus4", "add6", "add9" };
+      if (idx == 3) {
+        strumExtSet(0);
+        headerShow("ADDS cleared");
+        if (logRoom(48)) Serial.println("  adds cleared");
+      } else {
+        strumExtSet((uint8_t)(strumExtGet() ^ (1u << idx)));
+        char hb[16];
+        snprintf(hb, sizeof(hb), "%s %s", xn[idx],
+                 (strumExtGet() >> idx) & 1 ? "on" : "off");
+        headerShow(hb);
+        if (logRoom(48)) {
+          Serial.print("  adds ");
+          Serial.println(hb);
+        }
+      }
+      refreshAllLeds();
+    } else
     // F1-F4 in SEQMODE (MONO): pick the edit target and switch the radio
     // on (TIE/GLIDE/ACCENT/PROB).  DRUM/POLY tracks only take ACCENT/PROB
     // from F3/F4 - clicking the selected one again closes the radio there;
     // POLY adds F1 = FX and F2 = TYPE (STEP/STRUM/HAND override per step).
-    // SEQMODE only: ENCMODE/KEYMODE keep their F-pad jobs
-    if (ev == EV_CLICKED && (stepEditCtx() || stepEditAccCtx()) &&
+    // SEQMODE only: ENCMODE/KEYMODE keep their F-pad jobs.  The strum
+    // ADDS row above takes the F row first while it is open
+    if (ev == EV_CLICKED && !strumFRowActive() &&
+        (stepEditCtx() || stepEditAccCtx()) &&
         kl >= groupControls[5] && kl <= groupControls[8]) {
       uint8_t idx = (uint8_t)(kl - groupControls[5]);      // 0..3
       static const char *const tn[4] = { "TIE", "GLIDE", "ACCENT", "PROB" };
@@ -527,6 +571,18 @@ void handleButtonEvents() {
           Serial.println(eb);
         }
         refreshAllLeds();   // step LEDs dim: that pattern is gone
+      } else if (ev == EV_CLICKED && strumFRowCtx()) {
+        // SEQMODE 1/2/4 + POLY STRUM/HAND: M2 clicks the strum ADDS row
+        // (F1..F4 = sus4/add6/add9/clear) on/off - POLY had no M2 job yet,
+        // so this never collides with the ARP page (MONO) or erase (mode 3)
+        strumFRowToggle();
+        headerShow(strumFRowActive() ? "ADDS" : "ADDS OFF");
+        if (logRoom(48)) {
+          Serial.print("  strum adds row ");
+          Serial.println(strumFRowActive() ? "on" : "off");
+        }
+        refreshAllLeds();
+        refreshMainScreen();
       } else if (ev == EV_CLICKED && arpTrackCtx()) {
         // SEQMODE 1/2/4 + MONO/ARP: M2 clicks the ARP encoder page on/off
         arpPageToggle();
@@ -1212,6 +1268,7 @@ void handleEncoderEvents() {
       } else if (ei == 5 && ed != 0) {
         seqTrackAdjust(ed);                // TRACK: DRUM/MONO/POLY (no wrap)
         if (seqTrack() != SEQ_TRACK_MONO) arpPageDismiss();  // no arp left
+        if (!strumFRowCtx()) strumFRowDismiss();   // nor a strum ADDS row
         refreshAllLeds();                  // the step-edit radio follows the track type
         if (logRoom(48)) {
           Serial.print("  track ");
@@ -1224,12 +1281,14 @@ void handleEncoderEvents() {
         if (seqTrack() == SEQ_TRACK_MONO) {
           seqMonoTypeAdjust(ed);           // TYPE: ROOT/BASS/ARP/STRUM (no wrap)
           if (seqMonoType() != SEQ_MONO_ARP) arpPageDismiss();
+          strumFRowDismiss();     // a MONO track never takes the ADDS row
           if (logRoom(48)) {
             Serial.print("  mono ");
             Serial.println(seqMonoTypeName());
           }
         } else {
           seqPolyTypeAdjust(ed);           // TYPE: STEP/STRUM/HAND (no wrap)
+          if (!strumFRowCtx()) strumFRowDismiss();   // left STRUM/HAND
           if (logRoom(48)) {
             Serial.print("  poly ");
             Serial.println(seqPolyTypeName());
