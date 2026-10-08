@@ -21,6 +21,8 @@
 #define CHORD_EXT_m7  0x02
 #define CHORD_EXT_M7  0x04
 #define CHORD_EXT_9   0x08
+#define CHORD_EXT_11  0x10
+#define CHORD_EXT_13  0x20
 
 // --- scale (ENC2 in every KEY variant; root in KEYMODE2 / the PREV row) --
 void        keyScaleAdjust(int16_t counts);  // 4 counts = 1 scale, clamp, no wrap

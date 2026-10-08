@@ -119,4 +119,15 @@ bool seqFollow();                        // ENC3: edit track follows its feeder
 bool seqFollowOf(uint8_t ch);            // follow state of sequence ch 0..15
 void seqFollowSet(bool on);              // edit track (4 counts = state, CW=ON)
 void seqFollowSetOf(uint8_t ch, bool on);      // restore (seqCfgLoad)
+// GNR8 BASS mapping (F2 ENC3): how FOLLOW re-resolves a generated step
+// note onto the incoming chord - NEAR = nearest chord tone inside the
+// LOW..RANGE window, ROOT = the chord's lowest tone (octave-shaped),
+// DEGREE = scale degree -> Nth chord tone, IVL = lowest tone + semitone
+// offset from KEY root (can leave the chord).  Global, boot NEAR,
+// persisted in the reserved SEQ config byte b[2]
+enum { SEQ_MAP_NEAR = 0, SEQ_MAP_ROOT, SEQ_MAP_DEG, SEQ_MAP_IVL };
+uint8_t     seqMap();                   // current mode 0..3
+void        seqMapSet(uint8_t m);       // clamped (bad -> NEAR); restore path
+void        seqMapAdjust(int16_t counts);  // edit map (4 counts = 1 mode)
+const char *seqMapName(uint8_t m);      // "near" "root" "deg" "ivl"
 void seqDiagNote(uint8_t section, uint32_t us);  // track worst loop stalls; 1Hz report

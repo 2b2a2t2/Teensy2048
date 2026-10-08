@@ -17,6 +17,13 @@
 // ---------------------------------------------------------------------------
 static uint8_t  sGenre = 0;                              // boot = genre 0
 static uint8_t  sKnob[7] = {50, 50, 50, 50, 50, 50, 50}; // MOOD..SURP
+
+// embellishment encoders (PREV hold: EN5-8)
+static uint8_t  sEmbSubProb  = 50;  // EN5: substitution probability %
+static uint8_t  sEmbInvBias  = 0;   // EN6: inversion preference 0-3
+static uint8_t  sEmbPassAmt  = 50;  // EN7: passing chord density %
+static uint8_t  sEmbColorAmt = 50;  // EN8: extensions/sus/strum %
+
 static bool     sEmbMenu = false; // NEXT tap: the EMB/PLACE row is open
 static uint8_t  sEmbMode = 0;     // 0 = off, 1 = pass, 2 = pass + substitute
 static uint8_t  sEmbPlace = 0;    // 0 = every odd step, 1 = by bracket gap
@@ -300,13 +307,21 @@ static uint32_t scorePc(uint8_t prev, uint8_t pc, uint8_t pos) {
 // ---------------------------------------------------------------------------
 // proposal derivation: quality bucket (CPX x genre table), extension,
 // inversion (ERA x genre table, or VOICE-LEAD's minimal movement)
+// step = 255 for global (proposals), 0..63 for per-step override (apply)
 // ---------------------------------------------------------------------------
 static void deriveProposal(uint8_t prev, uint8_t pc, uint8_t prevBass,
-                           uint8_t *oQ, uint8_t *oExt, uint8_t *oInv) {
+                           uint8_t *oQ, uint8_t *oExt, uint8_t *oInv,
+                           uint8_t step) {
   const GenreData *g = &genreTable[sGenre];
   bool in = fwHas(pc);
   uint8_t d = fwDeg(pc);
   uint8_t cpx = sKnob[4], era = sKnob[5];
+
+  // Per-step embellishment overrides (255 = use global)
+  uint8_t colorP = (step < 64) ? stepEmbGet(step, 3) : 255;
+  uint8_t invBias = (step < 64) ? stepEmbGet(step, 1) : 255;
+  if (colorP == 255) colorP = k4EmbColorAmt();
+  if (invBias == 255) invBias = k4EmbInvBias();
 
   int32_t wq[4];
   wq[0] = ((int32_t)g->qual[d][0] * cpx + 100 * (100 - cpx)) / 100;
@@ -318,20 +333,33 @@ static void deriveProposal(uint8_t prev, uint8_t pc, uint8_t prevBass,
   uint8_t bucket = pick4(wq, h);
 
   uint8_t q;
-  if (bucket == 3) q = CHORD_Q_SUS;
-  else if (in) q = fwQuality(d);
+  if (bucket == 3) {
+    // sus probability gated by color amount
+    uint32_t hs = hash32(sSeed ^ (prev * 0x12345678u) ^ (pc * 0x9ABCDEFu) ^ 0xF1u);
+    q = (hs % 100u) < (uint32_t)colorP ? CHORD_Q_SUS : fwQuality(d);
+  } else if (in) q = fwQuality(d);
   else q = (sKnob[0] >= 50) ? CHORD_Q_MAJ : CHORD_Q_MIN;   // borrowed: MOOD
 
   uint8_t ext = 0;
-  if (bucket == 1)
+  if (bucket == 1) {
     ext = (q == CHORD_Q_MIN || q == CHORD_Q_DIM) ? CHORD_EXT_m7
                                                  : CHORD_EXT_M7;
-  else if (bucket == 2)
+    // 9th probability gated by color amount
+    uint32_t h9 = hash32(sSeed ^ (prev * 0x11111111u) ^ (pc * 0x22222222u) ^ 0x33u);
+    if ((h9 % 100u) < (uint32_t)colorP) ext |= CHORD_EXT_9;
+  } else if (bucket == 2) {
     ext = (q == CHORD_Q_DIM) ? (CHORD_EXT_m7 | CHORD_EXT_9) : CHORD_EXT_9;
+    // 11th/13th probability gated by color amount
+    uint32_t h11 = hash32(sSeed ^ (prev * 0x44444444u) ^ (pc * 0x55555555u) ^ 0x66u);
+    if ((h11 % 100u) < (uint32_t)colorP) ext |= CHORD_EXT_11;
+    uint32_t h13 = hash32(sSeed ^ (prev * 0x77777777u) ^ (pc * 0x88888888u) ^ 0x99u);
+    if ((h13 % 100u) < (uint32_t)colorP) ext |= CHORD_EXT_13;
+  }
 
   uint8_t inv;
   if (sLead) {
     // minimal bass movement from the previous chord's bass
+    // with inversion bias preference
     static const uint8_t ivM[4][5] = {
       {0, 4, 7, 11, 14},   // Maj
       {0, 3, 7, 10, 14},   // Min
@@ -346,6 +374,8 @@ static void deriveProposal(uint8_t prev, uint8_t pc, uint8_t prevBass,
     for (uint8_t k = 0; k < 4 && k < tones; k++) {
       uint8_t bassPc = (uint8_t)((pc + ivM[row][k]) % 12);
       int df = circDist(bassPc, prevBass);
+      // apply inversion bias: prefer the biased inversion
+      if (k == invBias) df = df * 50 / 100;  // halve distance for preferred inv
       if (df < bestD) { bestD = df; inv = k; }
     }
   } else {
@@ -353,6 +383,8 @@ static void deriveProposal(uint8_t prev, uint8_t pc, uint8_t prevBass,
     wi[0] = ((int32_t)g->inv[d][0] * era + 100 * (100 - era)) / 100;
     for (uint8_t i = 1; i < 4; i++)
       wi[i] = ((int32_t)g->inv[d][i] * era) / 100;
+    // apply inversion bias: boost weight of preferred inversion
+    if (invBias < 4) wi[invBias] = wi[invBias] * 3 / 2;
     uint32_t hi = hash32(sSeed ^ (prev * 0x9E3779B9u) ^ (pc * 0x85EBCA6Bu) ^
                          0x57u);
     inv = pick4(wi, hi);
@@ -414,7 +446,7 @@ void k4Refresh() {
   for (uint8_t i = 0; i < n; i++) {
     uint8_t pc = order[i];
     sRank[pc] = (int8_t)i;
-    deriveProposal(prev, pc, bass, &sQual[pc], &sExtBits[pc], &sInv[pc]);
+    deriveProposal(prev, pc, bass, &sQual[pc], &sExtBits[pc], &sInv[pc], 255);
   }
 }
 
@@ -483,6 +515,53 @@ uint8_t k4EmbPlace() { return sEmbPlace; }
 const char* k4EmbPlaceName() {
   return sEmbPlace ? "DIST" : "ODD";
 }
+
+// ---------------------------------------------------------------------------
+// embellishment encoders (PREV hold: EN5-8)
+// ---------------------------------------------------------------------------
+void k4EmbSubProbAdjust(int16_t counts) {
+  int v = (int)sEmbSubProb + (int)counts;
+  if (v < 0) v = 0;
+  if (v > 100) v = 100;
+  if ((uint8_t)v != sEmbSubProb) {
+    sEmbSubProb = (uint8_t)v;
+  }
+}
+
+uint8_t k4EmbSubProb() { return sEmbSubProb; }
+
+void k4EmbInvBiasAdjust(int16_t counts) {
+  int v = (int)sEmbInvBias + (int)counts;
+  if (v < 0) v = 0;
+  if (v > 3) v = 3;
+  if ((uint8_t)v != sEmbInvBias) {
+    sEmbInvBias = (uint8_t)v;
+  }
+}
+
+uint8_t k4EmbInvBias() { return sEmbInvBias; }
+
+void k4EmbPassAmtAdjust(int16_t counts) {
+  int v = (int)sEmbPassAmt + (int)counts;
+  if (v < 0) v = 0;
+  if (v > 100) v = 100;
+  if ((uint8_t)v != sEmbPassAmt) {
+    sEmbPassAmt = (uint8_t)v;
+  }
+}
+
+uint8_t k4EmbPassAmt() { return sEmbPassAmt; }
+
+void k4EmbColorAmtAdjust(int16_t counts) {
+  int v = (int)sEmbColorAmt + (int)counts;
+  if (v < 0) v = 0;
+  if (v > 100) v = 100;
+  if ((uint8_t)v != sEmbColorAmt) {
+    sEmbColorAmt = (uint8_t)v;
+  }
+}
+
+uint8_t k4EmbColorAmt() { return sEmbColorAmt; }
 
 // ---------------------------------------------------------------------------
 // control buttons
@@ -634,11 +713,13 @@ int k4ApplyAll() {
     if (pc > 11) continue;
     if (sEmbMode == 2 && fwHas(pc)) {      // PASS+SUB: swap the degree,
       uint32_t h = hash32(sSeed ^ ((uint32_t)st << 8) ^     // rolled once
-                          ((uint32_t)pc << 16) ^ 0xC2u);     // vs SURP
-      if ((h % 100u) < (uint32_t)k4Knob(6)) pc = sFw[subSw[fwDeg(pc)]];
+                          ((uint32_t)pc << 16) ^ 0xC2u);
+      uint8_t subP = stepEmbGet(st, 0);
+      if (subP == 255) subP = k4EmbSubProb();
+      if ((h % 100u) < (uint32_t)subP) pc = sFw[subSw[fwDeg(pc)]];
     }
     uint8_t q, ext, inv;
-    deriveProposal(prev, pc, prevBass, &q, &ext, &inv);
+    deriveProposal(prev, pc, prevBass, &q, &ext, &inv, st);
     uint8_t root = (uint8_t)(12 * keyOctave() + 24 + pc);
     uint8_t notes[8];
     uint8_t n = chordBuild(root, q, ext, inv, notes);
@@ -664,8 +745,13 @@ int k4ApplyAll() {
       uint8_t passD = (uint8_t)((mDeg[nx] + 6) % 7);
       if (passD == mDeg[pr]) continue;         // the passing chord IS prev
       if (sEmbPlace == 1 && fwDist7(mDeg[pr], mDeg[nx]) < 2) continue;
+      // passing chord probability gate (per-step override)
+      uint8_t passP = stepEmbGet(st, 2);
+      if (passP == 255) passP = k4EmbPassAmt();
+      uint32_t h = hash32(sSeed ^ ((uint32_t)st << 8) ^ 0xE4u);
+      if ((h % 100u) >= (uint32_t)passP) continue;
       uint8_t q, ext, inv;
-      deriveProposal(mDeg[pr], sFw[passD], mBass[pr], &q, &ext, &inv);
+      deriveProposal(mDeg[pr], sFw[passD], mBass[pr], &q, &ext, &inv, st);
       uint8_t root = (uint8_t)(12 * keyOctave() + 24 + sFw[passD]);
       uint8_t notes[8];
       uint8_t n = chordBuild(root, q, ext, inv, notes);

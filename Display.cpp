@@ -6,6 +6,7 @@
 #include "Keyboard.h"
 #include "Events.h"
 #include "Chords.h"
+#include "Gen.h"         // GNR8 page values (fill/acc/glide/tie)
 #include "Key4.h"       // KEYMODE4 genre/knob values + control legend
 #include <Wire.h>
 
@@ -50,6 +51,13 @@ static const char* ctrlLegend(uint8_t i) {
     if (strumFRowActive()) {
       static const char* ad[4] = { "sus4", "add6", "add9", "off" };
       return ad[i - 5];
+    }
+    // SEQMODE + GNR8 page (open with M2 on a MONO BASS track): F1 = the
+    // full OPTS page, F2 = per-step OCT + MAP, F3 = per-step BRW,
+    // F4 = per-step MOD PROB - wins over the step-edit legend
+    if (genPageActive()) {
+      static const char* gn[4] = { "OPTS", "OCT", "BRW", "PROB" };
+      return gn[i - 5];
     }
     // SEQMODE + MONO step-edit: F1-F4 select TIE/GLIDE/ACCENT/PROB
     if (modeBase == MODE_SEQ && modeVariant != 3 &&
@@ -96,17 +104,24 @@ static const char* ctrlLegend(uint8_t i) {
   }
   if (i == 3) {
     // hold M2 = ENCMODE channel mute; SEQMODE3 click = erase the track;
-    // SEQMODE 1/2/4 + MONO/ARP = the ARP encoder page
-    // (both keep priority over the quality key, same as the handler)
+    // SEQMODE 1/2/4 + MONO/ARP = the ARP encoder page, + MONO/BASS = the
+    // GNR8 page (all keep priority over the quality key, same as the handler)
     if (modeBase == MODE_ENC) return "MUTE";
     if (modeBase == MODE_SEQ && modeVariant == 3) return "ERASE";
     if (modeBase == MODE_SEQ && modeVariant != 3 &&
         seqTrack() == SEQ_TRACK_MONO && seqMonoType() == SEQ_MONO_ARP)
       return "ARP";
+    if (modeBase == MODE_SEQ && modeVariant != 3 &&
+        seqTrack() == SEQ_TRACK_MONO && seqMonoType() == SEQ_MONO_BASS)
+      return "GNR8";
     if (key4) return "AUTO";
     return key2 ? "Min" : "M2";
   }
   if (i == 4) {
+    // GNR8 track: M3 = generate (tap) / undo (hold), like KEYMODE4 APPLY
+    if (modeBase == MODE_SEQ && modeVariant != 3 &&
+        seqTrack() == SEQ_TRACK_MONO && seqMonoType() == SEQ_MONO_BASS)
+      return "GEN";
     if (key4) return "APPLY";
     return key2 ? "Dim" : "M3";
   }
@@ -128,6 +143,17 @@ void refreshMainScreen() {
   // other four keep their knobs (ENC1 octave, 5/6/8 gate/vel/prob)
   bool arpP = arpPageActive();
   uint8_t arpSeq = (uint8_t)(seqEditChannel() - 1);
+  // SEQMODE + M2 GNR8 page: ENC2/3/4/7 take fill/accent/glide/tie, the
+  // other four keep their knobs (ENC1 octave, 5/6/8 gate/vel/prob)
+  bool genP = genPageActive();
+  uint8_t genSeq = (uint8_t)(seqEditChannel() - 1);
+  // ...and with PREV held on that page the rotate row takes the encoders
+  bool genOv = (b.enc == ENC_SEQ_GNR8_OV);
+  // ...or with an F radio armed the whole row is the option sub-page
+  // (F1 = the full page: TONES/RNG/LOW/ALGO on ENC1-4; F2 = OCT on
+  // ENC2 + MAP on ENC3, F3 = BRW on ENC3, F4 = PROB on ENC4 - the rest
+  // idle; the rotate row still wins whenever PREV is held)
+  uint8_t gSub = (genP && !genOv) ? genOptionSel() : 0xFF;
   // SEQMODE + DRUM/POLY + radio on: only ENC8 (track probability) is bound
   bool seqDrumGe = (modeBase == MODE_SEQ && modeVariant != 3 &&
                     seqTrack() != SEQ_TRACK_MONO && stepEditIsOn());
@@ -147,9 +173,74 @@ void refreshMainScreen() {
       static const char *al[4] = { "OCT", "SPAN", "SKIP", "MODE" };
       l1 = al[c];
     }
+    if (genP && !genOv && c >= 1 && c <= 3) {
+      static const char *gl[4] = { "OCT", "FILL", "ACC", "GLIDE" };
+      l1 = gl[c];
+    }
+    if (gSub == 0) {             // F1 full page: the four option knobs
+      static const char *fl[4] = { "TONES", "RNG", "LOW", "ALGO" };
+      l1 = fl[c];
+    } else if (gSub != 0xFF) {   // F2..F4 mod pages: which knob binds
+      static const char *mOc[4] = { "---", "OCT", "MAP", "---" };
+      static const char *mBr[4] = { "---", "---", "BRW", "---" };
+      static const char *mPb[4] = { "---", "---", "---", "PROB" };
+      l1 = (gSub == 1) ? mOc[c] : (gSub == 2) ? mBr[c] : mPb[c];
+    }
     u8g2.drawStr(x, 22, l1);
-    if (modeBase == MODE_SEQ && c == 0) {
+    if (genOv) {
+      // rotate row: ENC1 = the rotation position, the rest stay idle
+      if (c == 0) snprintf(val, sizeof(val), "%u", seqGenShiftPos() + 1);
+      else snprintf(val, sizeof(val), "---");
+    } else if (gSub == 0) {
+      // F1 full options page: ENC1 TONES, ENC2 RANGE, ENC3 LOW, ENC4 ALGO
+      if (c == 0) {
+        snprintf(val, sizeof(val), "%s",
+                 seqGenTonesName(seqGenTonesOf(genSeq)));
+      } else if (c == 1) {
+        snprintf(val, sizeof(val), "%uoct", seqGenRangeOf(genSeq));
+      } else if (c == 2) {
+        snprintf(val, sizeof(val), "%s",
+                 seqGenLowName(seqGenLowOf(genSeq)));
+      } else {
+        snprintf(val, sizeof(val), "%s",
+                 seqGenAlgoName(seqGenAlgoOf(genSeq)));
+      }
+    } else if (gSub != 0xFF) {
+      // F2..F4 mod pages: the selected step's value (nothing picked yet
+      // reads "pick"); MAP on F2/ENC3 needs no selection
+      int8_t ss = genStepSelStep();
+      if (gSub == 1) {
+        if (c == 1) {
+          if (ss < 0) snprintf(val, sizeof(val), "pick");
+          else {
+            int ov = stepOctAt((uint8_t)ss);
+            if (ov == 0) snprintf(val, sizeof(val), "0");
+            else snprintf(val, sizeof(val), "%+d", ov);
+          }
+        } else if (c == 2) {
+          snprintf(val, sizeof(val), "%s", seqMapName(seqMap()));
+        } else snprintf(val, sizeof(val), "---");
+      } else if (gSub == 2) {
+        if (c == 2) {
+          if (ss < 0) snprintf(val, sizeof(val), "pick");
+          else if (stepBrwAt((uint8_t)ss) == 0)
+            snprintf(val, sizeof(val), "off");
+          else snprintf(val, sizeof(val), "%u", stepBrwAt((uint8_t)ss));
+        } else snprintf(val, sizeof(val), "---");
+      } else {
+        if (c == 3) {
+          if (ss < 0) snprintf(val, sizeof(val), "pick");
+          else snprintf(val, sizeof(val), "%u%%", stepModPAt((uint8_t)ss));
+        } else snprintf(val, sizeof(val), "---");
+      }
+    } else if (modeBase == MODE_SEQ && c == 0) {
       snprintf(val, sizeof(val), "%d", seqOctaveShift()); // ENC1 = octave shift
+    } else if (genP && c == 1) {
+      snprintf(val, sizeof(val), "%u%%", seqGenFillOf(genSeq));   // ENC2
+    } else if (genP && c == 2) {
+      snprintf(val, sizeof(val), "%u%%", seqGenAccOf(genSeq));    // ENC3
+    } else if (genP && c == 3) {
+      snprintf(val, sizeof(val), "%u%%", seqGenGlideOf(genSeq));  // ENC4
     } else if (arpP && c == 1) {
       snprintf(val, sizeof(val), "%u",
                seqArpSpanOf(arpSeq));           // ENC2 = span (octaves)
@@ -177,6 +268,14 @@ void refreshMainScreen() {
     } else if (key4Ov && c == 3) {
       snprintf(val, sizeof(val), "%s",
                chordFScale() ? "ON" : "OFF");       // overlay ENC4 = FScale
+    } else if (key4Ov && c == 4) {
+      snprintf(val, sizeof(val), "%u", k4EmbSubProb());  // overlay EN5 = SUB
+    } else if (key4Ov && c == 5) {
+      snprintf(val, sizeof(val), "%u", k4EmbInvBias());  // overlay EN6 = INV
+    } else if (key4Ov && c == 6) {
+      snprintf(val, sizeof(val), "%u", k4EmbPassAmt());  // overlay EN7 = PAS
+    } else if (key4Ov && c == 7) {
+      snprintf(val, sizeof(val), "%u", k4EmbColorAmt()); // overlay EN8 = COL
     } else if (key4Emb && c == 0) {
       snprintf(val, sizeof(val), "%s", k4EmbModeName());  // ENC1 = EMB
     } else if (key4Emb && c == 1) {
@@ -212,16 +311,27 @@ void refreshMainScreen() {
     }
     if (c == 1 && f3AccentActive()) l2 = "ACC";   // F3 held: ENC6 = accent
     if (arpP && 4 + c == 6) l2 = "INST";          // arp page: ENC7 = insert
+    if (genP && 4 + c == 6) l2 = "TIE";           // gen page: ENC7 = tie %
+    if (genOv) l2 = "---";                        // rotate row: all idle
     if (seqDrumGe && 4 + c == 6 && stepEditSel() == 5)
       l2 = "FX";                                  // POLY edit: ENC7 = FX type
     if (seqDrumGe && 4 + c == 6 && stepEditSel() == 6)
       l2 = "TYPE";                                // POLY edit: ENC7 = TYPE arm
+    if (seqDrumGe && 4 + c <= 5 && stepEditSel() == 7)
+      l2 = (c == 0) ? "SUB" : (c == 1) ? "INV" : (c == 2) ? "PAS" : "COL"; // POLY edit: ENC5-8 = EMB params
+    if (gSub != 0xFF) l2 = "---";            // option sub-page: row 2 idle
     u8g2.drawStr(x, 38, l2);
-    if (c == 1 && f3AccentActive()) {
+    if (genOv) {
+      snprintf(val, sizeof(val), "---");              // rotate row idle
+    } else if (gSub != 0xFF) {
+      snprintf(val, sizeof(val), "---");        // option sub-page: idle
+    } else if (c == 1 && f3AccentActive()) {
       snprintf(val, sizeof(val), "%d", seqAccentVelocity()); // ENC6 = acc vel
     } else if (arpP && 4 + c == 6) {
       snprintf(val, sizeof(val), "%s",
                seqArpInstName(seqArpInstOf(arpSeq)));  // ENC7 = insert mode
+    } else if (genP && 4 + c == 6) {
+      snprintf(val, sizeof(val), "%u%%", seqGenTieOf(genSeq));  // ENC7 tie
     } else if (seq3 && 4 + c == 4) {
       snprintf(val, sizeof(val), "%u", seqInputChannel()); // ENC5 = input ch
     } else if (seq3 && 4 + c == 5) {
@@ -245,9 +355,18 @@ void refreshMainScreen() {
     } else if (seqDrumGe && 4 + c == 5) {
       snprintf(val, sizeof(val), "---");                    // ENC6 free
     } else if (seqDrumGe && 4 + c == 6) {
-      snprintf(val, sizeof(val), "%s",
-               stepEditSel() == 5 ? stepFxSelName()
-               : stepEditSel() == 6 ? stepTypeArmName() : "---"); // ENC7
+      if (stepEditSel() == 7) {
+        // EMB target: show SUB/INV/PAS/COL for focused step
+        static const char* embLabels[4] = { "SUB", "INV", "PAS", "COL" };
+        uint8_t p = stepEmbGet(k4Focus(), c);
+        if (p == 255) p = (c == 0) ? k4EmbSubProb() : (c == 1) ? k4EmbInvBias()
+            : (c == 2) ? k4EmbPassAmt() : k4EmbColorAmt();
+        snprintf(val, sizeof(val), "%s=%u", embLabels[c], p);
+      } else {
+        snprintf(val, sizeof(val), "%s",
+                 stepEditSel() == 5 ? stepFxSelName()
+                 : stepEditSel() == 6 ? stepTypeArmName() : "---"); // ENC7
+      }
     } else if (seqDrumGe && 4 + c == 7) {
       snprintf(val, sizeof(val), "%d%%", seqProbPct());  // ENC8 = track probability
     } else if (key4 && 4 + c == 4) {
@@ -298,7 +417,9 @@ void drawHeaderText() {
   // on MONO, FX/TYPE/ACCENT/PROB on POLY); an open ARP page wins over both
   // so the rebind is always visible
   const char* left = headerLeft;
-  if (arpPageActive()) {
+  if (genPageActive()) {
+    left = "GNR8";               // the generator page owns the encoder row
+  } else if (arpPageActive()) {
     left = "ARP";
   } else if (strumFRowActive()) {
     left = "EXT";               // strum ADDS row: the F row edits colors
@@ -306,6 +427,7 @@ void drawHeaderText() {
     static const char* ed[4] = { "TIE", "GLIDE", "ACCENT", "PROB" };
     if (stepEditSel() == 5) left = "FX";
     else if (stepEditSel() == 6) left = "TYPE";
+    else if (stepEditSel() == 7) left = "EMB";
     else left = ed[stepEditSel() - 1];
   }
   // a transient message owns the whole strip: long strings (the KEY4

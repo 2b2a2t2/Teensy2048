@@ -52,6 +52,16 @@ void    k4EmbPlaceAdjust(int16_t counts); // CW = dist, CCW = odd
 uint8_t k4EmbPlace();                     // 0 odd, 1 distance
 const char* k4EmbPlaceName();             // "ODD" / "DIST"
 
+// --- embellishment encoders (PREV hold: EN5-8) -------------------------------
+void    k4EmbSubProbAdjust(int16_t counts);  // EN5: substitution probability 0..100
+uint8_t k4EmbSubProb();
+void    k4EmbInvBiasAdjust(int16_t counts);  // EN6: inversion bias 0..3
+uint8_t k4EmbInvBias();
+void    k4EmbPassAmtAdjust(int16_t counts);  // EN7: passing chord amount 0..100
+uint8_t k4EmbPassAmt();
+void    k4EmbColorAmtAdjust(int16_t counts); // EN8: extensions/sus/strum 0..100
+uint8_t k4EmbColorAmt();
+
 // --- control buttons --------------------------------------------------------
 bool k4WriteToggle();      // M1: key presses land on the focused step
 bool k4Write();

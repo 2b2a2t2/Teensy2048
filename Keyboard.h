@@ -220,6 +220,31 @@ const uint8_t* stepChordAt(uint8_t step, uint8_t *len);    // stored chord (edit
 void           stepSnapshotTake();     // snapshot the edit sequence for undo
 int            stepSnapshotRestore();  // 0 = restored (switches back the ch), -1 = none
 
+// GNR8 generator write path (Gen.cpp drives it): one note per step,
+// stamped like stepChordWrite (octave pre-compensated, followers and the
+// shift range re-derived) plus the accent/glide mask the generator rolled;
+// stepGenClear empties a step the roll turned into a rest.  The rotate
+// moves every stored element of the edit sequence's steps within its own
+// pattern length (dir > 0 = content delays one step, wraps at the end;
+// elements past the length stay put), stepAttrChain stamps one attribute
+// onto steps from..to-1 (wrapping inside the pattern length, end
+// exclusive - TIE on X..Y-1 rings X's note through step Y) and returns
+// how many steps were touched
+int      stepGenWrite(uint8_t step, uint8_t note, uint8_t att);
+int      stepGenClear(uint8_t step);
+void     stepShiftPattern(uint8_t n, int8_t dir);
+uint8_t  stepAttrChain(uint8_t from, uint8_t to, uint8_t att);
+
+// GNR8 per-step pitch modifiers (F2/F3/F4): edit-sequence accessors,
+// clamped on set (octave -2..+2, borrowed chord tone 0..8 = off..n-th,
+// modifier probability 0..100)
+int8_t   stepOctAt(uint8_t step);
+void     stepOctSet(uint8_t step, int8_t v);
+uint8_t  stepBrwAt(uint8_t step);
+void     stepBrwSet(uint8_t step, uint8_t v);
+uint8_t  stepModPAt(uint8_t step);
+void     stepModPSet(uint8_t step, uint8_t v);
+
 // sequencing (called from loop context, never from the clock ISR):
 // press on an unassigned step records a chord into it (see above);
 // seqStepAdvance runs each time the playhead reaches a step - every
@@ -246,3 +271,12 @@ uint8_t seqPlayBar();                // bar 0..3 the playhead reads (0xFF =
 // keyboard channel (count 0 = silent)
 uint8_t seqSoundingCount(uint8_t ch);
 uint8_t seqSoundingNote(uint8_t ch, uint8_t i);
+
+// KEYMODE4 per-step embellishment overrides (PREV hold encoders EN5-8):
+// [0] = sub prob 0..100 (255 = use global), [1] = inv bias 0..3 (255 = global)
+// [2] = pass amt 0..100 (255 = global), [3] = color amt 0..100 (255 = global)
+uint8_t stepEmbGet(uint8_t step, uint8_t param);  // param 0..3
+void    stepEmbSet(uint8_t step, uint8_t param, uint8_t val);
+// SEQMODE EMB target (POLY: F1 cycles FX -> EMB): a step tap cycles its
+// SUB/INV/PAS/COL override - true = the step carries a non-global param
+bool    stepEmbToggle(uint8_t step);

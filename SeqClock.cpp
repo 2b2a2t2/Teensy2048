@@ -573,6 +573,36 @@ void seqFollowSetOf(uint8_t ch, bool on) {
   if (ch < 16) followOn[ch] = on;
 }
 
+// GNR8 BASS mapping mode (see SeqClock.h): global, boot NEAR; the
+// reserved config byte b[2] holds it (legacy blocks read 0 = NEAR there,
+// old clipboard junk >3 is rejected by seqMapSet)
+static uint8_t mapMode = SEQ_MAP_NEAR;
+static int16_t mapRes = 0;               // encoder residual (4 counts = 1)
+
+uint8_t seqMap() { return mapMode; }
+void seqMapSet(uint8_t m) {
+  mapMode = (m <= SEQ_MAP_IVL) ? m : SEQ_MAP_NEAR;
+}
+void seqMapAdjust(int16_t counts) {
+  mapRes += counts;
+  int16_t step = 0;
+  while (mapRes >= 4) { mapRes -= 4; step++; }
+  while (mapRes <= -4) { mapRes += 4; step--; }
+  if (!step) return;
+  int16_t v = (int16_t)mapMode + step;
+  if (v < SEQ_MAP_NEAR) v = SEQ_MAP_NEAR;
+  if (v > SEQ_MAP_IVL) v = SEQ_MAP_IVL;
+  mapMode = (uint8_t)v;
+}
+const char *seqMapName(uint8_t m) {
+  switch (m) {
+    case SEQ_MAP_ROOT: return "root";
+    case SEQ_MAP_DEG:  return "deg";
+    case SEQ_MAP_IVL:  return "ivl";
+    default:           return "near";
+  }
+}
+
 // System Real-Time Start (0xFA): with SYNC=INT also launch the internal
 // transport so Clock ticks flow to the DAW; with SYNC=EXT just emit Start.
 void seqSendStart() {

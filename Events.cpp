@@ -9,6 +9,7 @@
 #include "Keyboard.h"
 #include "Chords.h"
 #include "Key4.h"       // KEYMODE4 controls (focus/apply/undo/locks)
+#include "Gen.h"        // GNR8 generator params / produce / rotate
 
 // skip a log line if the USB TX buffer is congested (never block the loop —
 // a blocked Serial.write stalls pollSeqClock and freezes the playhead)
@@ -67,8 +68,8 @@ static bool stepEditAccCtx() {
 
 // true while an ATTRIBUTE target is engaged for the current track: MONO =
 // TIE/GLIDE/ACCENT/PROB (1..4), POLY = ACCENT/PROB plus the FX target (5)
-// and the TYPE target (6), DRUM = ACCENT/PROB (3,4).  A target never
-// matches a track that cannot edit it (a POLY FX/TYPE selection does not
+// and the TYPE target (6), EMB target (7), DRUM = ACCENT/PROB (3,4).  A target never
+// matches a track that cannot edit it (a POLY FX/TYPE/EMB selection does not
 // arm MONO/DRUM pads).  Drives the header label, the step pulse and the
 // attribute pad mode
 bool stepEditActive() {
@@ -76,7 +77,7 @@ bool stepEditActive() {
   uint8_t trk = seqTrack();
   if (trk == SEQ_TRACK_MONO) return stepEditTarget >= 1 && stepEditTarget <= 4;
   if (trk == SEQ_TRACK_POLY)
-    return stepEditTarget == 5 || stepEditTarget == 6 ||
+    return stepEditTarget == 5 || stepEditTarget == 6 || stepEditTarget == 7 ||
            (stepEditTarget >= 3 && stepEditTarget <= 4);
   return stepEditTarget >= 3 && stepEditTarget <= 4;
 }
@@ -84,6 +85,7 @@ bool stepEditActive() {
 static void stepEditSet(bool on, uint8_t target) {
   stepEditOn = on;
   stepEditTarget = target;
+  stepChainDisarm();        // a target switch kills a TIE span arm
 }
 
 bool    stepEditIsOn() { return stepEditOn; }
@@ -142,6 +144,138 @@ static bool strumFRowCtx() {
 void strumFRowToggle() { strumFRowOn = !strumFRowOn; }
 void strumFRowDismiss() { strumFRowOn = false; }
 bool strumFRowActive() { return strumFRowOn && strumFRowCtx(); }
+
+// --- SEQMODE M2 "GNR8" page (variants 1/2/4) ------------------------------
+// Clicking M2 on a MONO+BASS edit track rebinds ENC2/3/4/7 to the acid
+// generator's knobs (fill/accent/glide/tie).  Like the arp page the
+// active check is a composite, so a mid-hold channel/TYPE/mode switch can
+// never leave a stale page behind.  ROOT/ARP/STRUM never take it
+static bool genPageOn = false;
+// armed F radio of that page (0..3, 0xFF = none): F1 (sel 0) owns the
+// FULL four-knob options page (ENC1 TONES, ENC2 RANGE, ENC3 LOW, ENC4
+// ALGO), F2 (sel 1) = STEP OCT (ENC2 of the tapped step + MAP mode on
+// ENC3), F3 (sel 2) = BORROW (ENC3), F4 (sel 3) = MOD PROB (ENC4);
+// it dies with the page - toggle and dismiss both clear it, so a reopen
+// always starts with the plain GNR8 row
+static uint8_t genOptSel = 0xFF;
+// step armed as the dial target on the F2/F3/F4 mod pages (tap = select);
+// dies with the page like genOptSel, validated on read
+static int8_t genStepSel = -1;
+// 4 encoder counts = 1 value on the mod dials (clamped, no wrap): one
+// residual each for OCT / BRW / PROB (MAP keeps its own in seqMapAdjust)
+static int16_t genModRes[3];
+
+static bool genTrackCtx() {
+  return modeBase == MODE_SEQ && modeVariant != 3 &&
+         seqTrack() == SEQ_TRACK_MONO && seqMonoType() == SEQ_MONO_BASS;
+}
+
+void genPageToggle() {
+  genPageOn = !genPageOn;
+  genOptSel = 0xFF;
+  genStepSel = -1;
+}
+void genPageDismiss() {
+  genPageOn = false;
+  genOptSel = 0xFF;
+  genStepSel = -1;
+}
+bool genPageActive()  { return genPageOn && genTrackCtx(); }
+uint8_t genOptionSel() { return genPageActive() ? genOptSel : 0xFF; }
+
+// selected step for the mod dials (F2/F3/F4), or -1: nothing picked yet,
+// or the pattern shrank / the step lost its content under the selection
+int8_t genStepSelStep() {
+  if (!genPageActive() || genStepSel < 0) return -1;
+  uint8_t st = (uint8_t)genStepSel;
+  if (st >= seqPatLenOf((uint8_t)(seqEditChannel() - 1)) || !stepIsActive(st)) {
+    genStepSel = -1;
+    return -1;
+  }
+  return genStepSel;
+}
+
+// 4 counts = 1 value step of dial i (0 = OCT, 1 = BRW, 2 = PROB)
+static int16_t genModStep(uint8_t i, int16_t counts) {
+  genModRes[i] += counts;
+  int16_t s = 0;
+  while (genModRes[i] >= 4) { genModRes[i] -= 4; s++; }
+  while (genModRes[i] <= -4) { genModRes[i] += 4; s--; }
+  return s;
+}
+
+// header line for an armed option (F1..F4 press) or a sub-page dial
+// change.  On the F1 page sel names the knob that moved (0 TONES /
+// 1 LOW / 2 RANGE / 3 ALGO): "TONES all" / "LOW C1" / "RANGE 2oct" /
+// "ALGO CLASSIC".  On the mod pages sel is the armed radio itself:
+// "step 5 oct +1" / "step 5 brw 3" / "step 5 prob 60%" (nothing picked:
+// "step oct" / "step brw" / "step prob" - the dial itself flashes
+// "pick step" instead)
+static void genOptionHeader(uint8_t sel) {
+  uint8_t ch = (uint8_t)(seqEditChannel() - 1);
+  char hb[24];
+  if (genOptSel == 0) {
+    if (sel == 0)
+      snprintf(hb, sizeof(hb), "TONES %s", seqGenTonesName(seqGenTonesOf(ch)));
+    else if (sel == 1)
+      snprintf(hb, sizeof(hb), "LOW %s", seqGenLowName(seqGenLowOf(ch)));
+    else if (sel == 2)
+      snprintf(hb, sizeof(hb), "RANGE %uoct", seqGenRangeOf(ch));
+    else
+      snprintf(hb, sizeof(hb), "ALGO %s", seqGenAlgoName(seqGenAlgoOf(ch)));
+  } else if (sel == 1) {
+    int8_t ss = genStepSelStep();
+    if (ss < 0)
+      snprintf(hb, sizeof(hb), "step oct");
+    else if (stepOctAt((uint8_t)ss))
+      snprintf(hb, sizeof(hb), "step %u oct %+d", ss + 1,
+               (int)stepOctAt((uint8_t)ss));
+    else
+      snprintf(hb, sizeof(hb), "step %u oct 0", ss + 1);
+  } else if (sel == 2) {
+    int8_t ss = genStepSelStep();
+    if (ss < 0)
+      snprintf(hb, sizeof(hb), "step brw");
+    else if (stepBrwAt((uint8_t)ss) == 0)
+      snprintf(hb, sizeof(hb), "step %u brw off", ss + 1);
+    else
+      snprintf(hb, sizeof(hb), "step %u brw %u", ss + 1,
+               stepBrwAt((uint8_t)ss));
+  } else {
+    int8_t ss = genStepSelStep();
+    if (ss < 0)
+      snprintf(hb, sizeof(hb), "step prob");
+    else
+      snprintf(hb, sizeof(hb), "step %u prob %u%%", ss + 1,
+               stepModPAt((uint8_t)ss));
+  }
+  headerShow(hb);
+  if (logRoom(48)) {
+    Serial.print("  ");
+    Serial.println(hb);
+  }
+}
+
+// --- GNR8 TIE span fill (hold-arm gesture) --------------------------------
+// With the step-edit radio on TIE on the GNR8 track (MONO+BASS), HOLD a
+// step to arm the span start (header "chain from N" - the touch-down tap
+// of that same press is reverted first, so holding never changes the
+// flag); the next tap on ANOTHER step stamps TIE across start..end-1
+// (wrapping inside the pattern length - the span rings over rests).  Tap
+// the armed start itself = cancel; 5 s without execution disarms.
+// Plain taps NEVER arm: TIE and the other attributes (GLIDE/ACCENT/PROB
+// never span at all) stay ordinary per-step toggles, like in every other
+// track type.
+static bool     chainArmed = false;
+static uint8_t  chainStart = 0;
+static uint32_t chainArmAt = 0;
+// the step this press toggled (0 = none, else step+1): a HOLD arriving on
+// the same press reverts it, so hold-to-arm leaves the flag untouched
+static uint8_t  pressToggled = 0;
+
+void stepChainDisarm() { chainArmed = false; }
+bool stepChainArmed()  { return chainArmed && genTrackCtx() &&
+                                 stepEditTarget == 1; }
 
 // HOLD F3 in SEQMODE: ENC6 rebinds from the track's default velocity to
 // its ACCENT velocity (the quick tap still picks the ACCENT target)
@@ -241,6 +375,8 @@ void handleButtonEvents() {
             stepEditSet(true, 0);
             arpPageDismiss();       // the new track may not be an arp
             strumFRowDismiss();     // ...and it may not strum either
+            genPageDismiss();       // nor a BASS track for the GNR8 page
+            stepChainDisarm();      // ...nor an armed chain span (old ch)
             refreshAllLeds();        // M1 + F-row follow the radio again
             // the whole grid belongs to the new channel (length, speed,
             // follow, gate/vel/prob, ...) and the header may have been
@@ -278,28 +414,83 @@ void handleButtonEvents() {
       } else if (attrMode && (ev == EV_PRESSED || ev == EV_CLICKED ||
                               ev == EV_HOLD)) {
         // attribute edit: a tap on an ACTIVE step toggles the selected
-        // attribute; empty steps, clicks and holds do nothing here
-        if (ev == EV_PRESSED && stepIsActive(stp)) {
-          static const uint8_t attOf[4] = { SEQ_ATT_TIE, SEQ_ATT_GLIDE,
-                                            SEQ_ATT_ACCENT, SEQ_ATT_PROB };
-          static const char *const nmOf[4] = { "tie", "glide", "accent",
-                                               "prob" };
-          char ab[24];
+        // attribute; empty steps and clicks do nothing here.  HOLD (GNR8
+        // track, TIE target only) arms the span fill: the touch-down
+        // toggle of this same press is reverted first, the header
+        // announces the start, and the next tap on ANOTHER step stamps
+        // TIE across start..end-1 (wrapping in the pattern length - the
+        // span rings over rests).  Tap the armed start = cancel, 5 s
+        // disarms; every plain tap just toggles, GLIDE/ACCENT/PROB never
+        // span at all
+        static const uint8_t attOf[4] = { SEQ_ATT_TIE, SEQ_ATT_GLIDE,
+                                          SEQ_ATT_ACCENT, SEQ_ATT_PROB };
+        static const char *const nmOf[4] = { "tie", "glide", "accent",
+                                             "prob" };
+        bool chainCtx = genTrackCtx() && stepEditTarget == 1;  // TIE only
+        char ab[24];
+        // a forgotten arm expires after 5 s (plain toggles again)
+        if (chainArmed && (uint32_t)(millis() - chainArmAt) >= 5000u)
+          chainArmed = false;
+        if (ev == EV_PRESSED) pressToggled = 0;   // fresh for this press
+        if (ev == EV_HOLD && chainCtx) {
+          // hold = arm the span start; undo this press's touch-down
+          // toggle first, so holding never changes the flag itself
+          if (pressToggled == (uint8_t)(stp + 1))
+            stepAttrToggle(stp, SEQ_ATT_TIE);
+          pressToggled = 0;
+          chainArmed = true;
+          chainStart = stp;
+          chainArmAt = millis();
+          snprintf(ab, sizeof(ab), "chain from %u", stp + 1);
+          headerShow(ab);
+          if (logRoom(48)) {
+            Serial.print("  ");
+            Serial.println(ab);
+          }
+        } else if (ev == EV_PRESSED && chainCtx && chainArmed &&
+                   stp == chainStart) {
+          // tap the armed start itself = cancel the span
+          chainArmed = false;
+          headerShow("chain off");
+          if (logRoom(48)) Serial.println("  chain off");
+        } else if (ev == EV_PRESSED && chainCtx && chainArmed &&
+            stp != chainStart) {
+          uint8_t att = attOf[stepEditTarget - 1];
+          uint8_t n = stepAttrChain(chainStart, stp, att);
+          chainArmed = false;
+          if (n)
+            snprintf(ab, sizeof(ab), "%u steps %s", n,
+                     nmOf[stepEditTarget - 1]);
+          else
+            snprintf(ab, sizeof(ab), "chain empty");
+          headerShow(ab);
+          if (logRoom(48)) {
+            Serial.print("  ");
+            Serial.println(ab);
+          }
+          refreshAllLeds();   // the F-row blink mask follows the new flags
+        } else if (ev == EV_PRESSED && stepIsActive(stp)) {
+          bool on = false;
           if (stepEditTarget == 5) {
             // POLY FX target: the pad arms the SELECTED FX type on it
-            bool on = stepFxToggle(stp, stepFxType);
+            on = stepFxToggle(stp, stepFxType);
             snprintf(ab, sizeof(ab), "%u %s %s", stp + 1,
                      stepFxName(stepFxType), on ? "on" : "off");
           } else if (stepEditTarget == 6) {
             // POLY TYPE target: the pad stamps the ARMED override on it
             // (a second tap clears back to inherit-the-track)
-            bool on = stepTypeToggle(stp, stepTypeArmV);
+            on = stepTypeToggle(stp, stepTypeArmV);
             snprintf(ab, sizeof(ab), "%u %s %s", stp + 1,
                      on ? stepTypeArmName() : "type",
                      on ? "on" : "inherit");
+          } else if (stepEditTarget == 7) {
+            // POLY EMB target: cycle through SUB/INV/PAS/COL for this step
+            // ENC7 selects which param to edit, tap cycles the value
+            on = stepEmbToggle(stp);
+            snprintf(ab, sizeof(ab), "%u %s", stp + 1, on ? "emb" : "emb");
           } else {
             uint8_t att = attOf[stepEditTarget - 1];
-            bool on = stepAttrToggle(stp, att);
+            on = stepAttrToggle(stp, att);
             if (seqTrack() == SEQ_TRACK_DRUM) {
               // per voice: name the SELECTED PART and its short attribute
               snprintf(ab, sizeof(ab), "%u %s %s %s", stp + 1,
@@ -315,7 +506,24 @@ void handleButtonEvents() {
             Serial.print("  ");
             Serial.println(ab);
           }
+          if (chainCtx) pressToggled = (uint8_t)(stp + 1);
+          // (a HOLD arriving on this same press reverts that toggle and
+          // arms the span from here instead)
         }
+      } else if (genPageActive() && genOptSel >= 1 && genOptSel <= 3 &&
+                 ev == EV_PRESSED && stepIsActive(stp)) {
+        // GNR8 mod pages (F2 OCT / F3 BRW / F4 PROB): a tap on an ACTIVE
+        // step selects it as the dial target (header shows its value,
+        // the pad lights up); empty steps fall through to editLocked and
+        // stay inert.  The selection dies with the page - F1 / none-armed
+        // taps never record here (editLocked catches those below)
+        genStepSel = (int8_t)stp;
+        genOptionHeader(genOptSel);
+        if (logRoom(48)) {
+          Serial.print("  gen step ");
+          Serial.println(stp + 1);
+        }
+        refreshAllLeds();
       } else if (editLocked && (ev == EV_PRESSED || ev == EV_CLICKED ||
                                 ev == EV_HOLD)) {
         // edit off: pads inert (no record, no assign mode, no disable)
@@ -385,8 +593,16 @@ void handleButtonEvents() {
         refreshAllLeds();
       } else if (ev == EV_CLICKED && stepEditCtx()) {
         // SEQMODE + MONO: CLICK on M1 cycles the edit radio - OFF -> ON
-        // (STEPS target), ON+STEPS -> OFF, ON+attribute -> back to STEPS
+        // (STEPS target), ON+STEPS -> OFF, ON+attribute -> back to STEPS.
+        // Turning it ON closes the M2 GNR8 page first - the two keys are
+        // mutually exclusive (the page's own toggle does the reverse)
+        bool droppedGen = false;
         if (!stepEditOn) {
+          if (genPageActive()) {      // M1 wins: the GNR8 page leaves
+            genPageDismiss();
+            droppedGen = true;
+            if (logRoom(48)) Serial.println("  gen page off (edit on)");
+          }
           stepEditSet(true, 0);
           headerShow("EDIT ON");
           if (logRoom(48)) Serial.println("  step edit on (steps)");
@@ -400,6 +616,7 @@ void handleButtonEvents() {
           if (logRoom(48)) Serial.println("  step edit off");
         }
         refreshAllLeds();
+        if (droppedGen) refreshMainScreen();   // the encoder row changes
       } else if (ev == EV_CLICKED && stepEditAccCtx()) {
         // SEQMODE + DRUM/POLY: a QUICK tap of M1 toggles the edit master only
         // (a HOLD still opens the part select - hold suppresses the click)
@@ -434,8 +651,10 @@ void handleButtonEvents() {
     // HOLD F3 in SEQMODE: ENC6 becomes the track's ACCENT velocity knob
     // (the quick tap below still picks the ACCENT target - a hold ends in
     // EV_RELEASED and never reaches EV_CLICKED).  The strum ADDS row owns
-    // F3 while it is open (add9) - the accent hold stays out of its way
+    // F3 while it is open (add9) and the GNR8 page while it is open (RANGE)
+    // - the accent hold stays out of both their ways
     if (modeBase == MODE_SEQ && modeVariant != 3 && !strumFRowActive() &&
+        !genPageActive() &&
         kl >= groupControls[5] && kl <= groupControls[8] &&
         (uint8_t)(kl - groupControls[5]) == 2) {
       if (ev == EV_PRESSED) {
@@ -479,13 +698,44 @@ void handleButtonEvents() {
       }
       refreshAllLeds();
     } else
+    // GNR8 page (open via M2): F1..F4 are RADIO switches for the option
+    // sub-pages (values live in the SEQ EEPROM block / the step table) -
+    // F1 arms the FULL page (ENC1 TONES, ENC2 RANGE, ENC3 LOW, ENC4
+    // ALGO), F2 arms STEP OCT (+ MAP on ENC3), F3 BORROW, F4 MOD PROB
+    // (tap a step first, the armed page dials it).  Click the armed
+    // one again releases, click another switches.  The F-pad LEDs follow
+    // via refreshAllLeds, the row via refreshMain
+    if (ev == EV_CLICKED && genPageActive() &&
+        kl >= groupControls[5] && kl <= groupControls[8]) {
+      uint8_t idx = (uint8_t)(kl - groupControls[5]);      // 0..3
+      if (genOptSel == idx) {
+        genOptSel = 0xFF;
+        headerShow("GNR8");
+        if (logRoom(48)) Serial.println("  gen option off");
+      } else {
+        genOptSel = idx;
+        if (idx == 0) {                // F1 = the four-knob options page
+          headerShow("GNR8 opts");
+          if (logRoom(48)) Serial.println("  gen opts page");
+        } else {
+          genOptionHeader(idx);
+          if (logRoom(48)) {
+            Serial.print("  gen option arm ");
+            Serial.println(idx);
+          }
+        }
+      }
+      refreshAllLeds();
+      refreshMainScreen();
+    } else
     // F1-F4 in SEQMODE (MONO): pick the edit target and switch the radio
     // on (TIE/GLIDE/ACCENT/PROB).  DRUM/POLY tracks only take ACCENT/PROB
     // from F3/F4 - clicking the selected one again closes the radio there;
     // POLY adds F1 = FX and F2 = TYPE (STEP/STRUM/HAND override per step).
     // SEQMODE only: ENCMODE/KEYMODE keep their F-pad jobs.  The strum
-    // ADDS row above takes the F row first while it is open
-    if (ev == EV_CLICKED && !strumFRowActive() &&
+    // ADDS row above takes the F row first while it is open, then the
+    // GNR8 page's option radio row (OPTS/OCT/BRW/PROB)
+    if (ev == EV_CLICKED && !strumFRowActive() && !genPageActive() &&
         (stepEditCtx() || stepEditAccCtx()) &&
         kl >= groupControls[5] && kl <= groupControls[8]) {
       uint8_t idx = (uint8_t)(kl - groupControls[5]);      // 0..3
@@ -511,9 +761,14 @@ void handleButtonEvents() {
           }
         }
       } else if (idx == 0 && seqTrack() == SEQ_TRACK_POLY) {
-        // POLY: F1 = the FX target (sus/ext/color per step); the
-        // engaged one closes the radio again, like F3/F4 do
+        // POLY: F1 cycles FX (5) -> EMB (7) -> off
         if (stepEditOn && stepEditTarget == 5) {
+          stepEditSet(true, 7);
+          char hb[24];
+          snprintf(hb, sizeof(hb), "EMB SUB=%u INV=%u", k4EmbSubProb(), k4EmbInvBias());
+          headerShow(hb);
+          if (logRoom(48)) { Serial.print("  edit target emb "); Serial.println(hb); }
+        } else if (stepEditOn && stepEditTarget == 7) {
           stepEditSet(false, 0);
           headerShow("EDIT OFF");
           if (logRoom(48)) Serial.println("  step edit off");
@@ -590,6 +845,26 @@ void handleButtonEvents() {
         if (logRoom(48)) {
           Serial.print("  arp page ");
           Serial.println(arpPageActive() ? "on" : "off");
+        }
+        refreshAllLeds();
+        refreshMainScreen();
+      } else if (ev == EV_CLICKED && genTrackCtx()) {
+        // SEQMODE 1/2/4 + MONO/BASS: M2 clicks the GNR8 encoder page on/off.
+        // Opening it drops the M1 edit radio - the two keys are mutually
+        // exclusive (M1's toggle closes this page instead)
+        genPageToggle();
+        if (genPageActive()) {
+          if (stepEditIsOn()) {
+            stepEditSet(false, 0);
+            if (logRoom(48)) Serial.println("  edit off (gnr8 open)");
+          }
+        } else {
+          stepChainDisarm();           // the F row leaves too
+        }
+        headerShow(genPageActive() ? "GNR8" : "GNR8 OFF");
+        if (logRoom(48)) {
+          Serial.print("  gen page ");
+          Serial.println(genPageActive() ? "on" : "off");
         }
         refreshAllLeds();
         refreshMainScreen();
@@ -763,11 +1038,47 @@ void handleButtonEvents() {
       if (logRoom(48)) Serial.println("  hold off");
     }
 
+    // GNR8 (SEQMODE 1/2/4 + MONO/BASS): M3 tap = generate the pattern
+    // from the page's parameters (fill/acc/glide/tie + the F-row options,
+    // notes inside the KEY + SCALE), M3 hold = undo it again - the shared
+    // one-level step snapshot, mirroring KEYMODE4's apply/undo pair
+    if (modeBase == MODE_SEQ && modeVariant != 3 && genTrackCtx() &&
+        k4ci == 4) {
+      if (ev == EV_CLICKED) {
+        int w = seqGenProduce();
+        char gb[24];
+        snprintf(gb, sizeof(gb), "gen %d steps", w > 0 ? w : 0);
+        headerShow(gb);
+        refreshAllLeds();       // the step LEDs follow the new pattern
+        refreshMainScreen();
+        if (logRoom(48)) {
+          Serial.print("  ");
+          Serial.println(gb);
+        }
+      } else if (ev == EV_HOLD) {
+        int u = stepSnapshotRestore();
+        headerShow(u == 0 ? "undo" : "nothing to undo");
+        refreshAllLeds();
+        refreshMainScreen();
+        if (logRoom(48))
+          Serial.println(u == 0 ? "  undo" : "  nothing to undo");
+      }
+    }
+
     // PREV = momentary encoder overlay: KEYMODE2 remaps the row to
     // Oct/Scale/Root/Latch/KLock/Perf, KEYMODE4 to Oct/Scale/Key; release
     // restores it.  A quick KEYMODE4 tap (no hold) steps the focus back
     if (kl == groupControls[0]) {
-      if (ev == EV_PRESSED && keyBehaviorVariant() == 2) {
+      if (ev == EV_PRESSED && genPageActive()) {
+        // GNR8 page: PREV held = the rotate row (ENC1 = pattern rotate,
+        // the other seven idle).  Checked FIRST - the KEYMODE2 quality row
+        // claims PREV via keyBehaviorVariant() no matter which mode is up,
+        // so it must not steal the hold while the GNR8 page is open
+        setOverlay(G_ENC, ENC_SEQ_GNR8_OV);
+        prevOvActive = true;
+        refreshMainScreen();
+        if (logRoom(48)) Serial.println("  overlay GNR8 ROT");
+      } else if (ev == EV_PRESSED && keyBehaviorVariant() == 2) {
         setOverlay(G_ENC, ENC_KEY2_PREV);
         prevOvActive = true;
         refreshMainScreen();
@@ -780,8 +1091,10 @@ void handleButtonEvents() {
         if (logRoom(48)) Serial.println("  overlay KEY4 PREV");
       } else if (ev == EV_RELEASED && prevOvActive) {
         // PREV lets go: back to the EMB menu row when it is still open
-        // (the menu is sticky, the PREV row above was only borrowed)
-        if (k4EmbMenu()) setOverlay(G_ENC, ENC_KEY4_EMB);
+        // (the menu is sticky, the PREV row above was only borrowed -
+        // and only a live KEYMODE4 owns that menu, never a stale flag)
+        if (modeBase == MODE_KEY && modeVariant == 4 && k4EmbMenu())
+          setOverlay(G_ENC, ENC_KEY4_EMB);
         else clearOverlay(G_ENC);
         prevOvActive = false;
         refreshMainScreen();
@@ -1009,12 +1322,39 @@ void handleEncoderEvents() {
     // / ENC4 = Force-to-scale (same global ON/OFF as KEYMODE2's ENC4: with
     // it on, sequencer playback snaps stored notes to the current scale,
     // so turning the scale recolors recorded progressions live)
-    if (modeBase == MODE_KEY && modeVariant == 4 && ei == 3 && ed != 0 &&
+    // EN5-EN8 = embellishment encoders: SUB prob / INV bias / PAS amt / COL amt
+    if (modeBase == MODE_KEY && modeVariant == 4 && ei >= 3 && ei <= 7 && ed != 0 &&
         currentBinding().enc == ENC_KEY4_PREV) {
-      chordFScaleAdjust(ed);
-      if (logRoom(48)) {
-        Serial.print("  fscale ");
-        Serial.println(chordFScale() ? "ON" : "OFF");
+      if (ei == 3) {
+        chordFScaleAdjust(ed);
+        if (logRoom(48)) {
+          Serial.print("  fscale ");
+          Serial.println(chordFScale() ? "ON" : "OFF");
+        }
+      } else if (ei == 4) {       // EN5 = SUB prob
+        k4EmbSubProbAdjust(ed);
+        if (logRoom(48)) {
+          Serial.print("  sub% ");
+          Serial.println(k4EmbSubProb());
+        }
+      } else if (ei == 5) {       // EN6 = INV bias
+        k4EmbInvBiasAdjust(ed);
+        if (logRoom(48)) {
+          Serial.print("  inv ");
+          Serial.println(k4EmbInvBias());
+        }
+      } else if (ei == 6) {       // EN7 = PAS amt
+        k4EmbPassAmtAdjust(ed);
+        if (logRoom(48)) {
+          Serial.print("  pas% ");
+          Serial.println(k4EmbPassAmt());
+        }
+      } else if (ei == 7) {       // EN8 = COL amt
+        k4EmbColorAmtAdjust(ed);
+        if (logRoom(48)) {
+          Serial.print("  col% ");
+          Serial.println(k4EmbColorAmt());
+        }
       }
       any = true;
     }
@@ -1115,7 +1455,84 @@ void handleEncoderEvents() {
     //           ENC7 = TYPE ROOT/BASS/ARP (MONO sequences only, no wrap)
     //           ENC8 = tempo 40..240 (moved from ENC1)
     if (modeBase == MODE_SEQ) {
-      if (ei == 0 && ed != 0) {
+      if (ed != 0 && currentBinding().enc == ENC_SEQ_GNR8_OV) {
+        // GNR8 rotate overlay (PREV held): ENC1 = rotate the pattern,
+        // 4 counts = 1 step - the other seven are idle on this row
+        if (ei == 0) {
+          seqGenShiftAdjust(ed);
+          char rb[12];
+          snprintf(rb, sizeof(rb), "rot %u", seqGenShiftPos() + 1);
+          headerShow(rb);
+          if (logRoom(48)) {
+            Serial.print("  ");
+            Serial.println(rb);
+          }
+        }
+        any = true;
+      } else if (genPageActive() && genOptSel != 0xFF) {
+        // armed F radio: the sub-page swallows the whole row.  F1 = the
+        // FULL options page - ENC1 TONES, ENC2 RANGE, ENC3 LOW, ENC4
+        // ALGO (4 counts = 1 detent = 1 value, clamped, no wrap).  F2 =
+        // STEP OCT on ENC2 (the tapped step) + MAP mode on ENC3, F3 =
+        // BORROW on ENC3, F4 = MOD PROB on ENC4; ENC5-8 idle
+        if (genOptSel == 0) {
+          if (ei == 0) {
+            seqGenTonesAdjust(ed);
+            genOptionHeader(0);
+          } else if (ei == 1) {
+            seqGenRangeAdjust(ed);
+            genOptionHeader(2);
+          } else if (ei == 2) {
+            seqGenLowAdjust(ed);
+            genOptionHeader(1);
+          } else if (ei == 3) {
+            seqGenAlgoAdjust(ed);
+            genOptionHeader(3);
+          }
+        } else if (genOptSel == 1 && (ei == 1 || ei == 2)) {
+          if (ei == 1) {                    // ENC2: the step's octave
+            int8_t ss = genStepSelStep();
+            if (ss < 0) headerShow("pick step");
+            else {
+              int v = (int)stepOctAt((uint8_t)ss) + genModStep(0, ed);
+              if (v < -2) v = -2;
+              if (v > 2) v = 2;
+              stepOctSet((uint8_t)ss, (int8_t)v);
+              genOptionHeader(1);
+            }
+          } else {                          // ENC3: mapping mode
+            seqMapAdjust(ed);
+            char mb[16];
+            snprintf(mb, sizeof(mb), "map %s", seqMapName(seqMap()));
+            headerShow(mb);
+            if (logRoom(48)) {
+              Serial.print("  ");
+              Serial.println(mb);
+            }
+          }
+        } else if (genOptSel == 2 && ei == 2) {
+          int8_t ss = genStepSelStep();     // ENC3: borrowed chord tone
+          if (ss < 0) headerShow("pick step");
+          else {
+            int v = (int)stepBrwAt((uint8_t)ss) + genModStep(1, ed);
+            if (v < 0) v = 0;
+            if (v > 8) v = 8;
+            stepBrwSet((uint8_t)ss, (uint8_t)v);
+            genOptionHeader(2);
+          }
+        } else if (genOptSel == 3 && ei == 3) {
+          int8_t ss = genStepSelStep();     // ENC4: modifier probability
+          if (ss < 0) headerShow("pick step");
+          else {
+            int v = (int)stepModPAt((uint8_t)ss) + genModStep(2, ed);
+            if (v < 0) v = 0;
+            if (v > 100) v = 100;
+            stepModPSet((uint8_t)ss, (uint8_t)v);
+            genOptionHeader(3);
+          }
+        }
+        any = true;
+      } else if (ei == 0 && ed != 0) {
         seqOctaveShiftAdjust(ed);           // octave shift of the edit seq
         if (logRoom(48)) {
           Serial.print("  octshift ");
@@ -1123,11 +1540,46 @@ void handleEncoderEvents() {
         }
         any = true;
       } else if (modeVariant != 3) {
+        // GNR8 page: ENC2 = fill %, ENC3 = accent %, ENC4 = glide %,
+        // ENC7 = tie % - the page's four own knobs; ENC1 (octave), ENC5/6
+        // (gate/vel) and ENC8 (prob) keep the bindings they had, and a
+        // channel/TYPE/mode change drops the page (composite check)
+        if (genPageActive() && (ei == 1 || ei == 2 || ei == 3 || ei == 6)) {
+          uint8_t gs = (uint8_t)(seqEditChannel() - 1);
+          if (ei == 1) {
+            seqGenFillAdjust(ed);
+            if (logRoom(48)) {
+              Serial.print("  fill ");
+              Serial.print(seqGenFillOf(gs));
+              Serial.println("%");
+            }
+          } else if (ei == 2) {
+            seqGenAccAdjust(ed);
+            if (logRoom(48)) {
+              Serial.print("  acc ");
+              Serial.print(seqGenAccOf(gs));
+              Serial.println("%");
+            }
+          } else if (ei == 3) {
+            seqGenGlideAdjust(ed);
+            if (logRoom(48)) {
+              Serial.print("  glide ");
+              Serial.print(seqGenGlideOf(gs));
+              Serial.println("%");
+            }
+          } else {
+            seqGenTieAdjust(ed);
+            if (logRoom(48)) {
+              Serial.print("  tie ");
+              Serial.print(seqGenTieOf(gs));
+              Serial.println("%");
+            }
+          }
         // M2 ARP page: ENC2 = span (1..4 octaves), ENC3 = skip rests,
         // ENC4 = mode, ENC7 = insert mode.  These four are the page's own
         // knobs; ENC1 (octave), ENC5/6 (gate/vel) and ENC8 (prob) keep the
         // bindings they had, and a TYPE/channel/mode change drops the page
-        if (ed != 0 && arpPageActive() &&
+        } else if (ed != 0 && arpPageActive() &&
             (ei == 1 || ei == 2 || ei == 3 || ei == 6)) {
           uint8_t seq = (uint8_t)(seqEditChannel() - 1);
           if (ei == 1) {
@@ -1269,6 +1721,8 @@ void handleEncoderEvents() {
         seqTrackAdjust(ed);                // TRACK: DRUM/MONO/POLY (no wrap)
         if (seqTrack() != SEQ_TRACK_MONO) arpPageDismiss();  // no arp left
         if (!strumFRowCtx()) strumFRowDismiss();   // nor a strum ADDS row
+        genPageDismiss();                  // the GNR8 page needs MONO+BASS
+        stepChainDisarm();                 // ...and a chain arm outlives nothing
         refreshAllLeds();                  // the step-edit radio follows the track type
         if (logRoom(48)) {
           Serial.print("  track ");
@@ -1282,6 +1736,8 @@ void handleEncoderEvents() {
           seqMonoTypeAdjust(ed);           // TYPE: ROOT/BASS/ARP/STRUM (no wrap)
           if (seqMonoType() != SEQ_MONO_ARP) arpPageDismiss();
           strumFRowDismiss();     // a MONO track never takes the ADDS row
+          genPageDismiss();       // only TYPE = BASS takes the GNR8 page
+          stepChainDisarm();      // ...and the chain arm belongs to BASS
           if (logRoom(48)) {
             Serial.print("  mono ");
             Serial.println(seqMonoTypeName());

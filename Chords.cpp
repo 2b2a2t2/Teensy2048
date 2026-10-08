@@ -239,12 +239,12 @@ static void sendOut() {
 }
 
 // extensions above the triad - fixed intervals so every scale (chromatic,
-// pentatonic, ...) gets proper 6/7/9 colors; the 9 implies a 7th when no
+// pentatonic, ...) gets proper 6/7/9/11/13 colors; the 9 implies a 7th when no
 // 7th bit is set
 static void addExtensions(uint8_t *out, uint8_t &n, int root, uint8_t qType,
                           uint8_t ext) {
   if (!ext) return;
-  uint8_t add[4];
+  uint8_t add[6];
   uint8_t an = 0;
   if (ext & CHORD_EXT_6)
     add[an++] = (qType == CHORD_Q_MIN || qType == CHORD_Q_DIM) ? 8 : 9;
@@ -255,6 +255,8 @@ static void addExtensions(uint8_t *out, uint8_t &n, int root, uint8_t qType,
       add[an++] = (qType == CHORD_Q_MIN) ? 10 : 11;
     add[an++] = 14;
   }
+  if (ext & CHORD_EXT_11) add[an++] = 17;
+  if (ext & CHORD_EXT_13) add[an++] = 21;
   for (uint8_t i = 0; i < an && n < CHORD_N; i++) {
     uint8_t v = clampNote(root + add[i]);
     bool dup = false;

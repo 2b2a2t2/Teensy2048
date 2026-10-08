@@ -168,6 +168,29 @@ static CRGB modeLedHook(uint8_t pad, bool isTouched, CRGB defaultColor) {
       }
     }
     }
+    // GNR8 mod pages (F2/F3/F4): the step armed for the dial breathes
+    // violet - the playhead above still wins so the head stays readable
+    // (the page's own 30 ms refresh loop drives the pulse)
+    if (genPageActive() && genOptionSel() >= 1 && genOptionSel() <= 3 &&
+        vst == genStepSelStep()) {
+      uint8_t s = sin8((uint32_t)millis() * 256UL / PULSE_PERIOD_MS);
+      uint8_t b = 56 + scale8(s, 160);             // 56..216 breathing
+      CRGB p = CRGB::Purple;
+      p.nscale8(b);
+      return p;
+    }
+    // STEP OCT page (F2): steps carrying an octave shift light up on a
+    // dark-purple -> bright-pink ramp keyed to the value (-2 .. +2; the
+    // picked step above outranks the ramp, unshifted steps stay as they
+    // were)
+    if (genPageActive() && genOptionSel() == 1) {
+      int8_t ov = stepOctAt((uint8_t)vst);
+      if (ov) {
+        uint8_t k = (uint8_t)(ov + 2);             // -2..-1,+1..+2 -> 0..4
+        return CHSV((uint8_t)(196 + k * 10), 255,
+                    (uint8_t)(56 + k * 48));       // 196/56 .. 236/248
+      }
+    }
     CRGB c;
     if (stepIsActive(vst)) {
       // selected-attribute pulse: while an attribute target is engaged,
@@ -257,11 +280,11 @@ static CRGB modeLedHook(uint8_t pad, bool isTouched, CRGB defaultColor) {
                                        STRUM_OPT_ADDS, STRUM_OPT_SUS,
                                        STRUM_OPT_SUSCOM };
       if (k < 0) return CRGB::Black;          // gap LEDs between the keys
-      int8_t bi = bIdx[k & 11];
+      int8_t bi = bIdx[k];
       if (bi >= 0)                           // black key = option toggle
         return (strumOptsGet() & obit[bi]) ? CRGB(110, 0, 190)
                                            : CRGB(14, 0, 26);
-      uint8_t note = handStrNote((uint8_t)wStr[k & 11]);
+      uint8_t note = handStrNote((uint8_t)wStr[k]);
       CRGB g = CHSV((uint8_t)(247 - (uint8_t)((led - 25) * 140 / 6)),
                     255, 255);
       g.nscale8(KEY_DIM);
@@ -338,6 +361,19 @@ static CRGB modeLedHook(uint8_t pad, bool isTouched, CRGB defaultColor) {
       d.nscale8(32);
       return d;
     }
+    // GNR8 page open: the F row = option radios (F1 = full OPTS page,
+    // F2 = OCT/MAP, F3 = BRW, F4 = PROB) - dim violet marks the
+    // borrowed row (no target blink, no chain mask), the ARMED radio
+    // burns bright so the sub-page it owns is visible
+    if (genPageActive() && led >= groupControls[5] &&
+        led <= groupControls[8]) {
+      uint8_t sel = genOptionSel();
+      bool armed = (sel != 0xFF &&
+                    sel == (uint8_t)(led - groupControls[5]));
+      CRGB p = CRGB::Purple;
+      p.nscale8(sel == 0xFF ? 48 : (armed ? 176 : 32));
+      return p;
+    }
     if ((seqMonoRadio || stepEditActive()) &&
         led >= groupControls[5] && fBlinkOn &&
         (seqFMask() & (uint8_t)(1 << (led - groupControls[5])))) {
@@ -398,6 +434,31 @@ static CRGB modeLedHook(uint8_t pad, bool isTouched, CRGB defaultColor) {
       p.nscale8(48);
     }
     return p;
+  }
+  // SEQMODE M2 on a MONO+BASS track: purple = the GNR8 generator lives
+  // behind that pad, and while its encoder page is open it BREATHES
+  // purple instead of sitting dim (M2 is otherwise idle in variants
+  // 1/2/4, so the color never fights another pad role)
+  if (modeBase == MODE_SEQ && modeVariant != 3 &&
+      seqTrack() == SEQ_TRACK_MONO && seqMonoType() == SEQ_MONO_BASS &&
+      led == groupControls[3]) {
+    if (isTouched) return CRGB::White;
+    CRGB p = CRGB::Purple;
+    if (genPageActive()) {
+      uint8_t s = sin8((uint32_t)millis() * 256UL / PULSE_PERIOD_MS);
+      p.nscale8((uint8_t)(48 + scale8(s, 144)));  // 48..192 breathing
+    } else {
+      p.nscale8(48);
+    }
+    return p;
+  }
+  // ...and M3 on that track is the generator button (tap = generate,
+  // hold = undo): a slow dim hue cycle, mirroring KEYMODE4's APPLY
+  if (modeBase == MODE_SEQ && modeVariant != 3 &&
+      seqTrack() == SEQ_TRACK_MONO && seqMonoType() == SEQ_MONO_BASS &&
+      led == groupControls[4]) {
+    if (isTouched) return CRGB::White;
+    return CHSV((uint8_t)(millis() >> 2), 255, 100);  // full cycle ~1s
   }
   // ENCMODE function pads: always show their identity colors even when
   // idle - M1 dim orange, M2 dim orange-red (touch still wins)
@@ -570,6 +631,20 @@ void pollModeLeds() {
     refreshAllLeds();
   }
 
+  // M2 GNR8-page pulse: same breathing purple for the generator page
+  // (and it keeps the M3 hue cycle moving while the page is open)
+  static bool genActive = false;
+  static unsigned long genFlip = 0;
+  bool genNow = genPageActive();
+  if (genNow != genActive) {
+    genActive = genNow;
+    refreshAllLeds();
+  }
+  if (genActive && (long)(millis() - genFlip) >= 0) {
+    genFlip = millis() + 30;
+    refreshAllLeds();
+  }
+
   int8_t active = activeModeLed();
   if (active < 0) { lastBlink = -1; return; }
 
@@ -699,6 +774,8 @@ void modeOnEvent(uint8_t pad, uint8_t ev) {
   drumMuteHold(false);      // nor the M1 drum-voice mute overlay
   arpPageDismiss();         // nor the M2 arp encoder page
   strumFRowDismiss();       // nor the M2 strum ADDS row
+  genPageDismiss();         // nor the M2 GNR8 encoder page
+  stepChainDisarm();        // ...nor an armed attribute chain span
 
   applyModeLeds();
   headerSetLeft(modeName());

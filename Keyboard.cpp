@@ -5,6 +5,7 @@
 #include "Events.h"     // prob clipboard accessors (SEQ save/load)
 #include "Display.h"    // headerShow (strum option / string feedback)
 #include "Key4.h"       // KEYMODE4 proposal gesture (press/release/commit)
+#include "Gen.h"        // GNR8 params (the SEQ EEPROM block stores them)
 #include <EEPROM.h>
 
 #define KEY_OCT_MIN   (-2)
@@ -127,6 +128,10 @@ static uint8_t stepAtt[SEQ_CH_COUNT][STEP_MAX];
 // and a CHORD_EXT-style extension mask in the top nibble.  Same lifecycle
 // as stepAtt: RAM only, dies with the step
 static uint8_t stepFx[SEQ_CH_COUNT][STEP_MAX];
+// per-step embellishment overrides for KEYMODE4 (PREV hold encoders):
+// [0] = sub prob 0..100 (255 = use global), [1] = inv bias 0..3 (255 = global)
+// [2] = pass amt 0..100 (255 = global), [3] = color amt 0..100 (255 = global)
+static uint8_t stepEmb[SEQ_CH_COUNT][STEP_MAX][4];
 // HAND strum timing: onset of each stored note in ms since the gesture's
 // first touch (u16 - a strum may span several steps/bars; playback never
 // squeezes it into one step).  Zero = no recorded timing (block press or
@@ -138,6 +143,14 @@ static uint16_t stepStrumDt[SEQ_CH_COUNT][STEP_MAX][CHORD_MAX];
 // Zero-init: no accents, no probability gates (mask bit = attribute present)
 static uint8_t drumAccent[SEQ_CH_COUNT][STEP_MAX];
 static uint8_t drumProbOn[SEQ_CH_COUNT][STEP_MAX];
+// GNR8 per-step pitch modifiers (F2/F3/F4 pages on the BASS track):
+// octave transposition -2..+2, borrowed chord tone (0 = off, n = n-th
+// tone of the incoming chord, ascending) and the probability % that the
+// two actually apply on a pass (default 100 = always).  RAM only like
+// every step field; defaults ride in stepAttClear, rotate/snapshot copy
+static int8_t  stepOctM[SEQ_CH_COUNT][STEP_MAX];
+static uint8_t stepBrwM[SEQ_CH_COUNT][STEP_MAX];
+static uint8_t stepModP[SEQ_CH_COUNT][STEP_MAX];
 static uint8_t seqVel[SEQ_CH_COUNT] = {90,90,90,90,90,90,90,90,
                                        90,90,90,90,90,90,90,90};
 // per-track PLAYBACK probability in % (100 = the step always plays).  ENC8
@@ -170,13 +183,17 @@ static uint8_t recGestStep = 0;  // POLY: the step a gesture started on (one
 static uint32_t recGestureT0 = 0;  // ms of the gesture's first touch
 
 // a step's attributes live and die with its content (both the MONO flags
-// and the DRUM per-voice accent/probability masks; the POLY FX byte and
-// the HAND strum onsets too)
+// and the DRUM per-voice accent/probability masks; the POLY FX byte, the
+// HAND strum onsets and the GNR8 oct/borrow/prob modifiers too)
 static void stepAttClear(uint8_t ch, uint8_t st) {
   stepAtt[ch][st] = 0;
   stepFx[ch][st] = 0;
+  for (uint8_t i = 0; i < 4; i++) stepEmb[ch][st][i] = 255;  // 255 = use global
   drumAccent[ch][st] = 0;
   drumProbOn[ch][st] = 0;
+  stepOctM[ch][st] = 0;          // GNR8 mods: no octave shift, no borrow,
+  stepBrwM[ch][st] = 0;          // modifier always passes (prob 100)
+  stepModP[ch][st] = 100;
   for (uint8_t i = 0; i < CHORD_MAX; i++) stepStrumDt[ch][st][i] = 0;
 }
 
@@ -454,7 +471,7 @@ bool handLive() {
 // the 7 white keys are the strummed strings: C..B -> 0..6, black keys -1
 static int8_t handStringOf(uint8_t idx) {
   static const int8_t w[12] = { 0, -1, 1, -1, 2, 3, -1, 4, -1, 5, -1, 6 };
-  return w[idx & 11];
+  return (idx < 12) ? w[idx] : -1;
 }
 
 // --- strum voicing (Le Strum port) ----------------------------------------
@@ -533,10 +550,10 @@ static const uint8_t gtrMapOfs[3][12] = {
 };
 
 // string map from an explicit chord: 7 notes, one per white key (0xFF =
-// string has no note - a guitar gap stays dark).  The chord's intervals
+// string has no note - a gap stays dark).  The chord's intervals
 // ride from its FIRST note (root convention); GUITAR picks a shape for
-// MAJ/MIN/DOM7, everything else falls back to stacked triads (the
-// reference's guitarChord() returning 0 into stackTriads())
+// MAJ/MIN/DOM7, everything else spreads the chord tones as an inversion
+// (root position on E F G, lower inversion notes on C D, upper on A B)
 static uint8_t handStringsFrom(const uint8_t *src, uint8_t n, uint8_t *out) {
   uint8_t root = (uint8_t)(src[0] % 12);
   int8_t ivs[12];
@@ -582,7 +599,7 @@ static uint8_t handStringsFrom(const uint8_t *src, uint8_t n, uint8_t *out) {
   int base = 12 * (int)octave + 24 + (int)root;  // root at the keyboard octave
   if (base < 0) base = 0;
   if (base > 120) base = 120;
-  uint8_t str[7];
+  uint8_t str[7] = { 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF };
   bool guitar = false;
   if (strumOpts & STRUM_OPT_GUITAR) {
     // quality: b7 without a b3 = DOM7, b3 = MIN, else MAJ; maj7 / dim /
@@ -639,27 +656,29 @@ static uint8_t handStringsFrom(const uint8_t *src, uint8_t n, uint8_t *out) {
     }
   }
   if (!guitar) {
-    // stacked triads: the interval set fills the 7 strings with octave
-    // wraps (every string always has a note); GTR2 alone raises the top
-    // half (F..B) an octave
-    int note = base;
-    for (uint8_t i = 0; i < 7; i++) {
-      if (i) {
-        int cand = note + 1;
-        for (uint8_t k = 0; k < 13 && cand <= 127; k++, cand++) {
-          bool hit = false;
-          for (uint8_t j = 0; j < ivn; j++)
-            if ((cand % 12) == (uint8_t)((root + ivs[j]) % 12)) { hit = true; break; }
-          if (hit) break;
-        }
-        if (cand > 127) cand = note;   // degenerate top: hold the last string
-        note = cand;
-      }
-      str[i] = (uint8_t)note;
+    // inversion spread: the sorted chord tones land root-position on
+    // E F G, C D take the lower-inversion bass notes below, A B the
+    // upper ones above; -999 = string has no note (stays dark)
+    int P[12];
+    uint8_t tn = 0;
+    for (uint8_t i = 0; i < ivn && tn < 12; i++) {
+      int v = base + (int)ivs[i];
+      P[tn++] = (v < 0) ? 0 : (v > 127) ? 127 : v;
     }
+    int s[7];
+    for (uint8_t i = 0; i < 7; i++) s[i] = -999;
+    if (tn >= 1) s[2] = P[0];                    // E = root position
+    if (tn >= 2) { s[3] = P[1]; s[0] = P[1] - 12; s[5] = P[1] + 12; }
+    if (tn >= 3) { s[4] = P[2]; s[6] = P[2] + 12; s[1] = P[2] - 12; }
+    if (tn >= 4) s[5] = P[3];                    // A = 4th tone when present
+    for (uint8_t i = 0; i < 7; i++)
+      str[i] = (s[i] == -999) ? 0xFF
+             : (s[i] < 0) ? 0
+             : (s[i] > 127) ? 127 : (uint8_t)s[i];
     if (strumOpts & STRUM_OPT_GUITAR2)
       for (uint8_t i = 3; i < 7; i++)
-        str[i] = (uint8_t)((str[i] + 12 > 127) ? 127 : str[i] + 12);
+        if (str[i] != 0xFF)
+          str[i] = (uint8_t)((str[i] + 12 > 127) ? 127 : str[i] + 12);
   }
   for (uint8_t i = 0; i < 7; i++) out[i] = str[i];
   return 7;
@@ -683,7 +702,20 @@ static uint8_t handStrings(uint8_t *out) {
     n = chordCount();
   }
   if (!n) return 0;
-  return handStringsFrom(src, n, out);
+  uint8_t total = handStringsFrom(src, n, out);
+  // Strum density controlled by color amount (EN8 when PREV held in KEYMODE4)
+  // 0% = 1 note (root only), 100% = all strings
+  if (modeBase == MODE_KEY && modeVariant == 4) {
+    uint8_t colorP = k4EmbColorAmt();
+    if (colorP < 100) {
+      uint8_t keep = 1 + (total * colorP) / 100;
+      if (keep < total) {
+        for (uint8_t i = keep; i < total; i++) out[i] = 0xFF;
+        total = keep;
+      }
+    }
+  }
+  return total;
 }
 
 uint8_t handStrNote(uint8_t s) {
@@ -737,8 +769,9 @@ int keyPadPress(uint8_t idx) {
   bool plucked = false;
   uint8_t pnote = 0;
   if (sw >= 0) {
-    uint8_t fill[7];
-    if (handStrings(fill) && fill[sw] != 0xFF) {
+    uint8_t fill[7] = { 0, 0, 0, 0, 0, 0, 0 };
+    uint8_t fn = handStrings(fill);
+    if (fn && fill[sw] != 0xFF) {
       pnote = fill[sw];
       plucked = true;
     }
@@ -985,6 +1018,126 @@ const uint8_t* stepChordAt(uint8_t step, uint8_t *len) {
   return stepChord[seqEditCh][step];
 }
 
+// --- GNR8 generator write path (Gen.cpp drives it) -------------------------
+// one note per step, stamped exactly like stepChordWrite (pre-compensated
+// for the sequence's octave shift, so the step SOUNDS the note the
+// generator picked; shift range + followers re-derived) plus the
+// accent/glide mask it rolled for that step
+int stepGenWrite(uint8_t step, uint8_t note, uint8_t att) {
+  if (step >= STEP_MAX) return -1;
+  uint8_t ch = seqEditCh;
+  int pre = -12 * (int)seqOct[ch];
+  int v = (int)note + pre;
+  if (v < 0) v = 0;
+  else if (v > 127) v = 127;
+  stepChordLen[ch][step] = 0;
+  stepAttClear(ch, step);
+  stepAtt[ch][step] = (uint8_t)(att & 0x3F);   // bits 6-7 = POLY TYPE only
+  stepChord[ch][step][0] = (uint8_t)v;
+  stepChordLen[ch][step] = 1;
+  seqOctClamp(ch);
+  stepSyncFrom(ch);
+  return 1;
+}
+
+int stepGenClear(uint8_t step) {
+  if (step >= STEP_MAX) return -1;
+  stepChordLen[seqEditCh][step] = 0;
+  stepAttClear(seqEditCh, step);   // a rest carries no attribute over
+  stepSyncFrom(seqEditCh);
+  return 0;
+}
+
+// rotate one fixed-size row of the step table by a single slot (dir > 0 =
+// content moves to the NEXT step and the last wraps to 0 = the pattern
+// delays; the widest element is the per-note strum-onset row)
+static void stepRotRow(void *base, uint16_t esz, uint8_t n, int8_t dir) {
+  uint8_t *b = (uint8_t*)base;
+  uint8_t tmp[CHORD_MAX * 2];
+  if (dir > 0) {
+    memcpy(tmp, b + (n - 1) * esz, esz);
+    for (int i = (int)n - 1; i > 0; i--)
+      memcpy(b + (uint16_t)i * esz, b + (uint16_t)(i - 1) * esz, esz);
+    memcpy(b, tmp, esz);
+  } else {
+    memcpy(tmp, b, esz);
+    for (uint8_t i = 0; i + 1 < n; i++)
+      memcpy(b + (uint16_t)i * esz, b + (uint16_t)(i + 1) * esz, esz);
+    memcpy(b + (uint16_t)(n - 1) * esz, tmp, esz);
+  }
+}
+
+void stepShiftPattern(uint8_t n, int8_t dir) {
+  if (n == 0 || n > STEP_MAX || !dir) return;
+  uint8_t ch = seqEditCh;
+  int reps = dir > 0 ? dir : -dir;
+  if (reps > n) reps = n;                 // a full lap lands back anyway
+  int8_t d = dir > 0 ? 1 : -1;
+  while (reps--) {
+    stepRotRow(stepChord[ch], CHORD_MAX, n, d);
+    stepRotRow(stepChordLen[ch], 1, n, d);
+    stepRotRow(stepAtt[ch], 1, n, d);
+    stepRotRow(stepFx[ch], 1, n, d);
+    stepRotRow(stepStrumDt[ch], CHORD_MAX * 2, n, d);
+    stepRotRow(drumAccent[ch], 1, n, d);
+    stepRotRow(drumProbOn[ch], 1, n, d);
+    stepRotRow(stepOctM[ch], 1, n, d);
+    stepRotRow(stepBrwM[ch], 1, n, d);
+    stepRotRow(stepModP[ch], 1, n, d);
+  }
+  seqOctClamp(ch);            // the note set moved: the shift range re-derives
+  stepSyncFrom(ch);
+}
+
+// stamp one attribute across from..to-1 (end exclusive, wrapping inside
+// the pattern length) - the GNR8 chain gesture: TIE on X..Y-1 rings X's
+// note through step Y with the engine's normal tie semantics
+uint8_t stepAttrChain(uint8_t from, uint8_t to, uint8_t att) {
+  if (!att) return 0;
+  uint8_t ch = seqEditCh;
+  uint8_t n = seqPatLenOf(ch);
+  if (n == 0 || n > STEP_MAX || from >= n || to >= n || from == to)
+    return 0;
+  uint8_t cnt = 0;
+  uint8_t i = from;
+  while (i != to) {
+    stepAtt[ch][i] |= (uint8_t)(att & 0x3F);
+    cnt++;
+    if (++i >= n) i = 0;
+    if (cnt >= n) break;
+  }
+  return cnt;
+}
+
+// --- GNR8 per-step pitch modifiers (F2/F3/F4 pages) -----------------------
+// edit-sequence accessors for the UI; the playhead reads the arrays
+// directly.  Setters clamp: octave -2..+2, borrowed chord tone 0..8
+// (0 = off), modifier probability 0..100
+int8_t stepOctAt(uint8_t step) {
+  return step < STEP_MAX ? stepOctM[seqEditCh][step] : 0;
+}
+void stepOctSet(uint8_t step, int8_t v) {
+  if (step >= STEP_MAX) return;
+  if (v < -2) v = -2;
+  if (v > 2) v = 2;
+  stepOctM[seqEditCh][step] = v;
+}
+uint8_t stepBrwAt(uint8_t step) {
+  return step < STEP_MAX ? stepBrwM[seqEditCh][step] : 0;
+}
+void stepBrwSet(uint8_t step, uint8_t v) {
+  if (step >= STEP_MAX || v > 8) return;
+  stepBrwM[seqEditCh][step] = v;
+}
+uint8_t stepModPAt(uint8_t step) {
+  return step < STEP_MAX ? stepModP[seqEditCh][step] : 100;
+}
+void stepModPSet(uint8_t step, uint8_t v) {
+  if (step >= STEP_MAX) return;
+  if (v > 100) v = 100;
+  stepModP[seqEditCh][step] = v;
+}
+
 // one-level undo of the last KEYMODE4 write batch (apply / key write /
 // variation): a full snapshot of the edit sequence - chords, lengths, the
 // step attributes (incl. the TYPE override), the per-note HAND strum
@@ -993,9 +1146,13 @@ static uint8_t snapChord[STEP_MAX][CHORD_MAX];
 static uint8_t snapLen[STEP_MAX];
 static uint8_t snapAttB[STEP_MAX];
 static uint8_t snapFxB[STEP_MAX];
+static uint8_t snapEmbB[STEP_MAX][4];  // embellishment overrides
 static uint8_t snapDrumA[STEP_MAX];
 static uint8_t snapDrumP[STEP_MAX];
 static uint16_t snapStrumB[STEP_MAX][CHORD_MAX];
+static int8_t  snapOctB[STEP_MAX];      // GNR8 per-step mods
+static uint8_t snapBrwB[STEP_MAX];
+static uint8_t snapModP[STEP_MAX];
 static uint8_t snapCh = 0;
 static bool    snapValid = false;
 
@@ -1007,8 +1164,12 @@ void stepSnapshotTake() {
     snapLen[st] = stepChordLen[ch][st];
     snapAttB[st] = stepAtt[ch][st];
     snapFxB[st] = stepFx[ch][st];
+    for (uint8_t i = 0; i < 4; i++) snapEmbB[st][i] = stepEmb[ch][st][i];
     snapDrumA[st] = drumAccent[ch][st];
     snapDrumP[st] = drumProbOn[ch][st];
+    snapOctB[st] = stepOctM[ch][st];
+    snapBrwB[st] = stepBrwM[ch][st];
+    snapModP[st] = stepModP[ch][st];
     for (uint8_t i = 0; i < CHORD_MAX; i++) {
       snapChord[st][i] = stepChord[ch][st][i];
       snapStrumB[st][i] = stepStrumDt[ch][st][i];
@@ -1027,8 +1188,12 @@ int stepSnapshotRestore() {
     stepChordLen[ch][st] = snapLen[st];
     stepAtt[ch][st] = snapAttB[st];
     stepFx[ch][st] = snapFxB[st];
+    for (uint8_t i = 0; i < 4; i++) stepEmb[ch][st][i] = snapEmbB[st][i];
     drumAccent[ch][st] = snapDrumA[st];
     drumProbOn[ch][st] = snapDrumP[st];
+    stepOctM[ch][st] = snapOctB[st];
+    stepBrwM[ch][st] = snapBrwB[st];
+    stepModP[ch][st] = snapModP[st];
     for (uint8_t i = 0; i < CHORD_MAX; i++) {
       stepChord[ch][st][i] = snapChord[st][i];
       stepStrumDt[ch][st][i] = snapStrumB[st][i];
@@ -1094,6 +1259,19 @@ bool stepTypeToggle(uint8_t step, uint8_t type) {
   return true;
 }
 
+// per-step embellishment overrides for KEYMODE4 (PREV hold encoders EN5-8)
+// param 0 = sub prob 0..100 (255 = global), 1 = inv bias 0..3 (255 = global)
+// param 2 = pass amt 0..100 (255 = global), 3 = color amt 0..100 (255 = global)
+uint8_t stepEmbGet(uint8_t step, uint8_t param) {
+  if (step >= STEP_MAX || param >= 4) return 255;
+  return stepEmb[seqEditCh][step][param];
+}
+
+void stepEmbSet(uint8_t step, uint8_t param, uint8_t val) {
+  if (step >= STEP_MAX || param >= 4) return;
+  stepEmb[seqEditCh][step][param] = val;
+}
+
 // effective POLY playback type of a step: the bits6-7 override, else the
 // track default (SEQ_POLY_STEP / SEQ_POLY_STRUM / SEQ_POLY_HAND)
 static uint8_t effStepType(uint8_t ch, uint8_t st) {
@@ -1125,6 +1303,33 @@ bool stepFxToggle(uint8_t step, uint8_t type) {
     *f &= (uint8_t)~stepFxBit(type == SEQ_FX_SUS2 ? SEQ_FX_SUS4
                                                   : SEQ_FX_SUS2);
   return on;
+}
+
+// cycle through embellishment params (SUB/INV/PAS/COL) for a step.
+// Each tap advances the active param index (0..3) and increments its value.
+// Returns true if any param is non-global (for feedback).
+bool stepEmbToggle(uint8_t step) {
+  if (step >= STEP_MAX) return false;
+  uint8_t *e = &stepEmb[seqEditCh][step][0];
+  // Find next param that's not 255, or cycle through all 4
+  static uint8_t lastParam = 0;
+  uint8_t p = lastParam;
+  for (uint8_t i = 0; i < 4; i++) {
+    uint8_t idx = (p + i) % 4;
+    if (e[idx] != 255 || i == 3) {  // found non-global or last param
+      p = idx;
+      break;
+    }
+  }
+  // Increment the selected param
+  if (e[p] == 255) e[p] = 50;  // default to middle
+  else {
+    e[p] = (e[p] + 25) % 125;  // step by 25: 0, 25, 50, 75, 100
+    if (e[p] > 100) e[p] = 255;  // 125 wraps to 255 (global)
+  }
+  lastParam = (p + 1) % 4;
+  // Return true if any param is overridden
+  return (e[0] != 255 || e[1] != 255 || e[2] != 255 || e[3] != 255);
 }
 
 // attribute mask of the EDIT channel's step (step LED pulse / display).
@@ -1688,6 +1893,123 @@ static uint16_t spdAcc[SEQ_CH_COUNT];
 static uint8_t  spdGo[SEQ_CH_COUNT];
 static bool     chInRng[SEQ_CH_COUNT];
 
+// --- GNR8 BASS + FOLLOW: map a generated step note onto the incoming chord
+// The window is the generator's live range (LOW..LOW+RANGE-1) and the
+// content FOLDS into it (foldWin): RANGE 2 -> 1 lowers the upper-octave
+// notes into the new octave, 1 -> 2 raises the original pitches back -
+// stored steps are never rewritten, so the round-trip is lossless and
+// the per-step OCT shifts ride on top of the folded base.  Both sides
+// run through the listener's octave (sh) like the plain follow path;
+// every candidate is folded into [lo,hi] which spans at least one
+// octave, so each pitch class always has a candidate inside.  Returns a
+// sound-space note (the caller skips shNote for it).
+// fold a sounding pitch into [lo,hi] by whole octaves: the LINE follows
+// LOW..RANGE live (RANGE 2->1 lowers the upper octave into the window,
+// 1->2 raises the original pitch back - pure playback transform, the
+// stored note and any per-step OCT data are untouched)
+static uint8_t foldWin(int v, int lo, int hi) {
+  if (hi < lo) hi = lo;
+  while (v > hi) v -= 12;
+  while (v < lo) v += 12;
+  if (v < 0) v = 0;
+  if (v > 127) v = 127;
+  return (uint8_t)v;
+}
+// nearest window representation of class t to target n
+static uint8_t winNear(int t, uint8_t lo, uint8_t hi, uint8_t n) {
+  int first = (int)lo + (((t - (int)lo) % 12 + 12) % 12);
+  int best = first, bd = 0x7FFF;
+  for (int v = first; v <= (int)hi; v += 12) {
+    int d = v - (int)n;
+    if (d < 0) d = -d;
+    if (d < bd) { bd = d; best = v; }
+  }
+  return (uint8_t)best;
+}
+// octave-nearest-to-n representation of class t inside the window
+static uint8_t winOct(int t, int n, uint8_t lo, uint8_t hi) {
+  int d = n - t;
+  int k = (d >= 0) ? (d + 6) / 12 : -(((-d) + 6) / 12);
+  int v = t + 12 * k;
+  while (v < (int)lo) v += 12;
+  while (v > (int)hi) v -= 12;
+  return (uint8_t)v;
+}
+static uint8_t mapBassNote(uint8_t c, uint8_t stp, const uint8_t *ch,
+                           uint8_t len, int8_t sh, bool modOn) {
+  // live window (LOW..LOW+RANGE-1); the own pitch folds into it, so the
+  // mapped line sits exactly where the content plays right now
+  int wlo = 24 + 12 * seqGenLowOf(c);
+  int whi = wlo + 12 * seqGenRangeOf(c) - 1;
+  if (whi > 127) whi = 127;
+  if (whi < wlo) whi = wlo;             // degenerate guard (window >= 1 oct)
+  uint8_t lo = (uint8_t)wlo;
+  uint8_t hi = (uint8_t)whi;
+  // own generated pitch (its min, like the plain BASS pick) in sound
+  // space, folded into the live window like the plain playback pick
+  uint8_t ownN = stepChord[c][stp][0];
+  for (uint8_t i = 1; i < stepChordLen[c][stp]; i++)
+    if (stepChord[c][stp][i] < ownN) ownN = stepChord[c][stp][i];
+  uint8_t n = foldWin((int)shNote(ownN, sh), wlo, whi);
+  // feeder tones through the listener's octave, sorted ascending (the
+  // degree/interval/root picks index the chord root-first)
+  uint8_t t[CHORD_MAX];
+  uint8_t tn = 0;
+  for (uint8_t i = 0; i < len && i < CHORD_MAX; i++)
+    t[tn++] = shNote(ch[i], sh);
+  if (!tn) return n;                     // degenerate: keep the own pitch
+  for (uint8_t i = 1; i < tn; i++) {
+    uint8_t v = t[i];
+    uint8_t j = i;
+    while (j > 0 && t[j - 1] > v) { t[j] = t[j - 1]; j--; }
+    t[j] = v;
+  }
+  uint8_t root = (uint8_t)(keyRoot() % 12);
+  int relI = ((int)n - (int)root) % 12;  // semitones above KEY root
+  if (relI < 0) relI += 12;
+  uint8_t rel = (uint8_t)relI;
+  uint8_t base;
+  switch (seqMap()) {
+    case SEQ_MAP_ROOT:                   // always the chord's lowest tone
+      base = winOct(t[0], n, lo, hi);    // octave-shaped to the own pitch
+      break;
+    case SEQ_MAP_DEG: {                  // own scale degree -> Nth chord
+      uint8_t dIdx = 0xFF;               // tone (wraps over the chord)
+      uint8_t cnt = 0;
+      int bestJ = -1, bestD = 12;
+      for (uint8_t j = 0; j < 12; j++) {
+        if (!keyIsInScale((uint8_t)((root + j) % 12))) continue;
+        int d = (j > rel) ? (int)(j - rel) : (int)(rel - j);
+        if (d < bestD) { bestD = d; bestJ = (int)cnt; }
+        if ((int)j == (int)rel) dIdx = cnt;
+        cnt++;
+      }
+      if (dIdx == 0xFF) dIdx = (bestJ >= 0) ? (uint8_t)bestJ : 0;  // off-scale snap
+      base = winOct(t[dIdx % tn], n, lo, hi);
+      break;
+    }
+    case SEQ_MAP_IVL:                    // lowest tone + semitone offset
+      base = winOct((int)t[0] + (int)rel, n, lo, hi);  // may leave the chord
+      break;
+    default: {                           // NEAR: nearest chord tone in the
+      uint8_t best = winNear(t[0], lo, hi, n);         // window
+      int bd = (int)(best > n ? best - n : n - best);
+      for (uint8_t i = 1; i < tn; i++) {
+        uint8_t cand = winNear(t[i], lo, hi, n);
+        int d = (int)(cand > n ? cand - n : n - cand);
+        if (d < bd) { bd = d; best = cand; }
+      }
+      base = best;
+      break;
+    }
+  }
+  // borrow: replace the mapped tone with the step's chosen chord tone
+  // (octave-shaped to the base), gated by the step's modifier probability
+  uint8_t brw = stepBrwM[c][stp];
+  if (modOn && brw) base = winOct(t[(brw - 1) % tn], (int)base, lo, hi);
+  return base;
+}
+
 // one sub-step of the transport: every track whose speed gate fired this
 // sub-tick (`go[c]`) walks its position and re-voices, the others keep
 // sounding untouched.  lo/hi are recomputed (stateless) so FOLLOW can
@@ -1936,9 +2258,22 @@ static void seqAdvanceOnce(bool start, const bool *go,
         strumEnqueue(c, order, ovel, n, (uint16_t)e, true, defer[c], arm);
       } else {
         uint8_t note;
+        // GNR8 per-step modifiers: the roll gates OCT (all mono types)
+        // and BRW (inside mapBassNote) - no mod set = no roll consumed
+        bool hasMod = stepBrwM[c][stp] != 0 || stepOctM[c][stp] != 0;
+        bool modOn = !hasMod ||
+                     (uint8_t)random(100) < (uint8_t)stepModP[c][stp];
+        bool mapped = false;
         if (seqMonoTypeOf(c) == SEQ_MONO_BASS) {
-          note = ch[0];
-          for (uint8_t i = 1; i < len; i++) if (ch[i] < note) note = ch[i];
+          if (follow) {
+            // map the own generated pitch onto the feeder chord (window +
+            // MAP mode); sound space already, shNote below is skipped
+            note = mapBassNote(c, stp, ch, len, sh, modOn);
+            mapped = true;
+          } else {
+            note = ch[0];
+            for (uint8_t i = 1; i < len; i++) if (ch[i] < note) note = ch[i];
+          }
         } else if (seqMonoTypeOf(c) == SEQ_MONO_ARP) {
           uint8_t elen = 0;
           note = arpNoteAt(ch, len, c, arpIdx[c], &elen);
@@ -1947,7 +2282,25 @@ static void seqAdvanceOnce(bool start, const bool *go,
         } else {
           note = rootOf(ch, len);         // SEQ_MONO_ROOT
         }
-        note = shNote(note, sh);
+        if (!mapped) {
+          note = shNote(note, sh);
+          // BASS: the line folds into the LIVE LOW..RANGE window, so
+          // lowering RANGE drops the upper-octave notes into it right
+          // away and raising RANGE back plays the originals again
+          // (stored notes never change - per-step OCT rides on top)
+          if (seqMonoTypeOf(c) == SEQ_MONO_BASS) {
+            int wlo = 24 + 12 * seqGenLowOf(c);
+            int whi = wlo + 12 * seqGenRangeOf(c) - 1;
+            if (whi > 127) whi = 127;
+            note = foldWin((int)note, wlo, whi);
+          }
+        }
+        if (modOn && stepOctM[c][stp]) {  // OCT: octave shift 0..127 clamp
+          int v = (int)note + 12 * (int)stepOctM[c][stp];
+          if (v < 0) v = 0;
+          if (v > 127) v = 127;
+          note = (uint8_t)v;
+        }
         if (defer[c]) {
           // GLIDE: new note-on BEFORE the old note-off (legato overlap)
           usbMIDI.sendNoteOn(note, vel, c + 1);
@@ -2450,17 +2803,23 @@ void seqEraseAll() {
 // at address 160 (after the 131-byte CC block): magic | editCh | reserved |
 // oct[16] | inCh[16] | vel[16] | gate[16] | mute[16] | track[16] | mono[16]
 // | speed[16] | acc[16] | span[16] | arpMode[16] | inst[16] | skip[16] |
-// prob[16] | patLen[16] | follow[16] | checksum = 260 bytes; blank or
-// corrupt keeps the defaults
+// prob[16] | patLen[16] | follow[16] | genFill[16] | genAcc[16] |
+// genGlide[16] | genTie[16] | genTones[16] | genLow[16] | genRange[16] |
+// genAlgo[16] | checksum = 388 bytes; blank or corrupt keeps the defaults.
+// A block written by an older build (260 bytes, checksum at 259) still
+// loads: the core fields are at the same offsets and the GNR8 params keep
+// their defaults - saved config survives the upgrade
 static const uint8_t  SEQ_EE_MAGIC = 0x53;
 static const uint16_t SEQ_EE_ADDR = 160;
-static const uint16_t SEQ_EE_LEN = 260;
+static const uint16_t SEQ_EE_LEN = 388;
+static const uint16_t SEQ_EE_LEN_OLD = 260;
 
 void seqCfgSave() {
   uint8_t b[SEQ_EE_LEN];
   b[0] = SEQ_EE_MAGIC;
   b[1] = seqEditCh + 1;
-  b[2] = 0;                          // was the shared prob clipboard
+  b[2] = seqMap();                    // GNR8 F2 mapping mode (0..3; was the
+                                      // shared prob clipboard)
   for (uint8_t i = 0; i < SEQ_CH_COUNT; i++) {
     b[3 + i] = (uint8_t)seqOct[i];
     b[19 + i] = seqInCh[i];
@@ -2478,6 +2837,14 @@ void seqCfgSave() {
     b[211 + i] = seqProb[i];                  // playback probability %
     b[227 + i] = seqPatLenOf(i);              // pattern length 0..64
     b[243 + i] = seqFollowOf(i) ? 1 : 0;      // FOLLOW (notes from feeder)
+    b[259 + i] = seqGenFillOf(i);             // GNR8 fill %
+    b[275 + i] = seqGenAccOf(i);              // GNR8 accent %
+    b[291 + i] = seqGenGlideOf(i);            // GNR8 glide %
+    b[307 + i] = seqGenTieOf(i);              // GNR8 tie %
+    b[323 + i] = seqGenTonesOf(i);            // GNR8 tones 0..3
+    b[339 + i] = seqGenLowOf(i);              // GNR8 low note 0..2
+    b[355 + i] = seqGenRangeOf(i);            // GNR8 range 1..5 octaves
+    b[371 + i] = seqGenAlgoOf(i);             // GNR8 classic/euclid
   }
   uint8_t sum = 0;
   for (uint16_t i = 0; i < SEQ_EE_LEN - 1; i++) sum += b[i];
@@ -2490,7 +2857,13 @@ void seqCfgLoad() {
   EEPROM.get(SEQ_EE_ADDR, b);
   uint8_t sum = 0;
   for (uint16_t i = 0; i < SEQ_EE_LEN - 1; i++) sum += b[i];
-  if (b[0] != SEQ_EE_MAGIC || sum != b[SEQ_EE_LEN - 1]) return;
+  bool ext = (b[0] == SEQ_EE_MAGIC && sum == b[SEQ_EE_LEN - 1]);
+  if (!ext) {
+    // legacy 260-byte block: same magic, checksum right after follow[16]
+    uint8_t oldSum = 0;
+    for (uint16_t i = 0; i < SEQ_EE_LEN_OLD - 1; i++) oldSum += b[i];
+    if (b[0] != SEQ_EE_MAGIC || oldSum != b[SEQ_EE_LEN_OLD - 1]) return;
+  }
   for (uint8_t i = 0; i < SEQ_CH_COUNT; i++) {
     int v = (int8_t)b[3 + i];            // octave: keep the cast signed
     if (v < -60) v = -60;
@@ -2526,6 +2899,19 @@ void seqCfgLoad() {
     seqOctClamp(i);                      // content bounds (empty = convention)
   }
   seqSetEditChannel(b[1]);               // validates 1..16, keeps focus sane
+  seqMapSet(b[2]);                       // GNR8 F2 mapping (bad -> NEAR)
+  if (ext) {                             // GNR8 params (new-format block;
+    for (uint8_t i = 0; i < SEQ_CH_COUNT; i++) {   // legacy blocks keep the
+      seqGenFillSet(i, b[259 + i]);                 // defaults above)
+      seqGenAccSet(i, b[275 + i]);
+      seqGenGlideSet(i, b[291 + i]);
+      seqGenTieSet(i, b[307 + i]);
+      seqGenTonesSet(i, b[323 + i]);
+      seqGenLowSet(i, b[339 + i]);
+      seqGenRangeSet(i, b[355 + i]);
+      seqGenAlgoSet(i, b[371 + i]);
+    }
+  }
 }
 
 // --- DRUM track: per-voice (part) sequencing -----------------------------

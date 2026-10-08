@@ -64,3 +64,29 @@ bool arpPageActive();
 void strumFRowToggle();
 void strumFRowDismiss();
 bool strumFRowActive();
+
+// SEQMODE M2 (variants 1/2/4) on a MONO+BASS edit track: a click toggles
+// the GNR8 encoder page - ENC2 = fill %, ENC3 = accent %, ENC4 = glide %,
+// ENC7 = tie %; the F row = radio switches for the four option sub-pages
+// (F1 OPTS = TONES/RNG/LOW/ALGO on ENC1-4, F2 = STEP OCT + MAP, F3 =
+// BORROW, F4 = MOD PROB - tap a step first, the armed page dials it;
+// M3 tap = generate / M3 hold = undo, PREV held = ENC1 rotates the
+// pattern).  Composite active check like the arp page: a mid-hold
+// channel / TYPE / mode switch drops the page by itself
+void genPageToggle();
+void genPageDismiss();
+bool genPageActive();
+// armed F radio of that page (0 = F1 opts, 1 = F2 oct, 2 = F3 brw,
+// 3 = F4 prob, 0xFF = none); dies with the page, so Display/Modes only
+// need this one accessor
+uint8_t genOptionSel();
+// step armed as the F2/F3/F4 dial target (tap = select), or -1 when
+// nothing valid is picked - dies with the page
+int8_t genStepSelStep();
+
+// GNR8 TIE span fill (MONO+BASS, TIE target only): HOLD a step to arm the
+// span start, the next tap on another step stamps TIE across the span
+// (called on target / mode / channel / track switches so a stale arm can
+// never land on a later edit)
+void stepChainDisarm();
+bool stepChainArmed();
