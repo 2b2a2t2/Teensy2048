@@ -110,24 +110,24 @@ Each mode/variant combination selects an `EncSet`, `CtrlSet`, `StepSet`, `KeySet
 - **ENC1** (KEYMODE): Octave –2..+8 (4 counts = 1 octave, clamped)
 - **ENC2** (KEYMODE): Scale select (39 scales, Chromatic = no filter)
 - **KEYMODE2**: Chord engine active
-  - M1/M2/M3/NEXT = quality (Maj/Min/Dim/Sus) — momentary, beats **KeyLock**'s diatonic triad (root still snapped to the scale)
+  - M1/M2/M3/NEXT = quality (Maj/Min/Dim/Sus) — momentary, beats **KeyLock**'s diatonic triad (root still snapped to the scale); **with KeyLock ON, a held quality button wins over the scale's triad for that press**
   - F1–F4 = extensions (6, m7, M7, 9) — toggle
-  - **LEDs**: quality pads idle in the KEY button's dim green, extensions the same green with less red and blue (a touch darker); touch lights them white
+  - **LEDs**: quality/extension pads idle in the KEY button's dim green (extensions slightly darker: less red/blue); touch lights them white
   - ENC3 = Root, **ENC4 = FScale (Force to scale)**, ENC5–7 = Bass/Spread/Density, ENC8 = Latch
     - **FScale ON**: every chord tone is snapped to the nearest pitch of the current scale before it is sent (ties flatten first), so no out-of-scale note ever reaches MIDI — duplicates collapse to one voice; Chromatic passes everything through; OFF = free voicings. The snap also applies **at playback**: with FScale ON the sequencer forces each stored chord step into the current scale as it is sent (stored notes stay raw), so **changing the scale recolors recorded progressions live**; OFF plays the recording exactly as stored
   - **PREV (hold)** = momentary encoder overlay (Root/Scale/Latch/KeyLock/Perf)
 
 - **KEYMODE4** (double-click KEY): genre-driven chord proposals
   - The engine scores all 12 pitch classes for the slot **before the focus** (transition matrix × MOOD × MOTION × CADENCE × SURP) and lays the whole scored degree set out on the keyboard: **hue-mapped by key as originally designed** (C = blue … B = red), **rank 0 = the next chord from the highest probability = hottest**, brightness stepping down the list so the colors tell how probable each degree is after the last chord; borrowed degrees open with **TENS ≥ 34** and light **orange** (closed ones stay dark); every knob is 0–100 (boot 50), 1 count = 1 unit. Every knob/genre turn re-ranks the propositions **dynamically** and repaints the keyboard live
-  - The **header displays the progression**: `f3 V vi > I IV` = focus · the walk so far · `>` · the top-4 proposals. The **first chord of the walk is the chord played in KEYMODE2** when you enter (its kept notes seed the chain), or the stored step before the focus after a focus move
-  - **ENC row**: ENC1 = **GENRE** (18, clamps — the knob does not wrap), ENC2–8 = MOOD/TENS/MOTION/CAD/CPX/ERA/SURP; **PREV (hold)** = overlay with ENC1 Octave / ENC2 Scale / ENC3 Key / **ENC4 FScale** (force-to-scale ON/OFF — ON makes playback of recorded steps follow the scale, same switch as KEYMODE2), and **PREV (click)** = focus −1; **NEXT (tap)** = the sticky **EMB menu** (below) — while it is open the row becomes **ENC1 EMB / ENC2 PLACE**, PREV hold still borrows it for Octave/Scale/Key/FScale and hands it back on release
+  - The **header displays the progression and keeps it there**: `f3 V vi > I IV` = focus · the walk so far · `>` · the top-4 proposals — persistent (it re-ranks live with every knob/scale/root/focus change); transient messages such as the **scale mood** or write results (`I V vi IV +8`) flash over it, then the progression returns. The **first chord of the walk is the chord played in KEYMODE2** when you enter (its kept notes seed the chain), or the stored step before the focus after a focus move
+  - **ENC row**: ENC1 = **GENRE** (18, clamps — the knob does not wrap), ENC2–8 = MOOD/TENS/MOTION/CAD/CPX/ERA/SURP; **PREV (hold)** = overlay with ENC1 Octave / ENC2 Scale (flashes the scale mood over the progression) / ENC3 Key / **ENC4 FScale** (force-to-scale ON/OFF — ON makes playback of recorded steps follow the scale, same switch as KEYMODE2), and **PREV (click)** = focus −1; **NEXT (tap)** = the sticky **EMB menu** (below) — while it is open the row becomes **ENC1 EMB / ENC2 PLACE**, PREV hold still borrows it for Octave/Scale/Key/FScale and hands it back on release
   - **Press a proposed key** = audition the chord (unscored keys are silent) and **chain the progression**: the next proposals follow the chord you just heard, so repeated presses walk a sequence by ear — even in AUDITION with nothing written. The chain re-anchors on the stored steps whenever the focus moves; on release the header shows where the chain goes next. With **WRITE** on (boots in **AUDITION**) it also lands on the **focused step** and the focus auto-advances (**M2** = AUTO, boots off)
   - **Controls**: **NEXT tap** = the **EMB menu** (toggle, below) · **NEXT hold** = focus +1 · **M1** = WRITE ⇄ AUDITION (**dim red** = AUDITION, **bright red** = WRITE) · **M2** = AUTO-ADVANCE · **M3 tap** = apply the generator to every unlocked step, **M3 hold** = undo (one-level, restores channel + attributes) · **F1** = VARIATION (reseed + generate) · **F2** = lock the focused step (apply skips it) · **F3** = VOICE-LEAD (inversions follow the bass line) · **F4 held** = audition only (no write, no advance). After M3/F1/undo the header shows the **written progression** as numerals (`I V vi IV +8` = first four chords + how many follow)
   - **EMB menu (NEXT tap)** — what M3/F1 generate beyond the plain progression (the menu is KEYMODE4-only and closes when you leave the mode; locked steps are never touched):
     - **ENC1 EMB** (wraps): **OFF** = the plain generator as before · **PASS** = every odd step becomes a **passing chord** — a triad on the scale degree **one below the following main chord**, its quality/extension/inversion re-scored through the same genre+knob proposal logic (so it belongs to the grammar and voice-leads); when that degree is the previous main chord itself, the step simply keeps its main chord · **P+S** = PASS plus **substitution**: every main chord rolls once against the **SURP** knob and, if it hits, is swapped through a fixed table — **I→iii, ii→IV, iii→I, IV→ii, V→♭VII, vi→IV, ♭VII→V** (SURP 0 = never, 100 = always)
     - **ENC2 PLACE** (CW = **DIST**, CCW = **ODD**): **ODD** = every odd step passes when valid · **DIST** = only when the bracketing main chords stand **at least two scale degrees apart** — tighter neighbours keep their main chord (a near-touching "passing" chord would only wobble)
     - The header after M3 counts every written step including the passing ones (`… +16` for a full pattern)
-  - **Step pads**: press = move the focus (**white** in AUDITION, **red** in WRITE; locked = amber), then the usual trigger/assign behavior
+  - **Step pads**: press = move the focus (**white** in AUDITION, **red** in WRITE; locked = amber); a **tap** disables the step only while **WRITE** is on (**AUDITION** keeps it — nothing is written there); a **hold** overlays the encoder row onto that step — **ENC1 OCT** (per-step playback octave −2…+2, stored chord untouched), **ENC2 DEG** (shift every tone one scale degree in the key, intervals keep their shape), **ENC3 INV** (cycle the bass up / top down an octave, refuses to land on an existing tone), **ENC4 VOICE** (spread/close the upper voices one octave around the bass). Release hands the row back (or to the open EMB menu); the header echoes each turn (`5 oct +1`, `5 deg vi`, `5 inv 1st`, `5 voice 2oct`). A hold in **WRITE** still arms the usual assign gesture on top
   - **PLAY** works here too: start/stop the transport without leaving KEYMODE4
   - Nothing persists across a reboot (RAM only, by design); the progression grammar follows the current scale (7-note scales exactly, otherwise major degrees from the root)
 
@@ -191,11 +191,20 @@ Each mode/variant combination selects an `EncSet`, `CtrlSet`, `StepSet`, `KeySet
 |-------|----------|----------------|
 | **DRUM** | Each step holds drum parts (voices C1–D#2). Playhead sends all active parts on channel. | Press step = toggle selected part (M1 hold = part-select overlay) |
 | **MONO** | One note per step: root/lowest/arp of stored chord + sequence octave shift | Records pending chord; MONO also follows **input track's timeline** (last active step at/before position) |
-| **POLY** | Full chord per step + sequence octave shift + per-step FX (sus/ext/color, see Step Edit) | Records pending chord; if input≠own, prefers **held gesture** (keys/latched chord/ext notes) over timeline |
+| **POLY** | Full chord per step + sequence octave shift + per-step FX (sus/ext/color) + **PROB gate** + **ACCENT** velocity | Records pending chord; if input≠own, prefers **held gesture** (keys/latched chord/ext notes) over timeline |
+
+**Attribute Support by Track:**
+| Attribute | MONO | DRUM | POLY |
+|-----------|------|------|------|
+| TIE | ✓ | — | — |
+| GLIDE | ✓ | — | — |
+| ACCENT | ✓ | ✓ (per-voice) | ✓ (per-step, uses track accent velocity) |
+| PROB | ✓ | ✓ (per-voice mask) | ✓ (per-step, re-reads track probability live) |
 
 #### Step Edit Radio (SEQMODE 1/2/4)
 - **M1 (edit)**: off = pads record steps, on = pads edit attributes on ACTIVE steps (PROB arms the gate; ENC8 sets the **track** probability that gate re-reads live every hit)
-  - **MONO**: click cycles OFF → STEPS → OFF; **F1–F4** pick TIE / GLIDE / ACCENT / PROB; ENC5/6 shape gate/velocity — turning the radio **on** closes the GNR8 page if it is open (mutually exclusive with M2 GNR8)  - **DRUM/POLY**: quick M1 tap toggles edit (on reuses ACCENT/PROB, default ACCENT); **F3 = ACCENT, F4 = PROB** (click selected again = off); M1 **hold** on DRUM still opens the part-select; ENC8 = track probability
+  - **MONO**: click cycles OFF → STEPS → OFF; **F1–F4** pick TIE / GLIDE / ACCENT / PROB; ENC5/6 shape gate/velocity — turning the radio **on** closes the GNR8 page if it is open (mutually exclusive with M2 GNR8)
+  - **DRUM/POLY**: quick M1 tap toggles edit (on reuses ACCENT/PROB, default ACCENT); **F3 = ACCENT, F4 = PROB** (click selected again = off); M1 **hold** on DRUM still opens the part-select; ENC8 = track probability
 - **POLY step FX (F1 = `FX`)**: on a POLY track with the radio on, **F1** switches the target to **FX** (the control legend reads `FX`, the ENC7 slot reads `FX` and shows the current type; F1 again closes the radio). **ENC7** cycles the selected type with wrap: **sus2 · sus4 · 6 · m7 · M7 · 9 · color** — the header names every turn. Tap a step pad to toggle the selected FX on that step; the yellow attribute pulse shows only the steps carrying the **currently selected** type, and **F1 blinks while the track holds any FX**. **sus2/sus4 are mutually exclusive** (arming one clears the other); the extension types can stack with them. FX live only with the pattern (RAM, by design — patterns are never stored)
   - **Playback (POLY only — MONO/DRUM steps are never transformed)**: **sus2** replaces the chord's third with a second, **sus4** with a fourth; **6 / m7 / M7 / 9** add the extension on top of the stored triad; **color** appends a quiet ghost note a **half step below the root** (half velocity, half delay, sent raw — a chromatic color tone that bypasses the scale snap). FX are applied at send time — the stored notes stay untouched
 - **POLY step TYPE (F2 = `TYPE`)**: on a POLY track with the radio on, **F2** switches the target to **TYPE** (legend `TYPE`, ENC7 slot reads `TYPE` + the armed value; F2 again closes the radio). **ENC7** cycles the armed value with wrap: **STEP · STRUM · HAND**. Tap a step pad to **stamp** that override onto the step; **tap again = clear** back to inherit-the-track (`… type inherit`). The yellow pulse shows the steps carrying an override and **F2 blinks** while any step of the track has one. The override wins over the track default (ENC7 in SEQMODE3) for that step's playback only
@@ -273,24 +282,21 @@ While an **F radio is armed** the whole row belongs to its sub-page instead (**F
   - **deg**: the generated pitch's **scale degree** (from KEY + SCALE; off-scale pitches snap to the nearest degree) indexes the chord tones ascending — degree N = chord tone N+1, wrapping over the chord
   - **ivl**: the chord's lowest tone **plus the pitch's semitone offset from the KEY root** — may deliberately leave the chord (chromatic color)
   - **BRW** (any mode): replaces the mapped tone with the borrowed chord tone, octave-shaped back into the window. Every mapping result stays inside the window; **OCT** applies afterward and may leave it (clamped to 0..127). **FOLLOW OFF** ignores MAP/BRW (the line plays as generated, plus OCT); ROOT/ARP take OCT but not MAP/BRW (STRUM's rake has neither). The generator itself is unchanged — with a static chord, FOLLOW ON sounds like OFF, and the line only moves when the chord does
-  - **RANGE reshapes the line live (reversibly)**: every sounding pitch of the BASS track is **folded by whole octaves into the current LOW..RANGE window** at playback — RANGE 2→1 **lowers the upper-octave notes** into the new octave immediately (the line really becomes 1 octave wide), and RANGE 1→2 **raises the original pitches back**, exactly. The fold is a pure playback transform: **stored steps are never rewritten**, so the round-trip is lossless, and the per-step **OCT** shifts ride *on top of* the folded base (an OCT step can still sound outside the window by design)
+  - **RANGE reshapes the line live (reversibly)**: every sounding pitch of the BASS track is **folded by whole octaves into the current LOW..RANGE window** at playback — RANGE 2→1 **lowers the upper-octave notes** into the new octave immediately (the line really becomes 1 octave wide), and RANGE 1→2 **raises the original pitches back**, exactly. The fold is a pure playback transform: **stored steps are never rewritten**, so the round-trip is lossless, and the per-step **OCT** shifts ride *on top of* the folded base (an OCT step can still sound outside the window by design). The fold runs **before** SEQMODE **ENC1**'s octave shift, so ENC1 keeps transposing the whole folded line — a shift applied after the fold would just be folded back into the window
 - **Rotate (PREV held)**: while the page is open, hold **PREV** to swap the encoder row to the rotate overlay (`ROT` on ENC1, the other seven read `---`). **ENC1** rotates the whole pattern **4 counts = 1 step** (CW = content delays one step, wrapping at the pattern length — notes, attributes, FX, strum timings, drum masks **and the per-step OCT/BRW/PROB values** all move together). The header shows the rotation position (`rot N`); a continuous turn is one undo burst (M3 hold restores the pre-rotation pattern)
 - **TIE span fill (hold-arm gesture)**: plain taps **always just toggle** the selected attribute — on a BASS track too, TIE / GLIDE / ACCENT / PROB behave exactly as everywhere else (GLIDE/ACCENT/PROB are per-step only and never span). **Attribute taps and chains run with the GNR8 page closed**: opening it turns the edit radio off, and with the page open the step pads belong to the F2/F3/F4 dial selection (F1 or no radio armed = inert taps) — so close the page first and make sure **M1 + TIE** are armed (or re-arm them after closing it). **Hold a step** to arm the span start: the touch-down toggle of that same press is reverted first, so holding never changes the flag, and the header announces `chain from N`. The **next tap on another step** stamps TIE across every step from start up to (not including) the end, wrapping inside the pattern length — `N steps tie` in the header; the span rings the start note over its rests. Tap the armed start itself = cancel (`chain off`); a forgotten arm **expires after 5 seconds**. Changing target / mode / channel / TRACK / TYPE disarms
 - Saved/restored with SEQMODE4+REC (the eight GNR8 parameters **and the F2 MAP mode** live in the SEQ EEPROM block; a config saved by an older build still loads and keeps the defaults — including MAP = `near`). The per-step **OCT / BRW / PROB** values are **RAM only** like every other step field: they live and die with the step (generate and erase reset them, rotate moves them, M3 undo restores them)
-
-**Bar Loop (per track, SEQMODE3):**
-- Loop arms on the **selected edit window bar** (0–3, each 16 steps)
-- **On activation**: playhead jumps immediately to loop start (teleports)
-- **During loop**: green playhead tracks within looped bar; shadow position advances globally
-- **On disable**: playhead resumes at shadow position (catches up)
-- Independent per track → polymeter loops possible
 
 #### Cross-Sequence Sync
 When a track's step chords are written, all MONO/POLY sequences **listening to that track's channel** re-derive their active steps from the source timeline (single-level, non-recursive). This enables "follow the leader" arrangements.
 
 ### 3. Encoder/CC Mode (ENCMODE)
-- **ENC1–ENC8** send **CC 1–8** on `encChannel` (default ch1, selectable via step-pad overlay in variant 3)
-- Values persist across mode changes (0–127, clamped, no wrap)
+- **ENC1–ENC4** send **CC 17–20** on `encChannel` (default ch1, selectable via step-pad overlay in variant 3)
+- **ENC5–ENC8** send the current **F-bank** block inside the active **M3 page group**: group 1 (M3 off) = **F1 = CC 1–4**, **F2 = CC 5–8**, **F3 = CC 9–12**, **F4 = CC 13–16**; group 2 (M3 on) = **F1 = CC 21–24**, **F2 = CC 25–28**, **F3 = CC 29–32**, **F4 = CC 33–36**
+- **F1–F4** = CC-bank radio (bright white = armed; RAM only, always one armed — defaults to **F1** whenever ENCMODE is entered). Idle color follows the page group: dim purple in group 1, dim medium sea green in group 2. In ENCMODE the F row leaves the inherited KEYMODE2 chord-extension job
+- **M3 (PAGE)** = page-group toggle: dim medium sea green = group 1 (CC 1–16), purple = group 2 (CC 21–36); off again on ENCMODE entry (also leaves the inherited KEYMODE2 chord-quality job)
+- Values persist across mode changes (0–127, clamped, no wrap); DAW feedback on CC 1–36 syncs the matching knobs
+- **ENCMODE4 + REC** saves all 36×16 knob values + channel to EEPROM (an older save is ignored, defaults stay)
 
 ### 4. Transport
 - **PLAY** button (SEQMODE): Start (or Stop if INT transport running)
@@ -315,7 +321,7 @@ When a track's step chords are written, all MONO/POLY sequences **listening to t
 **Header** (y 0–15): Mode name (left), temporary messages (right, 2s timeout)  
 **Main screen** (y 16–63):
 - Encoder grid 4×2: labels (top) + values (bottom)
-- Control button labels: row1 PREV NEXT M1 M2 M3, row2 M1 M2 M3 M4 (KEYMODE4 labels NEXT as **EMB** — the sticky EMB menu)
+- Control button labels: row1 PREV NEXT M1 M2 M3, row2 M1 M2 M3 M4 (KEYMODE4 labels NEXT as **EMB** — the sticky EMB menu; ENCMODE labels row2 **F1–F4** — the CC-bank radio)
 
 Paged I2C write (1 page per `displayUpdate()` call, ~4 ms @ 400 kHz) to avoid blocking MIDI pump.
 
@@ -379,6 +385,17 @@ loop() {
 ```
 
 `seqDiagNote()` timestamps each section; worst-case >3 ms reported at 1 Hz.
+
+## Serial Diagnostics
+
+Open Serial Monitor @ 115200 and type commands:
+
+| Command | Action |
+|---------|--------|
+| `recal` + Enter | Force full recalibration of all 4 MPR121 chips (stops, re-autoconfigs, restarts, prints baselines) |
+| `diag` + Enter | Print current baseline + filtered data for all 48 electrodes |
+
+Boot prints baseline values for all electrodes after the 500ms autoconfig delay. Electrodes with `0` or very low baselines failed calibration.
 
 ## Extending / Customizing
 

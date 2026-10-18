@@ -461,10 +461,27 @@ static CRGB modeLedHook(uint8_t pad, bool isTouched, CRGB defaultColor) {
     return CHSV((uint8_t)(millis() >> 2), 255, 100);  // full cycle ~1s
   }
   // ENCMODE function pads: always show their identity colors even when
-  // idle - M1 dim orange, M2 dim orange-red (touch still wins)
+  // idle - M1 dim orange, M2 dim orange-red (touch still wins).  M3 is
+  // the page-group toggle: dim medium sea green = lower group (CC1..16),
+  // purple = upper group (CC21..36).  The F row is the ENC5..8 CC-bank
+  // radio: dim purple (lower) / dim medium sea green (upper) idle, bright
+  // white = the armed bank (F1 selected by default on entry)
   if (modeBase == MODE_ENC &&
-      (led == groupControls[2] || led == groupControls[3])) {
+      (led == groupControls[2] || led == groupControls[3] ||
+       led == groupControls[4] ||
+       (led >= groupControls[5] && led <= groupControls[8]))) {
     if (isTouched) return CRGB::White;
+    if (led >= groupControls[5] && led <= groupControls[8]) {
+      if (led == groupControls[5] + encBank()) return CRGB::White;
+      CRGB p = encM3Page() ? CRGB::MediumSeaGreen : CRGB::Purple;
+      p.nscale8(48);
+      return p;
+    }
+    if (led == groupControls[4]) {
+      CRGB m = encM3Page() ? CRGB::Purple : CRGB::MediumSeaGreen;
+      m.nscale8(encM3Page() ? 176 : 48);   // upper group burns purple
+      return m;
+    }
     CRGB c = (led == groupControls[2]) ? CRGB::Orange : CRGB::OrangeRed;
     c.nscale8(48);
     return c;
@@ -708,6 +725,7 @@ void modeOnEvent(uint8_t pad, uint8_t ev) {
   // was the keyboard sitting in KEYMODE4 when this click/hold began?  The
   // variant mutations below must not be able to lose that fact
   bool wasK4 = (modeBase == MODE_KEY && modeVariant == 4);
+  ModeBase wasBase = modeBase;
 
   if (ev == EV_RELEASED) {
     // releasing the held mode button ends the hold.  ENCMODE3 always exits
@@ -725,6 +743,8 @@ void modeOnEvent(uint8_t pad, uint8_t ev) {
         }
         applyModeLeds();
         headerSetLeft(modeName());
+        if (modeBase == MODE_KEY && modeVariant == 4)
+          k4Enter();         // back into KEYMODE4: re-seed walk + header
         refreshMainScreen();   // labels/values belong to the restored binding
       }
     }
@@ -754,6 +774,14 @@ void modeOnEvent(uint8_t pad, uint8_t ev) {
     familyMem[b] = modeVariant;
   }
   modeBase = b;
+
+  // entering the ENCMODE family from outside always restarts on the F1
+  // CC bank in the lower M3 page group (radio defaults; variant hops
+  // inside the family keep the armed bank / group)
+  if (modeBase == MODE_ENC && wasBase != MODE_ENC) {
+    encBankSet(0);
+    encM3PageSet(false);
+  }
 
   // the engine resets when the keyboard leaves the chord variants OR when
   // KEYMODE4 is (re)entered - it starts every visit with a clean gesture

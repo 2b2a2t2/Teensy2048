@@ -79,6 +79,20 @@ uint8_t k4Focus();
 bool    k4Locked(uint8_t step);
 bool    k4LockToggle(uint8_t step); // F2: lock/unlock a step (apply skips it)
 
+// --- step hold (per-step encoder row) ---------------------------------------
+// holding a step pad overlays ENC1..ENC4 onto OCT/DEG/INV/VOICE for THAT
+// step; release restores the mode row (or the EMB menu if it was open).
+// WRITE keeps the old hold behavior on top (the assign gesture)
+void   k4StepSelSet(int8_t step);   // EV_HOLD sets it, EV_RELEASED clears (-1)
+int8_t k4StepSelGet();
+bool   k4StepLabels(uint8_t step, char *deg, size_t dcap,
+                    char *inv, size_t icap);   // false = the step is empty
+
+// chord root + quality from its tones (nearest-fit triad search): the
+// header announcements use it, and the step-hold row's DEG transform and
+// label read it too
+uint8_t decodeChord(const uint8_t *nt, uint8_t n, uint8_t *root, uint8_t *q);
+
 // --- gesture (Keyboard.cpp drives the pads) ---------------------------------
 int  k4KeyOn(uint8_t kidx);     // press: audition the proposal (or -1)
 void k4BucketFor(uint8_t kidx); // release: re-voice from that held key
@@ -96,5 +110,5 @@ int8_t k4KeyRank(uint8_t pc);       // 0 = top pick, -1 = not proposed
 bool   k4KeyBorrowed(uint8_t pc);   // proposed, but outside the scale
 
 void k4Refresh();   // re-rank: knobs, genre, focus, scale or root changed
-void k4Announce();  // header: focus + top-4 proposals as "f3 I V vi IV"
+void k4Announce();  // header: persistent focus + top-4 proposals as "f3 I V vi IV"
 void k4AnnouncePattern();  // header: written chords "I V vi IV +8"

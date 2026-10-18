@@ -16,6 +16,8 @@ static char headerLeft[16] = "";
 static char headerText[24] = "";
 static unsigned long headerDeadline = 0;
 static bool headerActive = false;
+static char headerStick[24] = "";
+static bool headerStickOn = false;
 static bool displayDirty = true;
 
 // erase only the header band (y 0..15) in the full framebuffer
@@ -78,6 +80,11 @@ static const char* ctrlLegend(uint8_t i) {
       static const char* ed[4] = { "FX", "TYPE", "ACC", "PROB" };
       return ed[i - 5];
     }
+    // ENCMODE: F1-F4 = the ENC5..8 CC-bank radio
+    if (modeBase == MODE_ENC) {
+      static const char* fr[4] = { "F1", "F2", "F3", "F4" };
+      return fr[i - 5];
+    }
     if (key4) {          // KEYMODE4: VAR / LOCK / LEAD / HOLD
       static const char* k4r2[4] = { "VAR", "LOCK", "LEAD", "HOLD" };
       return k4r2[i - 5];
@@ -122,6 +129,8 @@ static const char* ctrlLegend(uint8_t i) {
     if (modeBase == MODE_SEQ && modeVariant != 3 &&
         seqTrack() == SEQ_TRACK_MONO && seqMonoType() == SEQ_MONO_BASS)
       return "GEN";
+    // ENCMODE M3 = the ENC5..8 page-group toggle (CC1..16 / CC21..36)
+    if (modeBase == MODE_ENC) return "PAGE";
     if (key4) return "APPLY";
     return key2 ? "Dim" : "M3";
   }
@@ -134,6 +143,7 @@ void refreshMainScreen() {
 
   ModeBinding b = currentBinding();
   char val[12];
+  char ccL2[8];              // ENCMODE row-2 CC labels (follow the F bank)
   // SEQMODE3 encoders show state, not the raw shared counter
   bool seq3 = (modeBase == MODE_SEQ && modeVariant == 3);
   // SEQMODE + MONO + radio on: ENC5/6/8 shape the track (gate/vel/prob)
@@ -165,6 +175,8 @@ void refreshMainScreen() {
   bool key4Ov = (b.enc == ENC_KEY4_PREV);
   // ...or its sticky EMB menu (EMB / PLACE)
   bool key4Emb = (b.enc == ENC_KEY4_EMB);
+  // ...or the held-step row (OCT/DEG/INV/VOICE editing ONE step)
+  bool key4Step = (b.enc == ENC_KEY4_STEP);
 
   for (uint8_t c = 0; c < 4; c++) {
     uint8_t x = c * 32 + 1;
@@ -282,6 +294,37 @@ void refreshMainScreen() {
       snprintf(val, sizeof(val), "%s", k4EmbPlaceName()); // ENC2 = PLACE
     } else if (key4Emb) {
       snprintf(val, sizeof(val), "---");                   // ENC3/4 idle
+    } else if (key4Step) {
+      // held-step values: the step's own OCT / degree / inversion / spread
+      int8_t ss = k4StepSelGet();
+      char dgs[8], ivs[8];
+      bool has = (ss >= 0 &&
+                  k4StepLabels((uint8_t)ss, dgs, sizeof(dgs),
+                               ivs, sizeof(ivs)));
+      if (!has) {
+        snprintf(val, sizeof(val), "---");                 // no step / empty
+      } else if (c == 0) {
+        int ov = stepOctAt((uint8_t)ss);                   // ENC1 = octave
+        if (ov == 0) snprintf(val, sizeof(val), "0");
+        else snprintf(val, sizeof(val), "%+d", ov);
+      } else if (c == 1) {
+        snprintf(val, sizeof(val), "%s", dgs);             // ENC2 = degree
+      } else if (c == 2) {
+        snprintf(val, sizeof(val), "%s", ivs);             // ENC3 = inversion
+      } else {
+        // ENC4 = voice: octave spread between bass and top ("close" when
+        // they sit inside one octave)
+        uint8_t n = 0;
+        const uint8_t *nt = stepChordAt((uint8_t)ss, &n);
+        uint8_t lo = 0, hi = 0;
+        for (uint8_t i = 0; i < n; i++) {
+          if (i == 0 || nt[i] < lo) lo = nt[i];
+          if (i == 0 || nt[i] > hi) hi = nt[i];
+        }
+        uint8_t sp = (uint8_t)((hi - lo) / 12);
+        if (sp == 0) snprintf(val, sizeof(val), "close");
+        else snprintf(val, sizeof(val), "%uoct", sp);
+      }
     } else if (modeBase == MODE_KEY && c == 0) {
       snprintf(val, sizeof(val), "%d", keyOctave());         // ENC1 = octave
     } else if (modeBase == MODE_KEY && c == 1) {
@@ -308,6 +351,10 @@ void refreshMainScreen() {
     } else if (seqDrumGe) {
       static const char* sl[4] = { "---", "---", "---", "PROB" };
       l2 = sl[c];
+    } else if (modeBase == MODE_ENC) {
+      // ENC5..8 follow the F1..F4 CC bank in the active M3 page group
+      snprintf(ccL2, sizeof(ccL2), "CC%u", encCcNum(4 + c));
+      l2 = ccL2;
     }
     if (c == 1 && f3AccentActive()) l2 = "ACC";   // F3 held: ENC6 = accent
     if (arpP && 4 + c == 6) l2 = "INST";          // arp page: ENC7 = insert
@@ -432,13 +479,21 @@ void drawHeaderText() {
   }
   // a transient message owns the whole strip: long strings (the KEY4
   // progression) right-align over the left slot, so drop the label
-  // instead of drawing it underneath
-  if (left[0] && !(headerActive && headerText[0])) {
-    u8g2.drawStr(2, 13, left);
-  }
+  // instead of drawing it underneath.  Without a transient the persistent
+  // right text (the KEY4 progression) stays up; the left label joins it
+  // only when the two fit side by side
   if (headerActive && headerText[0]) {
     int w = u8g2.getStrWidth(headerText);
     u8g2.drawStr(SCREEN_W - w - 2, 13, headerText);
+  } else if (headerStickOn && headerStick[0]) {
+    int w = u8g2.getStrWidth(headerStick);
+    int r = SCREEN_W - w - 2;
+    if (r < 0) r = 0;
+    u8g2.drawStr(r, 13, headerStick);
+    if (left[0] && 2 + u8g2.getStrWidth(left) + 2 <= r)
+      u8g2.drawStr(2, 13, left);
+  } else if (left[0]) {
+    u8g2.drawStr(2, 13, left);
   }
 }
 
@@ -461,6 +516,22 @@ void headerShow(const char* name) {
   headerText[sizeof(headerText) - 1] = '\0';
   headerDeadline = millis() + HEADER_MS;
   headerActive = true;
+  drawHeaderText();
+  displayDirty = true;
+}
+
+void headerSetStick(const char* text) {
+  strncpy(headerStick, text, sizeof(headerStick) - 1);
+  headerStick[sizeof(headerStick) - 1] = '\0';
+  headerStickOn = headerStick[0] != '\0';
+  drawHeaderText();
+  displayDirty = true;
+}
+
+void headerStickClear() {
+  if (!headerStickOn) return;
+  headerStickOn = false;
+  headerStick[0] = '\0';
   drawHeaderText();
   displayDirty = true;
 }

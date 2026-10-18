@@ -245,6 +245,18 @@ void     stepBrwSet(uint8_t step, uint8_t v);
 uint8_t  stepModPAt(uint8_t step);
 void     stepModPSet(uint8_t step, uint8_t v);
 
+// KEYMODE4 step-hold row (ENC2/3/4): rewrite the held step's STORED chord
+// in place, each returning true when a note actually moved.  DEG shifts
+// every tone by one scale degree in the key (intervals keep their shape;
+// force-to-scale shapes them into the scale at playback), INV cycles the
+// bass (d > 0 = lowest up an octave, d < 0 = highest down), VOICE spreads
+// or closes the upper voices around the bass (+1 = all-but-lowest +12,
+// -1 = all-but-lowest -12 while they stay above it).  OCT uses the
+// existing stepOctSet/stepOctM pair
+bool stepDegAdjust(uint8_t step, int8_t d);
+bool stepInvAdjust(uint8_t step, int8_t d);
+bool stepVoiAdjust(uint8_t step, int8_t d);
+
 // sequencing (called from loop context, never from the clock ISR):
 // press on an unassigned step records a chord into it (see above);
 // seqStepAdvance runs each time the playhead reaches a step - every

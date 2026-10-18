@@ -32,10 +32,10 @@ static const char* encLabels[ENC_SET_COUNT][8] = {
   /* ENC_SEQ2         */ { "OCT", "S22", "S23", "S24", "S25", "S26", "S27", "S28" },
   /* ENC_SEQ3         */ { "OCT", "LEN", "FOLLOW", "SPEED", "INCH", "TRACK", "TYPE", "BPM" },
   /* ENC_SEQ4         */ { "OCT", "S42", "S43", "S44", "S45", "S46", "S47", "S48" },
-  /* ENC_ENC          */ { "CC1", "CC2", "CC3", "CC4", "CC5", "CC6", "CC7", "CC8" },
-  /* ENC_ENC2         */ { "CC1", "CC2", "CC3", "CC4", "CC5", "CC6", "CC7", "CC8" },
-  /* ENC_ENC3         */ { "CC1", "CC2", "CC3", "CC4", "CC5", "CC6", "CC7", "CC8" },
-  /* ENC_ENC4         */ { "CC1", "CC2", "CC3", "CC4", "CC5", "CC6", "CC7", "CC8" },
+  /* ENC_ENC          */ { "CC17", "CC18", "CC19", "CC20", "CC1", "CC2", "CC3", "CC4" },
+  /* ENC_ENC2         */ { "CC17", "CC18", "CC19", "CC20", "CC1", "CC2", "CC3", "CC4" },
+  /* ENC_ENC3         */ { "CC17", "CC18", "CC19", "CC20", "CC1", "CC2", "CC3", "CC4" },
+  /* ENC_ENC4         */ { "CC17", "CC18", "CC19", "CC20", "CC1", "CC2", "CC3", "CC4" },
   /* ENC_KEY          */ { "OCT", "SCALE", "KEY", "KY4", "KY5", "KY6", "KY7", "KY8" },
   /* ENC_KEY2         */ { "OCT", "SCALE", "KEY", "FSCALE", "BASS", "SPRD", "DENS", "LATCH" },
   /* ENC_KEY3         */ { "OCT", "SCALE", "K33", "K34", "K35", "K36", "K37", "K38" },
@@ -45,6 +45,7 @@ static const char* encLabels[ENC_SET_COUNT][8] = {
   /* ENC_KEY2_PREV    */ { "OCT", "SCALE", "KEY", "LATCH", "KLOCK", "PERF", "--", "--" },
   /* ENC_KEY4_PREV    */ { "OCT", "SCALE", "KEY", "FSCALE", "SUB", "INV", "PAS", "COL" },
   /* ENC_KEY4_EMB     */ { "EMB", "PLACE", "--", "--", "--", "--", "--", "--" },
+  /* ENC_KEY4_STEP    */ { "OCT", "DEG", "INV", "VOICE", "--", "--", "--", "--" },
 };
 
 static const char* encSetNames[ENC_SET_COUNT] = {
@@ -52,7 +53,7 @@ static const char* encSetNames[ENC_SET_COUNT] = {
   "ENCENC", "ENCENC2", "ENCENC3", "ENCENC4",
   "KEYENC", "KEYENC2", "KEYENC3", "KEYENC4",
   "SEQENC_STEP_HELD", "SEQENC_GNR8_OV", "KEYENC2_PREV", "KEYENC4_PREV",
-  "KEYENC4_EMB"
+  "KEYENC4_EMB", "KEYENC4_STEP"
 };
 static const char* ctrlSetNames[CTRL_SET_COUNT] = {
   "SEQCTRL", "SEQCTRL2", "SEQCTRL3", "SEQCTRL4",

@@ -34,6 +34,10 @@ static bool     sHold = false;   // F4 held: audition only
 static uint8_t  sFocus = 0;      // write target, inside the pattern
 static uint64_t sLock = 0;       // step lock bits (apply skips them)
 static uint32_t sSeed = 0x9E3779B9u;
+static int8_t   sStepSel = -1;   // step held: drives the OCT/DEG/INV/VOICE row
+
+void   k4StepSelSet(int8_t step) { sStepSel = step; }
+int8_t k4StepSelGet() { return sStepSel; }
 
 // proposal cache - k4Refresh() rebuilds it; the LED hook only reads it
 static int8_t   sRank[12];        // rank per pitch class, -1 = not proposed
@@ -195,9 +199,10 @@ static bool rootTriadQ(const uint8_t *nt, uint8_t n, uint8_t r, uint8_t *q) {
 // tone stays in the stored notes; borrowed roots (outside the framework)
 // still find their quality, their degree is the nearest scale degree.
 // *root/*q are optional outs; falls back to the first tone's nearest
-// degree for bare dyads and singles
-static uint8_t decodeChord(const uint8_t *nt, uint8_t n,
-                           uint8_t *root, uint8_t *q) {
+// degree for bare dyads and singles (exported: the step-hold row's DEG
+// transform reads the stored chord's root through it)
+uint8_t decodeChord(const uint8_t *nt, uint8_t n,
+                    uint8_t *root, uint8_t *q) {
   if (n == 0) { if (root) *root = 0; if (q) *q = CHORD_Q_MAJ; return 0; }
   uint8_t found = 0xFF;
   for (uint8_t pass = 0; pass < 2 && found == 0xFF; pass++) {
@@ -785,6 +790,8 @@ void k4Stop() {
   sHistN = 0;
   sHold = false;
   sEmbMenu = false;            // the EMB row never outlives KEYMODE4
+  sStepSel = -1;               // ...nor the held-step encoder row
+  headerStickClear();          // nor the persistent progression header
 }
 
 // entering KEYMODE4: the first chord of the progression is the chord
@@ -854,6 +861,31 @@ static void numeral(uint8_t pc, uint8_t q, char *out, size_t cap) {
   out[n] = '\0';
 }
 
+// the held-step row's value cells: DEG = the stored chord's degree as the
+// header names it, INV = which chord tone sits in the bass (root / 1st /
+// 2nd / 3rd from the LOWEST tone's interval to the root - the transforms
+// keep the array sorted, so the audible bass is always nt[0]... unless a
+// generator reordered it, hence the explicit minimum)
+bool k4StepLabels(uint8_t step, char *deg, size_t dcap,
+                  char *inv, size_t icap) {
+  uint8_t n = 0;
+  const uint8_t *nt = stepChordAt(step, &n);
+  if (n == 0) return false;
+  uint8_t root = 0, q = CHORD_Q_MAJ;
+  decodeChord(nt, n, &root, &q);
+  if (deg && dcap) numeral(root, q, deg, dcap);
+  uint8_t low = nt[0];
+  for (uint8_t i = 1; i < n; i++) if (nt[i] < low) low = nt[i];
+  uint8_t iv = (uint8_t)(((low % 12) + 12 - (root % 12)) % 12);
+  const char *b;
+  if (iv == 0) b = "root";
+  else if (iv <= 4) b = "1st";          // m3/M3 (+ the odd m2/M2 edge)
+  else if (iv <= 8) b = "2nd";          // P4/tri/P5/A5 (aug 2nd inv = A5)
+  else b = "3rd";                       // m6/M6/m7 (7th chord, 3rd inv)
+  if (inv && icap) snprintf(inv, icap, "%s", b);
+  return true;
+}
+
 // append a whole token (" V", " > ") only if it fits - numerals are never
 // cut in half, the header just stops growing
 static int annAppend(char *buf, int off, size_t cap, const char *s) {
@@ -867,7 +899,8 @@ static int annAppend(char *buf, int off, size_t cap, const char *s) {
 
 // the header's progression: focus, the walk so far (first chord = the
 // KEYMODE2 chord on entry / the stored step before the focus), then the
-// proposals the lit keys offer - "f3 V vi > I IV"
+// proposals the lit keys offer - "f3 V vi > I IV".  It STAYS in the
+// header (persistent slot); only transient messages overlay it
 void k4Announce() {
   char buf[24];
   int off = snprintf(buf, sizeof(buf), "f%u", (unsigned)(sFocus + 1));
@@ -889,7 +922,7 @@ void k4Announce() {
     snprintf(piece, sizeof(piece), " %s", sym);
     off = annAppend(buf, off, sizeof(buf), piece);
   }
-  headerShow(buf);
+  headerSetStick(buf);
 }
 
 // the WRITTEN progression: the pattern's chords in order, first four

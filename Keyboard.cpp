@@ -1138,6 +1138,127 @@ void stepModPSet(uint8_t step, uint8_t v) {
   stepModP[seqEditCh][step] = v;
 }
 
+// --- KEYMODE4 step-hold row: in-place chord transforms ---------------------
+// ENC2/3/4 of the held-step overlay rewrite the STORED notes (the edit
+// sequence), index-stable so a timed HAND step keeps its onset per slot.
+// Each returns true when a note actually moved, then re-clamps the shift
+// range and re-syncs follower channels like every other write path.
+// OCT uses the existing stepOctSet/stepOctM pair instead (playback applies
+// it - the stored chord stays a clean root-shape for the generator).
+
+// shift every tone by one (or |d|) scale degrees in the current key:
+// the intervals keep their shape (a major triad stays major), force-to-
+// scale reshapes it into the scale at playback like everywhere else
+bool stepDegAdjust(uint8_t step, int8_t d) {
+  if (step >= STEP_MAX || !d) return false;
+  uint8_t ch = seqEditCh;
+  uint8_t n = stepChordLen[ch][step];
+  if (n == 0) return false;
+  uint8_t root = 0, q = CHORD_Q_MAJ;
+  decodeChord(stepChord[ch][step], n, &root, &q);
+  // the key's pitch classes, ascending from the current root
+  uint8_t sc[12];
+  uint8_t L = 0;
+  uint8_t kr = (uint8_t)(keyRoot() % 12);
+  for (uint8_t i = 0; i < 12; i++) {
+    uint8_t pc = (uint8_t)((kr + i) % 12);
+    if (keyIsInScale(pc)) sc[L++] = pc;
+  }
+  if (!L) return false;
+  // the chord root's degree (a borrowed root snaps to its nearest degree)
+  int dR = 0;
+  int best = 7;
+  for (uint8_t i = 0; i < L; i++) {
+    int diff = (int)sc[i] - (int)root;
+    if (diff < 0) diff = -diff;
+    if (diff > 6) diff = 12 - diff;
+    if (diff < best) { best = diff; dR = (int)i; }
+  }
+  int steps = (d > 0) ? d : -d;
+  if (steps > 12) steps = 12;
+  long delta = 0;
+  for (int k = 0; k < steps; k++) {
+    int nd = dR + ((d > 0) ? 1 : -1);
+    if (nd >= (int)L) nd = 0;
+    if (nd < 0) nd = (int)L - 1;
+    int dd = (int)sc[nd] - (int)sc[dR];
+    if (d > 0 && dd <= 0) dd += 12;   // wrapping up goes over the top
+    if (d < 0 && dd >= 0) dd -= 12;
+    delta += dd;
+    dR = nd;
+  }
+  bool moved = false;
+  for (uint8_t i = 0; i < n; i++) {
+    int v = (int)stepChord[ch][step][i] + (int)delta;
+    if (v < 0) v = 0;
+    if (v > 127) v = 127;
+    if (v != (int)stepChord[ch][step][i]) {
+      stepChord[ch][step][i] = (uint8_t)v;
+      moved = true;
+    }
+  }
+  if (moved) {
+    seqOctClamp(ch);
+    stepSyncFrom(ch);
+  }
+  return moved;
+}
+
+// cycle the inversion: d > 0 raises the bass an octave, d < 0 drops the
+// top down - refused (stays put) when that would duplicate a tone or
+// leave 0..127, so the transform can always be walked back
+bool stepInvAdjust(uint8_t step, int8_t d) {
+  if (step >= STEP_MAX || !d) return false;
+  uint8_t ch = seqEditCh;
+  uint8_t n = stepChordLen[ch][step];
+  if (n < 2) return false;
+  uint8_t *nt = stepChord[ch][step];
+  int sel = 0, want;
+  if (d > 0) {                       // bass = the lowest tone
+    for (uint8_t i = 1; i < n; i++) if (nt[i] < nt[sel]) sel = i;
+    want = (int)nt[sel] + 12;
+  } else {                           // top = the highest tone
+    for (uint8_t i = 1; i < n; i++) if (nt[i] > nt[sel]) sel = i;
+    want = (int)nt[sel] - 12;
+  }
+  if (want < 0 || want > 127) return false;
+  for (uint8_t i = 0; i < n; i++)
+    if ((int)nt[i] == want) return false;   // octave pair: no room to move
+  nt[sel] = (uint8_t)want;
+  seqOctClamp(ch);
+  stepSyncFrom(ch);
+  return true;
+}
+
+// spread or close the upper voices around the bass: d > 0 lifts every
+// tone above the lowest one an octave, d < 0 brings them back down - and
+// refuses to close past the bass (an already-closed chord just stays),
+// which makes the pair walkable both ways without extra state
+bool stepVoiAdjust(uint8_t step, int8_t d) {
+  if (step >= STEP_MAX || !d) return false;
+  uint8_t ch = seqEditCh;
+  uint8_t n = stepChordLen[ch][step];
+  if (n < 2) return false;
+  uint8_t *nt = stepChord[ch][step];
+  uint8_t low = nt[0];
+  for (uint8_t i = 1; i < n; i++) if (nt[i] < low) low = nt[i];
+  for (uint8_t i = 0; i < n; i++) {
+    if (nt[i] == low) continue;              // the bass anchors the spread
+    int v = (int)nt[i] + ((d > 0) ? 12 : -12);
+    if (v < 0 || v > 127) return false;
+    if (d < 0 && v <= (int)low) return false; // would fold under/onto bass
+    for (uint8_t j = 0; j < n; j++)
+      if (j != i && (int)nt[j] == v) return false;  // collapse: leave it
+  }
+  for (uint8_t i = 0; i < n; i++) {
+    if (nt[i] == low) continue;
+    nt[i] = (uint8_t)((int)nt[i] + ((d > 0) ? 12 : -12));
+  }
+  seqOctClamp(ch);
+  stepSyncFrom(ch);
+  return true;
+}
+
 // one-level undo of the last KEYMODE4 write batch (apply / key write /
 // variation): a full snapshot of the edit sequence - chords, lengths, the
 // step attributes (incl. the TYPE override), the per-note HAND strum
@@ -1898,11 +2019,13 @@ static bool     chInRng[SEQ_CH_COUNT];
 // content FOLDS into it (foldWin): RANGE 2 -> 1 lowers the upper-octave
 // notes into the new octave, 1 -> 2 raises the original pitches back -
 // stored steps are never rewritten, so the round-trip is lossless and
-// the per-step OCT shifts ride on top of the folded base.  Both sides
-// run through the listener's octave (sh) like the plain follow path;
-// every candidate is folded into [lo,hi] which spans at least one
-// octave, so each pitch class always has a candidate inside.  Returns a
-// sound-space note (the caller skips shNote for it).
+// the per-step OCT shifts ride on top of the folded base.  The whole
+// mapping runs in STORED space; the listener's octave (SEQMODE ENC1)
+// is applied ONCE at the return - folding into a static window after
+// shNote would cancel the transposition.  Every candidate is folded
+// into [lo,hi] which spans at least one octave, so each pitch class
+// always has a candidate inside.  Returns a sound-space note (the
+// caller skips shNote for it).
 // fold a sounding pitch into [lo,hi] by whole octaves: the LINE follows
 // LOW..RANGE live (RANGE 2->1 lowers the upper octave into the window,
 // 1->2 raises the original pitch back - pure playback transform, the
@@ -1945,19 +2068,19 @@ static uint8_t mapBassNote(uint8_t c, uint8_t stp, const uint8_t *ch,
   if (whi < wlo) whi = wlo;             // degenerate guard (window >= 1 oct)
   uint8_t lo = (uint8_t)wlo;
   uint8_t hi = (uint8_t)whi;
-  // own generated pitch (its min, like the plain BASS pick) in sound
-  // space, folded into the live window like the plain playback pick
+  // own generated pitch (its min, like the plain BASS pick), folded
+  // into the live window like the plain playback pick - stored space
   uint8_t ownN = stepChord[c][stp][0];
   for (uint8_t i = 1; i < stepChordLen[c][stp]; i++)
     if (stepChord[c][stp][i] < ownN) ownN = stepChord[c][stp][i];
-  uint8_t n = foldWin((int)shNote(ownN, sh), wlo, whi);
-  // feeder tones through the listener's octave, sorted ascending (the
+  uint8_t n = foldWin((int)ownN, wlo, whi);
+  // feeder tones as the feeder stored them, sorted ascending (the
   // degree/interval/root picks index the chord root-first)
   uint8_t t[CHORD_MAX];
   uint8_t tn = 0;
   for (uint8_t i = 0; i < len && i < CHORD_MAX; i++)
-    t[tn++] = shNote(ch[i], sh);
-  if (!tn) return n;                     // degenerate: keep the own pitch
+    t[tn++] = ch[i];
+  if (!tn) return shNote(n, sh);         // degenerate: keep the own pitch
   for (uint8_t i = 1; i < tn; i++) {
     uint8_t v = t[i];
     uint8_t j = i;
@@ -2007,7 +2130,7 @@ static uint8_t mapBassNote(uint8_t c, uint8_t stp, const uint8_t *ch,
   // (octave-shaped to the base), gated by the step's modifier probability
   uint8_t brw = stepBrwM[c][stp];
   if (modOn && brw) base = winOct(t[(brw - 1) % tn], (int)base, lo, hi);
-  return base;
+  return shNote(base, sh);               // listener's octave shifts LAST
 }
 
 // one sub-step of the transport: every track whose speed gate fired this
@@ -2220,6 +2343,20 @@ static void seqAdvanceOnce(bool start, const bool *go,
       if (m) { len = m; ch = mapped; }
       if (fxm) nCore = coreOut;        // compaction may have shrunk the core
     }
+    // GNR8 per-step OCT on POLY (the step-hold row's ENC1 / GNR8 F2 page):
+    // transpose the PLAYBACK copy - the stored step chord never changes,
+    // the MONO track keeps its probability-gated roll below
+    if (!mono && !drumTrack && stepOctM[c][stp]) {
+      if (ch != mapped)
+        for (uint8_t i = 0; i < len; i++) mapped[i] = ch[i];
+      for (uint8_t i = 0; i < len; i++) {
+        int v = (int)mapped[i] + 12 * (int)stepOctM[c][stp];
+        if (v < 0) v = 0;
+        if (v > 127) v = 127;
+        mapped[i] = (uint8_t)v;
+      }
+      ch = mapped;
+    }
     // HAND POLY buffers instead of sounding: the step's chord (post-FX,
     // post-FScale = what WOULD have sounded) becomes the keyboard's string
     // buffer, the rhythm still gates WHEN it refreshes.  Only an explicit
@@ -2283,17 +2420,18 @@ static void seqAdvanceOnce(bool start, const bool *go,
           note = rootOf(ch, len);         // SEQ_MONO_ROOT
         }
         if (!mapped) {
-          note = shNote(note, sh);
-          // BASS: the line folds into the LIVE LOW..RANGE window, so
-          // lowering RANGE drops the upper-octave notes into it right
-          // away and raising RANGE back plays the originals again
-          // (stored notes never change - per-step OCT rides on top)
+          // BASS: fold the STORED line into the live LOW..RANGE window
+          // first (RANGE 2->1 lowers the upper octave into it, 1->2
+          // restores the originals - stored notes never change), then
+          // apply SEQMODE ENC1's octave shift: shifting AFTER the fold
+          // keeps the transposition (folding after shNote would cancel it)
           if (seqMonoTypeOf(c) == SEQ_MONO_BASS) {
             int wlo = 24 + 12 * seqGenLowOf(c);
             int whi = wlo + 12 * seqGenRangeOf(c) - 1;
             if (whi > 127) whi = 127;
             note = foldWin((int)note, wlo, whi);
           }
+          note = shNote(note, sh);
         }
         if (modOn && stepOctM[c][stp]) {  // OCT: octave shift 0..127 clamp
           int v = (int)note + 12 * (int)stepOctM[c][stp];

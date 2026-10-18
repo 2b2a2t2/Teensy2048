@@ -15,6 +15,8 @@ extern U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2;
 void initDisplay();
 void headerSetLeft(const char* text);           // permanent, top-left (e.g. mode)
 void headerShow(const char* name);              // temporary, right side, HEADER_MS
+void headerSetStick(const char* text);          // persistent, right side (KEY4 progression)
+void headerStickClear();                        // erase the persistent right text
 void headerHide();                              // erase temporary right text now
 void clearHeader();                  // erase header region in buffer
 void clearMainScreen();              // erase main region in buffer

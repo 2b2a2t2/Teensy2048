@@ -549,10 +549,30 @@ void handleButtonEvents() {
           }
         }
       } else if (ev == EV_CLICKED) {
-        if (!drum && stepChordClick(stp) == 0 && logRoom(48))
+        // KEYMODE4 AUDITION: a tap never disables a step - disable only
+        // lands in WRITE (AUDITION promises nothing is written here)
+        bool k4 = (modeBase == MODE_KEY && modeVariant == 4);
+        if (k4 && !k4Write()) {
+          if (logRoom(48)) Serial.println("  k4 audition: step kept");
+        } else if (!drum && stepChordClick(stp) == 0 && logRoom(48))
           Serial.println("  step disabled");
       } else if (ev == EV_HOLD) {
-        if (!drum) {           // DRUM steps are toggles, no assign mode
+        if (modeBase == MODE_KEY && modeVariant == 4) {
+          // KEYMODE4: holding a step swaps ENC1..ENC4 onto OCT/DEG/INV/
+          // VOICE for THAT step (release restores the mode row, or the EMB
+          // menu if it was open); WRITE keeps the assign gesture on top
+          k4StepSelSet((int8_t)stp);
+          setOverlay(G_ENC, ENC_KEY4_STEP);
+          if (k4Write()) stepAssignSet((int8_t)stp);
+          refreshMainScreen();    // the encoder labels are the overlay's now
+          char sb[24];
+          snprintf(sb, sizeof(sb), "step %u", stp + 1);
+          headerShow(sb);
+          if (logRoom(48)) {
+            Serial.print("  step hold ");
+            Serial.println(stp + 1);
+          }
+        } else if (!drum) {       // DRUM steps are toggles, no assign mode
           stepAssignSet((int8_t)stp);
           if (logRoom(48)) {
             Serial.print("  step assign ");
@@ -560,6 +580,16 @@ void handleButtonEvents() {
           }
         }
       } else if (ev == EV_RELEASED) {
+        if (k4StepSelGet() >= 0) {
+          // end the per-step row (never clobber an overlay someone else
+          // took over in the meantime, e.g. PREV pressed mid-hold)
+          k4StepSelSet(-1);
+          if (currentBinding().enc == ENC_KEY4_STEP) {
+            clearOverlay(G_ENC);
+            if (k4EmbMenu()) setOverlay(G_ENC, ENC_KEY4_EMB);
+          }
+          refreshMainScreen();    // labels back to the mode's own row
+        }
         stepAssignSet(-1);
       }
       refreshAllLeds();   // recording may have toggled the step's dim-green LED
@@ -803,6 +833,45 @@ void handleButtonEvents() {
       refreshAllLeds();
     }
 
+    // M3 in ENCMODE: toggles the page group of the ENC5..8 banks (off =
+    // F1..F4 = CC1..16, on = CC21..36; ENC1..4 always send CC17..20).
+    // The pad LED follows (dim green = lower group, purple = upper), the
+    // encoder labels/values repaint with the group
+    if (ev == EV_CLICKED && modeBase == MODE_ENC &&
+        kl == groupControls[4]) {
+      bool on = !encM3Page();
+      encM3PageSet(on);
+      headerShow(on ? "CC21-36" : "CC1-16");
+      if (logRoom(48)) {
+        Serial.print("  enc page group ");
+        Serial.println(on ? "2 (CC21-36)" : "1 (CC1-16)");
+      }
+      refreshAllLeds();
+      refreshMainScreen();
+    }
+
+    // F1-F4 in ENCMODE: radio switches for the ENC5..8 CC bank (F1 =
+    // CC1..4 ... F4 = CC13..16 in the lower M3 page group, F1 = CC21..24
+    // ... F4 = CC33..36 in the upper one; ENC1..4 always send CC17..20).
+    // RAM only and always one bank armed - re-clicking the selected one
+    // keeps it.  The pad LEDs follow via refreshAllLeds, the encoder
+    // labels/values via refreshMainScreen
+    if (ev == EV_CLICKED && modeBase == MODE_ENC &&
+        kl >= groupControls[5] && kl <= groupControls[8]) {
+      uint8_t idx = (uint8_t)(kl - groupControls[5]);      // 0..3
+      encBankSet(idx);
+      uint8_t c1 = encCcNum(4);          // first CC of the armed block
+      char hb[20];
+      snprintf(hb, sizeof(hb), "F%u CC%u-%u", idx + 1, c1, c1 + 3);
+      headerShow(hb);
+      if (logRoom(48)) {
+        Serial.print("  enc bank ");
+        Serial.println(hb);
+      }
+      refreshAllLeds();
+      refreshMainScreen();
+    }
+
     // MUTE overlay (ENC mode): hold M2 -> the steps show the channel mute
     // state (dim orange-red = playing, bright orange-red = muted), tapping
     // one toggles that channel's playback; release closes the overlay.
@@ -935,11 +1004,14 @@ void handleButtonEvents() {
       bool m2Enc = (ci == 3 && modeBase == MODE_ENC);
       bool m2Seq3 = (ci == 3 && modeBase == MODE_SEQ && modeVariant == 3);
       bool fSeq = (ci >= 5 && modeBase == MODE_SEQ && modeVariant != 3);
+      bool fEnc = (ci >= 5 && modeBase == MODE_ENC);
+      bool m3Enc = (ci == 4 && modeBase == MODE_ENC);
       // F1-F4 belong to the SEQMODE edit radio (target / accent / prob)
       // plus the F3 accent-velocity hold - they never touch the chords
-      // there, on any track type
+      // there, on any track type; in ENCMODE they are the CC-bank radio
+      // and M3 the page-group toggle
       if (ci > 0 && !m1SeqRadio && !m1Enc && !m2Enc && !m2Seq3 &&
-          !fSeq) {                                        // ci 0 = PREV
+          !m3Enc && !fSeq && !fEnc) {                     // ci 0 = PREV
         bool on = (ev == EV_PRESSED);
         static const uint8_t extOf[4] = { CHORD_EXT_6, CHORD_EXT_m7,
                                           CHORD_EXT_M7, CHORD_EXT_9 };
@@ -1173,38 +1245,65 @@ void handleButtonEvents() {
   }
 }
 
-// ENCMODE knob positions: encoder n sends CC n+1 on the encoder channel.
-// Stored PER CHANNEL (8 encoders x 16 channels): switching channels loads
-// that channel's own value instead of inheriting the previous channel's
-// (no jump); DAW feedback updates the slots via encCcIncoming()
-static int16_t ccVal[8][16] = {{0}};
+// ENCMODE knob positions: ENC1..ENC4 always send CC17..CC20; ENC5..ENC8
+// send the F1..F4 bank's block inside the active M3 page group (off =
+// F1 = CC1..4 ... F4 = CC13..16; on = F1 = CC21..4 ... F4 = CC33..36)
+// on the encoder channel (ENCMODE3).  Values are stored PER CC NUMBER
+// (36 CCs x 16 channels): switching channels loads that channel's own
+// value instead of inheriting the previous channel's (no jump); DAW
+// feedback updates the slots via encCcIncoming()
+static int16_t ccVal[36][16] = {{0}};
+
+// F1..F4 bank radio for ENC5..8 - RAM only, defaults back to F1 whenever
+// the ENCMODE family is entered (modeOnEvent)
+static uint8_t encBankSel = 0;
+
+// M3 page group: off = the banks live in CC1..16, on = CC21..36 (the
+// upper group; CC17..20 stay reserved for ENC1..4).  RAM only, back to
+// off on ENCMODE entry
+static bool encM3Sel = false;
+
+uint8_t encBank() { return (encBankSel < 4) ? encBankSel : 0; }
+void encBankSet(uint8_t b) { if (b < 4) encBankSel = b; }
+
+bool encM3Page() { return encM3Sel; }
+void encM3PageSet(bool on) { encM3Sel = on; }
+
+// CC number encoder ei (0..7) sends: ENC1..4 = CC17..20 (fixed), the
+// rest = the current bank's block of four in the active page group
+uint8_t encCcNum(uint8_t ei) {
+  if (ei < 4) return (uint8_t)(17 + ei);
+  uint8_t base = encM3Sel ? 20 : 0;
+  return (uint8_t)(base + encBank() * 4 + (ei - 4) + 1);
+}
 
 uint8_t encCcValue(uint8_t idx) {
   if (idx >= 8) return 0;
-  return (uint8_t)ccVal[idx][encChannel() - 1];
+  return (uint8_t)ccVal[encCcNum(idx) - 1][encChannel() - 1];
 }
 
-// incoming CC from the DAW: sync the knob positions of CC1..CC8 on any
+// incoming CC from the DAW: sync the knob positions of CC1..CC36 on any
 // channel (store only - never re-sent, so no feedback loop; deduped so an
 // echo of our own move doesn't repaint the screen)
 void encCcIncoming(uint8_t ch, uint8_t cc, uint8_t val) {
-  if (ch < 1 || ch > 16 || cc < 1 || cc > 8) return;
+  if (ch < 1 || ch > 16 || cc < 1 || cc > 36) return;
   if (ccVal[cc - 1][ch - 1] == (int16_t)(val & 0x7F)) return;
   ccVal[cc - 1][ch - 1] = val & 0x7F;
   if (modeBase == MODE_ENC) refreshMainScreen();   // knobs are on screen
 }
 
 // EEPROM persistence (ENCMODE4 + REC saves, boot loads).  Layout at
-// address 0: magic | encCh | 128 values (enc*16+ch) | checksum = 131 of
-// 4096 bytes; a blank or corrupt block just keeps the defaults (zeros)
-static const uint8_t CC_EE_MAGIC = 0xCC;
-static const uint16_t CC_EE_LEN = 131;
+// address 0: magic | encCh | 576 values (cc*16+ch) | checksum = 579 of
+// 4096 bytes; a blank or corrupt block (including a save from an older
+// 8- or 20-CC layout) just keeps the defaults (zeros)
+static const uint8_t CC_EE_MAGIC = 0xCE;
+static const uint16_t CC_EE_LEN = 579;
 
 void encCcSave() {
   uint8_t b[CC_EE_LEN];
   b[0] = CC_EE_MAGIC;
   b[1] = encChannel();
-  for (uint8_t e = 0; e < 8; e++)
+  for (uint8_t e = 0; e < 36; e++)
     for (uint8_t c = 0; c < 16; c++)
       b[2 + e * 16 + c] = (uint8_t)ccVal[e][c] & 0x7F;
   uint8_t sum = 0;
@@ -1219,7 +1318,7 @@ void encCcLoad() {
   uint8_t sum = 0;
   for (uint16_t i = 0; i < CC_EE_LEN - 1; i++) sum += b[i];
   if (b[0] != CC_EE_MAGIC || sum != b[CC_EE_LEN - 1]) return;
-  for (uint8_t e = 0; e < 8; e++)
+  for (uint8_t e = 0; e < 36; e++)
     for (uint8_t c = 0; c < 16; c++)
       ccVal[e][c] = b[2 + e * 16 + c] & 0x7F;
   encSetChannel(b[1]);
@@ -1254,17 +1353,16 @@ void handleEncoderEvents() {
     // KEYMODE: ENC2 = scale (every variant, and the PREV overlay row);
     // 4 counts = 1 scale, clamped 0..12, no wrap.  Selecting a scale
     // flashes its mood ("Happy", "Sad", ...) in the temporary header -
-    // KEYMODE4 announces its new proposal ranking there instead
+    // in KEYMODE4 the persistent progression behind it re-ranks live
     if (modeBase == MODE_KEY && ei == 1 && ed != 0 &&
         (modeVariant != 4 || currentBinding().enc == ENC_KEY4_PREV)) {
       keyScaleAdjust(ed);
       refreshAllLeds();             // in-scale / out-of-scale keys repaint
       if (modeVariant == 4) {
         k4Refresh();                // the framework follows the scale
-        k4Announce();               // the header names the new ranking
-      } else {
-        headerShow(keyScaleMood());
+        k4Announce();               // the sticky header shows the ranking
       }
+      headerShow(keyScaleMood());   // the mood flashes over it (all variants)
       if (logRoom(48)) {
         Serial.print("  scale ");
         Serial.println(keyScaleName());
@@ -1289,6 +1387,58 @@ void handleEncoderEvents() {
       if (logRoom(48)) {
         Serial.print("  root ");
         Serial.println(keyRootName());
+      }
+      any = true;
+    }
+
+    // KEYMODE4 + step held: the overlay row edits THAT step - ENC1 OCT
+    // (playback transpose, GNR8's -2..+2 stored separately), ENC2 DEG
+    // (shift every tone one scale degree in the key), ENC3 INV (cycle the
+    // bass up / top down an octave), ENC4 VOICE (spread/close the upper
+    // voices around the bass).  Every turn echoes into the header
+    if (modeBase == MODE_KEY && modeVariant == 4 && ed != 0 &&
+        currentBinding().enc == ENC_KEY4_STEP && ei <= 3 &&
+        k4StepSelGet() >= 0) {
+      uint8_t stp = (uint8_t)k4StepSelGet();
+      char hb[24];
+      char dgs[8], ivs[8];
+      if (ei == 0) {
+        stepOctSet(stp, (int8_t)(stepOctAt(stp) + ((ed > 0) ? 1 : -1)));
+        int8_t nv = stepOctAt(stp);
+        if (nv == 0) snprintf(hb, sizeof(hb), "%u oct 0", stp + 1);
+        else snprintf(hb, sizeof(hb), "%u oct %+d", stp + 1, nv);
+        headerShow(hb);
+        if (logRoom(48)) { Serial.print("  "); Serial.println(hb); }
+      } else if (ei == 1) {
+        int8_t dd = (ed > 12) ? 12 : (ed < -12) ? -12 : (int8_t)ed;
+        stepDegAdjust(stp, dd);
+        if (k4StepLabels(stp, dgs, sizeof(dgs), NULL, 0)) {
+          snprintf(hb, sizeof(hb), "%u deg %s", stp + 1, dgs);
+          headerShow(hb);
+          if (logRoom(48)) { Serial.print("  "); Serial.println(hb); }
+        }
+      } else if (ei == 2) {
+        stepInvAdjust(stp, (int8_t)((ed > 0) ? 1 : -1));
+        if (k4StepLabels(stp, NULL, 0, ivs, sizeof(ivs))) {
+          snprintf(hb, sizeof(hb), "%u inv %s", stp + 1, ivs);
+          headerShow(hb);
+          if (logRoom(48)) { Serial.print("  "); Serial.println(hb); }
+        }
+      } else {
+        stepVoiAdjust(stp, (int8_t)((ed > 0) ? 1 : -1));
+        uint8_t n = 0;
+        const uint8_t *nt = stepChordAt(stp, &n);
+        if (n) {
+          uint8_t lo = nt[0], hi = nt[0];
+          for (uint8_t i = 1; i < n; i++) {
+            if (nt[i] < lo) lo = nt[i];
+            if (nt[i] > hi) hi = nt[i];
+          }
+          snprintf(hb, sizeof(hb), "%u voice %uoct", stp + 1,
+                   (uint8_t)((hi - lo) / 12));
+          headerShow(hb);
+          if (logRoom(48)) { Serial.print("  "); Serial.println(hb); }
+        }
       }
       any = true;
     }
@@ -1426,20 +1576,22 @@ void handleEncoderEvents() {
       }
     }
 
-    // ENCMODE: ENC1..ENC8 send CC1..CC8 on the encoder channel (ENCMODE3);
-    // 1 count = 1 value step, clamped 0..127, no wrap; positions persist
-    // across mode changes like a real knob
+    // ENCMODE: ENC1..ENC4 send CC17..CC20, ENC5..ENC8 send the F bank's
+    // block (F1 = CC1..4 ... F4 = CC13..16) on the encoder channel
+    // (ENCMODE3); 1 count = 1 value step, clamped 0..127, no wrap;
+    // positions persist across mode changes like a real knob
     if (modeBase == MODE_ENC && ei < 8 && ed != 0) {
       uint8_t cch = encChannel();
-      int16_t v = ccVal[ei][cch - 1] + ed;
+      uint8_t cc = encCcNum(ei);
+      int16_t v = ccVal[cc - 1][cch - 1] + ed;
       if (v < 0) v = 0;
       if (v > 127) v = 127;
-      if (v != ccVal[ei][cch - 1]) {
-        ccVal[ei][cch - 1] = v;
-        usbMIDI.sendControlChange(ei + 1, (uint8_t)v, cch);
+      if (v != ccVal[cc - 1][cch - 1]) {
+        ccVal[cc - 1][cch - 1] = v;
+        usbMIDI.sendControlChange(cc, (uint8_t)v, cch);
         if (logRoom(48)) {
           Serial.print("  CC ");
-          Serial.print(ei + 1);
+          Serial.print(cc);
           Serial.print("=");
           Serial.println(v);
         }

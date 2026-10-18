@@ -10,17 +10,33 @@
 void handleButtonEvents();
 void handleEncoderEvents();
 
-// ENCMODE: current CC value (0..127) of encoder 0..7 (sends CC 1..8) on
-// the CURRENT encoder channel (values are stored per channel)
+// ENCMODE: current CC value (0..127) of encoder 0..7 on the CURRENT
+// encoder channel (values are stored per channel).  ENC1..4 always map
+// CC17..20; ENC5..8 follow the F1..F4 bank radio inside the active M3
+// page group (off = CC1..16, on = CC21..36) - see encBank()/encM3Page()
 uint8_t encCcValue(uint8_t idx);
 
+// CC number encoder 0..7 currently sends - the single source of truth
+// for the MIDI send, the OLED labels and the DAW-feedback mapping
+uint8_t encCcNum(uint8_t ei);
+
+// ENCMODE F1..F4 radio: which CC block ENC5..ENC8 send (0..3 = F1..F4;
+// RAM only, resets to F1 whenever the ENCMODE family is entered)
+uint8_t encBank();
+void    encBankSet(uint8_t b);
+
+// ENCMODE M3 toggle: page group of the ENC5..8 banks (off = F1..F4 send
+// CC1..16, on = CC21..36; RAM only, off again on ENCMODE entry)
+bool encM3Page();
+void encM3PageSet(bool on);
+
 // incoming CC feedback from the DAW: syncs the ENCMODE knob positions
-// (channel 1..16, CC 1..8); store only, never re-sent
+// (channel 1..16, CC 1..36); store only, never re-sent
 void encCcIncoming(uint8_t ch, uint8_t cc, uint8_t val);
 
-// ENCMODE4 + REC: persist the 128 knob values + selected channel to
-// EEPROM; encCcLoad() restores them at boot (before the first draw).
-// Save only - nothing is ever pushed to the DAW
+// ENCMODE4 + REC: persist the 576 knob values (36 CCs x 16 channels) +
+// selected channel to EEPROM; encCcLoad() restores them at boot (before
+// the first draw).  Save only - nothing is ever pushed to the DAW
 void encCcSave();
 void encCcLoad();
 
