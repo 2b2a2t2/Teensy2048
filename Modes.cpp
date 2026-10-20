@@ -326,8 +326,10 @@ static CRGB modeLedHook(uint8_t pad, bool isTouched, CRGB defaultColor) {
   // SEQMODE step-edit radio: M1 + F1-F4 (MONO) or M1 + F3/F4 (DRUM) keep
   // their mode visible at all times; POLY lights F1-F4 too (FX/TYPE/ACC/
   // PROB) - bright white = the target the pads currently edit (M1 while no
-  // attribute is selected), dim dark blue background otherwise.  Touch wins
-  // over everything
+  // attribute is selected), dim dark blue background otherwise.  The M2
+  // ARP/GNR8 pages are part of the same radio on MONO tracks: open, they
+  // drop the edit selection (and dim M1), an armed target drops the page.
+  //  Touch wins over everything
   bool seqMonoRadio = (modeBase == MODE_SEQ && modeVariant != 3 &&
                        seqTrack() == SEQ_TRACK_MONO);
   bool seqPolyRadio = (modeBase == MODE_SEQ && modeVariant != 3 &&
@@ -382,7 +384,9 @@ static CRGB modeLedHook(uint8_t pad, bool isTouched, CRGB defaultColor) {
       return g;
     }
     // which F pad carries the selected target (MONO: F1-F4 = targets 1-4;
-    // DRUM: F3/F4 = 3/4; POLY: F1 = FX (5), F2 = TYPE (6), F3/F4 = 3/4)
+    // DRUM: F3/F4 = 3/4; POLY: F1 = FX (5), F2 = TYPE (6), F3/F4 = 3/4).
+    // M1 is white only while it owns the radio: with the M2 ARP/GNR8 page
+    // open the keys are one radio, so M1 dims like every unselected member
     uint8_t sel = stepEditSel();
     uint8_t wantF = 0;
     if (sel != 0) {
@@ -390,7 +394,8 @@ static CRGB modeLedHook(uint8_t pad, bool isTouched, CRGB defaultColor) {
       else if (seqPolyRadio && sel == 6) wantF = 2;
       else wantF = sel;
     }
-    if ((sel == 0 && led == groupControls[2]) ||
+    bool pageOwns = arpPageActive() || genPageActive();
+    if ((sel == 0 && !pageOwns && led == groupControls[2]) ||
         (wantF != 0 && led >= groupControls[5] &&
          wantF == (uint8_t)(led - groupControls[5] + 1))) {
       CRGB s = CRGB::White;

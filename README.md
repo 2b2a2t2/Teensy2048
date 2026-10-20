@@ -72,6 +72,7 @@ The hardware has 48 touch pads but only 42 LEDs. The mapping (`padToLedList` in 
 | `SeqClock.h/cpp` | uClock integration, playhead, sync (INT/EXT), tempo, track types |
 | `Keyboard.h/cpp` | Keyboard pads → MIDI notes, octave, channel, pending chords |
 | `Chords.h/cpp` | KEYMODE2 chord engine: quality, extensions, FScale, latch, KeyLock |
+| `Gen.h/cpp` + `bjorklund.h` | GNR8 generative page (SEQMODE, MONO+BASS): FILL/ACC/GLIDE/TIE knobs, option sub-pages (TONES/RANGE/LOW/ALGO), per-step OCT/BRW/PROB modifiers, FOLLOW note mapping (near/root/deg/ivl), Bjorklund/Euclidean placement |
 | `Key4.h/cpp` + `genre_data.h` | KEYMODE4 genre engine: 18-genre transition tables, ranked chord proposals, write-to-focus, EMB embellish menu (passing chords + substitution; data generated into `genre_data.h`, method in `GENRE_DATA.md`) |
 
 ## Mode System
@@ -118,8 +119,8 @@ Each mode/variant combination selects an `EncSet`, `CtrlSet`, `StepSet`, `KeySet
   - **PREV (hold)** = momentary encoder overlay (Root/Scale/Latch/KeyLock/Perf)
 
 - **KEYMODE4** (double-click KEY): genre-driven chord proposals
-  - The engine scores all 12 pitch classes for the slot **before the focus** (transition matrix × MOOD × MOTION × CADENCE × SURP) and lays the whole scored degree set out on the keyboard: **hue-mapped by key as originally designed** (C = blue … B = red), **rank 0 = the next chord from the highest probability = hottest**, brightness stepping down the list so the colors tell how probable each degree is after the last chord; borrowed degrees open with **TENS ≥ 34** and light **orange** (closed ones stay dark); every knob is 0–100 (boot 50), 1 count = 1 unit. Every knob/genre turn re-ranks the propositions **dynamically** and repaints the keyboard live
-  - The **header displays the progression and keeps it there**: `f3 V vi > I IV` = focus · the walk so far · `>` · the top-4 proposals — persistent (it re-ranks live with every knob/scale/root/focus change); transient messages such as the **scale mood** or write results (`I V vi IV +8`) flash over it, then the progression returns. The **first chord of the walk is the chord played in KEYMODE2** when you enter (its kept notes seed the chain), or the stored step before the focus after a focus move
+  - The engine scores all 12 pitch classes for the slot **before the focus** (transition matrix × MOOD × MOTION × CADENCE × SURP, plus a **voice-leading term** that rewards common tones and stepwise motion and dents parallel fifths/octaves, **phrase/pair cadence terms** — ii–V and V–I at bar ends, the authentic/plagal landing in the pattern's last bar — and a **secondary-dominant class**: SURP-gated rolls turn a proposal into V/x (maj triad + m7, e.g. `II` = V/V) whose resolution target the next scoring pass pulls toward) and lays the whole scored degree set out on the keyboard: **hue-mapped by key as originally designed** (C = blue … B = red), **rank 0 = the next chord from the highest probability = hottest**, brightness stepping down the list so the colors tell how probable each degree is after the last chord; borrowed degrees open with **TENS ≥ 34** and light **orange** (closed ones stay dark); every knob is 0–100 (boot 50), 1 count = 1 unit. Every knob/genre turn re-ranks the proposals **dynamically**, repaints the keyboard live **and re-generates every unlocked step in place** — the progression playing in the sequencer follows the knobs in real time (locked steps are never touched; the first count of a tweak burst claims the undo slot, so M3-hold restores the pre-tweak progression)
+  - The **header displays the progression and keeps it there**: `V vi > I IV` = the walk so far · `>` · the top-4 proposals — persistent (it re-ranks live with every knob/scale/root/focus change); transient messages such as the **scale mood** or write results (`I V vi IV +8`) flash over it, then the progression returns. The focused step needs no header marker — the sequencer pads already show it. The **first chord of the walk is the chord played in KEYMODE2** when you enter (its kept notes seed the chain), or the stored step before the focus after a focus move
   - **ENC row**: ENC1 = **GENRE** (18, clamps — the knob does not wrap), ENC2–8 = MOOD/TENS/MOTION/CAD/CPX/ERA/SURP; **PREV (hold)** = overlay with ENC1 Octave / ENC2 Scale (flashes the scale mood over the progression) / ENC3 Key / **ENC4 FScale** (force-to-scale ON/OFF — ON makes playback of recorded steps follow the scale, same switch as KEYMODE2), and **PREV (click)** = focus −1; **NEXT (tap)** = the sticky **EMB menu** (below) — while it is open the row becomes **ENC1 EMB / ENC2 PLACE**, PREV hold still borrows it for Octave/Scale/Key/FScale and hands it back on release
   - **Press a proposed key** = audition the chord (unscored keys are silent) and **chain the progression**: the next proposals follow the chord you just heard, so repeated presses walk a sequence by ear — even in AUDITION with nothing written. The chain re-anchors on the stored steps whenever the focus moves; on release the header shows where the chain goes next. With **WRITE** on (boots in **AUDITION**) it also lands on the **focused step** and the focus auto-advances (**M2** = AUTO, boots off)
   - **Controls**: **NEXT tap** = the **EMB menu** (toggle, below) · **NEXT hold** = focus +1 · **M1** = WRITE ⇄ AUDITION (**dim red** = AUDITION, **bright red** = WRITE) · **M2** = AUTO-ADVANCE · **M3 tap** = apply the generator to every unlocked step, **M3 hold** = undo (one-level, restores channel + attributes) · **F1** = VARIATION (reseed + generate) · **F2** = lock the focused step (apply skips it) · **F3** = VOICE-LEAD (inversions follow the bass line) · **F4 held** = audition only (no write, no advance). After M3/F1/undo the header shows the **written progression** as numerals (`I V vi IV +8` = first four chords + how many follow)
@@ -296,6 +297,7 @@ When a track's step chords are written, all MONO/POLY sequences **listening to t
 - **F1–F4** = CC-bank radio (bright white = armed; RAM only, always one armed — defaults to **F1** whenever ENCMODE is entered). Idle color follows the page group: dim purple in group 1, dim medium sea green in group 2. In ENCMODE the F row leaves the inherited KEYMODE2 chord-extension job
 - **M3 (PAGE)** = page-group toggle: dim medium sea green = group 1 (CC 1–16), purple = group 2 (CC 21–36); off again on ENCMODE entry (also leaves the inherited KEYMODE2 chord-quality job)
 - Values persist across mode changes (0–127, clamped, no wrap); DAW feedback on CC 1–36 syncs the matching knobs
+- Knob positions are stored **per CC number × channel** (36×16): switching the encoder channel loads that channel's own values instead of inheriting the previous channel's (no jump)
 - **ENCMODE4 + REC** saves all 36×16 knob values + channel to EEPROM (an older save is ignored, defaults stay)
 
 ### 4. Transport
@@ -318,10 +320,10 @@ When a track's step chords are written, all MONO/POLY sequences **listening to t
 
 ## Display
 
-**Header** (y 0–15): Mode name (left), temporary messages (right, 2s timeout)  
+**Header** (y 0–15): Mode name (left), temporary messages (right, 2 s timeout). KEYMODE4 also keeps a **persistent left header** (the progression `V vi > I IV`) that transients overlay and then uncover again  
 **Main screen** (y 16–63):
 - Encoder grid 4×2: labels (top) + values (bottom)
-- Control button labels: row1 PREV NEXT M1 M2 M3, row2 M1 M2 M3 M4 (KEYMODE4 labels NEXT as **EMB** — the sticky EMB menu; ENCMODE labels row2 **F1–F4** — the CC-bank radio)
+- Control button labels: row1 PREV NEXT M1 M2 M3, row2 M1 M2 M3 M4 (KEYMODE4 labels NEXT as **EMB** — the sticky EMB menu; ENCMODE labels row2 **F1–F4** — the CC-bank radio, and ENC5–8 values show the live CC numbers per bank)
 
 Paged I2C write (1 page per `displayUpdate()` call, ~4 ms @ 400 kHz) to avoid blocking MIDI pump.
 
@@ -340,10 +342,10 @@ Paged I2C write (1 page per `displayUpdate()` call, ~4 ms @ 400 kHz) to avoid bl
 4. Select **Teensy 4.1**, **USB Type: MIDI**
 5. Compile & upload
 
-## Key Constants (Keyboard.h / Chords.h)
+## Key Constants (Keyboard.cpp / Chords.h / TouchChips.h)
 
 ```cpp
-// Keyboard
+// Keyboard (Keyboard.cpp)
 KEY_OCT_MIN  = -2
 KEY_OCT_MAX  = 8
 KEY_OCT_DEF  = 3      // C3 = 60
@@ -354,11 +356,15 @@ STEP_MAX     = 64     // 4 bars × 16 steps max per track
 CHORD_MAX    = 8      // notes per chord
 SEQ_CH_COUNT = 16     // sequences = MIDI channels 1..16
 
-// Chord Engine
+// Chord Engine (Chords.cpp / Chords.h)
 CHORD_VEL    = 100
 CHORD_N      = 8      // max simultaneous notes
 CHORD_ENC    = 4      // encoder counts per param step
 KEY_SCALE_COUNT = 39  // scale table size
+
+// Touch (TouchChips.h)
+TOUCH_THRESH = 50     // press threshold
+TOUCH_REL    = 30     // release threshold (hysteresis)
 
 // Sequencer (Keyboard.cpp)
 static uint8_t chStep[16]          // playhead per track (0..63)
@@ -381,6 +387,8 @@ loop() {
 
   pollSeqClock();        // Drain ticks queued during event handling
   displayUpdate();       // Paged OLED write (non-blocking)
+
+  // Serial commands: "recal" / "diag" (see Serial Diagnostics)
 }
 ```
 

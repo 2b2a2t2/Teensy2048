@@ -35,6 +35,10 @@ static uint8_t  sFocus = 0;      // write target, inside the pattern
 static uint64_t sLock = 0;       // step lock bits (apply skips them)
 static uint32_t sSeed = 0x9E3779B9u;
 static int8_t   sStepSel = -1;   // step held: drives the OCT/DEG/INV/VOICE row
+// undo slot already claimed for the current parameter-tweak burst (the
+// first knob count snapshots, so M3-hold still lands on the pre-tweak
+// pattern; later counts in the same burst keep that one slot)
+static bool     sRegenSnap = false;
 
 void   k4StepSelSet(int8_t step) { sStepSel = step; }
 int8_t k4StepSelGet() { return sStepSel; }
@@ -45,6 +49,8 @@ static bool     sBorrow[12];      // proposed but outside the framework
 static uint8_t  sQual[12];        // CHORD_Q_* of that proposal
 static uint8_t  sExtBits[12];     // CHORD_EXT_* of that proposal
 static uint8_t  sInv[12];         // bass index 0..3 (buildNotes param)
+static uint8_t  sSd[12];          // secondary dominant: resolution target
+                                  // degree 0..6, 255 = not an SD proposal
 
 // framework: the 7 pcs the progression moves between - the current scale
 // when it has exactly 7 notes, else major intervals from the current root
@@ -61,7 +67,9 @@ static uint8_t  sChainDeg = 0;
 static uint8_t  sChainBass = 0;
 static uint8_t  sChainRoot = 0;
 static uint8_t  sChainQ = CHORD_Q_MAJ;
-
+static uint8_t  sChainSd = 255;   // if the chained chord was a secondary
+                                  // dominant, its resolution target degree
+                                  // (0..6); 255 = the chain is not an SD
 // progression history for the header: the first chord (the chord played in
 // KEYMODE2 on entry, or the stored step before the focus) + every chord
 // picked on the keyboard, oldest dropped past K4_HIST
@@ -179,6 +187,43 @@ static uint8_t fwQuality(uint8_t d) {
   return CHORD_Q_MAJ;
 }
 
+// secondary-dominant target: a framework degree whose root sits a fifth
+// ABOVE a non-diminished, non-tonic degree functions as V/x (V/V, V/ii,
+// V/iii, V/IV, V/vi).  Returns the resolution target degree 0..6, or 255
+// when this degree is not an SD root (the primary V, diminished targets,
+// borrowed roots)
+static uint8_t sdTargetOfPc(uint8_t rootPc) {
+  if (!fwHas(rootPc)) return 255;
+  uint8_t t = (uint8_t)((fwDeg(rootPc) + 3) % 7);  // a fifth below the root
+  if (t == 0) return 255;                          // the primary V is not SD
+  if (fwQuality(t) == CHORD_Q_DIM) return 255;
+  return t;
+}
+
+// does this chord function as a secondary dominant (major triad + minor
+// seventh on a qualifying root)?  Returns the resolution target degree,
+// 255 = no.  Stored chords are detected from their tones
+static uint8_t sdTgtOfNotes(const uint8_t *nt, uint8_t n, uint8_t rootPc) {
+  if (n < 4) return 255;                       // a seventh needs 4 notes
+  if (!hasPc(nt, n, (uint8_t)((rootPc + 4) % 12))) return 255;   // M3
+  if (!hasPc(nt, n, (uint8_t)((rootPc + 10) % 12))) return 255;  // m7
+  return sdTargetOfPc(rootPc);
+}
+
+// pitch-class set of the triad on rootPc in quality q (voice-leading uses
+// the diatonic quality as an approximation - it only RANKS proposals,
+// deriveProposal still picks the real quality for the built chord)
+static uint8_t triadPcs(uint8_t rootPc, uint8_t q, uint8_t *out) {
+  uint8_t iv3 = 4, iv5 = 7;                    // MAJ default
+  if (q == CHORD_Q_MIN)      { iv3 = 3; iv5 = 7; }
+  else if (q == CHORD_Q_DIM) { iv3 = 3; iv5 = 6; }
+  else if (q == CHORD_Q_SUS) { iv3 = 5; iv5 = 7; }
+  out[0] = rootPc;
+  out[1] = (uint8_t)((rootPc + iv3) % 12);
+  out[2] = (uint8_t)((rootPc + iv5) % 12);
+  return 3;
+}
+
 // does this chord have a triad (or sus) on candidate root r?  Inversions
 // work because every tone of the built chord is tested, not the bass
 static bool rootTriadQ(const uint8_t *nt, uint8_t n, uint8_t r, uint8_t *q) {
@@ -225,15 +270,18 @@ uint8_t decodeChord(const uint8_t *nt, uint8_t n,
 
 // the chord BEFORE the focus, walked like the apply chain: locked and
 // empty steps are skipped.  Degree feeds the transition matrix, bass pc
-// feeds the VOICE-LEAD inversion choice; root/quality feed the header.
+// feeds the VOICE-LEAD inversion choice; root/quality feed the header;
+// *sd is the previous chord's secondary-dominant resolution target (255 =
+// not an SD) so scoring can pull toward what it resolves to.
 // Returns false when it defaulted to the tonic (no real first chord)
 static bool prevContext(uint8_t *deg, uint8_t *bass,
-                        uint8_t *root, uint8_t *q) {
+                        uint8_t *root, uint8_t *q, uint8_t *sd) {
   if (sChain) {                    // audition: follow the last chord heard
     *deg = sChainDeg;
     *bass = sChainBass;
     *root = sChainRoot;
     *q = sChainQ;
+    *sd = sChainSd;
     return true;
   }
   for (int s = (int)sFocus - 1; s >= 0; s--) {
@@ -241,13 +289,16 @@ static bool prevContext(uint8_t *deg, uint8_t *bass,
     const uint8_t *nt = stepChordAt((uint8_t)s, &n);
     if (k4Locked((uint8_t)s) || n == 0) continue;
     *bass = (uint8_t)(nt[0] % 12);
+    *root = 0;
     *deg = decodeChord(nt, n, root, q);
+    *sd = sdTgtOfNotes(nt, n, *root);
     return true;
   }
   *deg = 0;
   *bass = sFw[0];
   *root = sFw[0];
   *q = fwQuality(0);
+  *sd = 255;
   return false;
 }
 
@@ -255,12 +306,14 @@ static bool prevContext(uint8_t *deg, uint8_t *bass,
 // apply and undo all land here - the chain was cleared before us)
 static void histRebuild() {
   sHistN = 0;
-  uint8_t d, bass, r, q;
-  if (prevContext(&d, &bass, &r, &q)) histPush(r, q);
+  uint8_t d, bass, r, q, sd;
+  if (prevContext(&d, &bass, &r, &q, &sd)) histPush(r, q);
 }
 
 // ---------------------------------------------------------------------------
-// scoring: trans x MOTION x MOOD x CADENCE x SURP (all knobs 0..100)
+// scoring: trans x MOTION x MOOD x CADENCE x SURP (all knobs 0..100),
+// plus phrase/pair cadence terms, a voice-leading term and the
+// secondary-dominant resolution pull (all gated by the same knobs)
 // ---------------------------------------------------------------------------
 static bool barEnd(uint8_t pos) {
   int L = seqPatLen();
@@ -269,7 +322,16 @@ static bool barEnd(uint8_t pos) {
   return (pos % 16) >= 12 || pos == (uint8_t)(L - 1);
 }
 
-static uint32_t scorePc(uint8_t prev, uint8_t pc, uint8_t pos) {
+// the pattern's final bar = the phrase end: the cadence terms stack there
+// so generated progressions land (single-bar patterns: barEnd covers it)
+static bool phraseEnd(uint8_t pos) {
+  int L = seqPatLen();
+  if (L <= 16) return barEnd(pos);
+  return (int)pos >= L - 16;
+}
+
+static uint32_t scorePc(uint8_t prev, uint8_t pc, uint8_t pos,
+                        uint8_t prevRoot, uint8_t prevQ, uint8_t prevSd) {
   const GenreData *g = &genreTable[sGenre];
   bool in = fwHas(pc);
   uint8_t d = fwDeg(pc);
@@ -294,8 +356,64 @@ static uint32_t scorePc(uint8_t prev, uint8_t pc, uint8_t pos) {
   int32_t mf = 100 + (majDeg ? bias : -bias) / 2;
   s = (uint32_t)((int32_t)s * mf / 100);
 
-  if (barEnd(pos) && (d == 0 || d == 4)) {    // CADENCE: cadence points
-    s = s * (100u + (uint32_t)sKnob[3]) / 100u;
+  uint8_t cad = sKnob[3];                      // CADENCE (all layers below)
+  if (barEnd(pos) && (d == 0 || d == 4)) {     // cadence points: I / V
+    s = s * (100u + (uint32_t)cad) / 100u;
+  }
+  // recognized cadence PAIRS at bar ends: ii-V and V-I are the moves a
+  // cadence knob should hear (prev is the framework degree of the chord
+  // before the focus)
+  if (barEnd(pos)) {
+    if (prev == 1 && d == 4) s = s * (100u + (uint32_t)cad) / 100u;  // ii-V
+    if (prev == 4 && d == 0) s = s * (100u + (uint32_t)cad) / 100u;  // V-I
+  }
+  // phrase end (last bar of the pattern): the authentic cadence V-I lands
+  // with an extra layer, plagal IV-I gets a softer one - the term that
+  // makes generated progressions feel shaped rather than walked
+  if (phraseEnd(pos)) {
+    if (prev == 4 && d == 0)
+      s = s * (100u + (uint32_t)cad / 2u) / 100u;    // authentic, lands
+    else if (prev == 3 && d == 0)
+      s = s * (100u + (uint32_t)cad / 4u) / 100u;    // plagal, softer
+  }
+
+  // secondary-dominant resolution: the previous chord was a V/x - its
+  // target degree gets pulled (scaled by SURP, the knob that opened the
+  // SD class in deriveProposal), so V/V really leads to V
+  if (prevSd != 255 && d == prevSd)
+    s = s * (100u + (uint32_t)sKnob[6] / 2u) / 100u;
+
+  // voice leading: reward common tones and stepwise motion between the
+  // previous chord's triad and the candidate's diatonic triad, penalize
+  // parallel fifths/octaves (roots a fifth/fourth or octave apart while
+  // both triads carry a perfect fifth).  Fixed conservative weight - the
+  // genre transition tables stay dominant
+  {
+    uint8_t pt[3], ct[3];
+    triadPcs(prevRoot, prevQ, pt);
+    triadPcs(pc, fwQuality(d), ct);
+    uint8_t common = 0;
+    for (uint8_t i = 0; i < 3; i++)
+      for (uint8_t j = 0; j < 3; j++)
+        if (pt[i] == ct[j]) { common++; break; }
+    if (common) s = s * (100u + (uint32_t)common * 15u) / 100u;
+    uint8_t sum = 0;                       // stepwise motion: pair each
+    for (uint8_t i = 0; i < 3; i++) {      // candidate tone to its nearest
+      uint8_t best = 6;                    // previous tone (ties re-use)
+      for (uint8_t j = 0; j < 3; j++) {
+        uint8_t dd = (uint8_t)circDist(ct[i], pt[j]);
+        if (dd < best) best = dd;
+      }
+      sum += best;
+    }
+    if (sum < 6) s = s * (100u + (uint32_t)(6 - sum) * 4u) / 100u;
+    // root motion: circDist folds 7 (P5) to 5 (P4) - roots a fifth or
+    // fourth apart while both triads carry a perfect fifth = the fifths
+    // travel in parallel (same root = stationary, no parallels)
+    uint8_t rm = (uint8_t)circDist(prevRoot, pc);
+    bool p5a = (prevQ == CHORD_Q_MAJ || prevQ == CHORD_Q_MIN);
+    bool p5b = (fwQuality(d) == CHORD_Q_MAJ || fwQuality(d) == CHORD_Q_MIN);
+    if (p5a && p5b && rm == 5) s = s * 80u / 100u;
   }
 
   uint8_t sp = sKnob[6];                      // SURP: seeded temperature
@@ -311,16 +429,31 @@ static uint32_t scorePc(uint8_t prev, uint8_t pc, uint8_t pos) {
 
 // ---------------------------------------------------------------------------
 // proposal derivation: quality bucket (CPX x genre table), extension,
-// inversion (ERA x genre table, or VOICE-LEAD's minimal movement)
+// inversion (ERA x genre table, or VOICE-LEAD's minimal movement),
+// secondary-dominant class (SURP-gated roll: forced MAJ + m7 on a V/x
+// degree, *oSD = the degree it resolves to, 255 = plain proposal)
 // step = 255 for global (proposals), 0..63 for per-step override (apply)
 // ---------------------------------------------------------------------------
 static void deriveProposal(uint8_t prev, uint8_t pc, uint8_t prevBass,
                            uint8_t *oQ, uint8_t *oExt, uint8_t *oInv,
-                           uint8_t step) {
+                           uint8_t step, uint8_t *oSD) {
   const GenreData *g = &genreTable[sGenre];
   bool in = fwHas(pc);
   uint8_t d = fwDeg(pc);
   uint8_t cpx = sKnob[4], era = sKnob[5];
+
+  // secondary dominant: one extra proposal class (V/V, V/ii, V/iii,
+  // V/IV, V/vi).  The roll hashes ONLY (seed, prev, pc) - never step -
+  // so ranking and apply always derive the same quality; F1 reseeds and
+  // reshuffles the class.  SURP = chance: 0 = never, 100 = 30%
+  uint8_t sd = 255;
+  uint8_t sdTgt = in ? sdTargetOfPc(pc) : 255;
+  if (sdTgt != 255) {
+    uint32_t hs = hash32(sSeed ^ ((uint32_t)prev << 8) ^ ((uint32_t)pc << 16) ^
+                         0x5Eu);
+    if ((hs % 100u) < (uint32_t)((uint16_t)sKnob[6] * 30u / 100u)) sd = sdTgt;
+  }
+  if (oSD) *oSD = sd;
 
   // Per-step embellishment overrides (255 = use global)
   uint8_t colorP = (step < 64) ? stepEmbGet(step, 3) : 255;
@@ -338,27 +471,34 @@ static void deriveProposal(uint8_t prev, uint8_t pc, uint8_t prevBass,
   uint8_t bucket = pick4(wq, h);
 
   uint8_t q;
-  if (bucket == 3) {
+  uint8_t ext = 0;
+  if (sd != 255) {
+    // the V/x class: a dominant seventh - major triad + minor seventh,
+    // whatever the genre quality table would say for this degree
+    q = CHORD_Q_MAJ;
+    ext = CHORD_EXT_m7;
+  } else if (bucket == 3) {
     // sus probability gated by color amount
     uint32_t hs = hash32(sSeed ^ (prev * 0x12345678u) ^ (pc * 0x9ABCDEFu) ^ 0xF1u);
     q = (hs % 100u) < (uint32_t)colorP ? CHORD_Q_SUS : fwQuality(d);
   } else if (in) q = fwQuality(d);
   else q = (sKnob[0] >= 50) ? CHORD_Q_MAJ : CHORD_Q_MIN;   // borrowed: MOOD
 
-  uint8_t ext = 0;
-  if (bucket == 1) {
-    ext = (q == CHORD_Q_MIN || q == CHORD_Q_DIM) ? CHORD_EXT_m7
-                                                 : CHORD_EXT_M7;
-    // 9th probability gated by color amount
-    uint32_t h9 = hash32(sSeed ^ (prev * 0x11111111u) ^ (pc * 0x22222222u) ^ 0x33u);
-    if ((h9 % 100u) < (uint32_t)colorP) ext |= CHORD_EXT_9;
-  } else if (bucket == 2) {
-    ext = (q == CHORD_Q_DIM) ? (CHORD_EXT_m7 | CHORD_EXT_9) : CHORD_EXT_9;
-    // 11th/13th probability gated by color amount
-    uint32_t h11 = hash32(sSeed ^ (prev * 0x44444444u) ^ (pc * 0x55555555u) ^ 0x66u);
-    if ((h11 % 100u) < (uint32_t)colorP) ext |= CHORD_EXT_11;
-    uint32_t h13 = hash32(sSeed ^ (prev * 0x77777777u) ^ (pc * 0x88888888u) ^ 0x99u);
-    if ((h13 % 100u) < (uint32_t)colorP) ext |= CHORD_EXT_13;
+  if (sd == 255) {
+    if (bucket == 1) {
+      ext = (q == CHORD_Q_MIN || q == CHORD_Q_DIM) ? CHORD_EXT_m7
+                                                   : CHORD_EXT_M7;
+      // 9th probability gated by color amount
+      uint32_t h9 = hash32(sSeed ^ (prev * 0x11111111u) ^ (pc * 0x22222222u) ^ 0x33u);
+      if ((h9 % 100u) < (uint32_t)colorP) ext |= CHORD_EXT_9;
+    } else if (bucket == 2) {
+      ext = (q == CHORD_Q_DIM) ? (CHORD_EXT_m7 | CHORD_EXT_9) : CHORD_EXT_9;
+      // 11th/13th probability gated by color amount
+      uint32_t h11 = hash32(sSeed ^ (prev * 0x44444444u) ^ (pc * 0x55555555u) ^ 0x66u);
+      if ((h11 % 100u) < (uint32_t)colorP) ext |= CHORD_EXT_11;
+      uint32_t h13 = hash32(sSeed ^ (prev * 0x77777777u) ^ (pc * 0x88888888u) ^ 0x99u);
+      if ((h13 % 100u) < (uint32_t)colorP) ext |= CHORD_EXT_13;
+    }
   }
 
   uint8_t inv;
@@ -373,7 +513,8 @@ static void deriveProposal(uint8_t prev, uint8_t pc, uint8_t prevBass,
     };
     uint8_t row = (q == CHORD_Q_MAJ) ? 0 : (q == CHORD_Q_MIN) ? 1
                : (q == CHORD_Q_DIM) ? 2 : 3;
-    uint8_t tones = (bucket == 2) ? 5 : (bucket == 1) ? 4 : 3;
+    uint8_t tones = (sd != 255) ? 4          // SD is always a 7th chord
+                   : (bucket == 2) ? 5 : (bucket == 1) ? 4 : 3;
     int bestD = 99;
     inv = 0;
     for (uint8_t k = 0; k < 4 && k < tones; k++) {
@@ -401,11 +542,12 @@ static void deriveProposal(uint8_t prev, uint8_t pc, uint8_t prevBass,
 }
 
 // weighted pick of the next root pc during generation (0xFF = nobody)
-static uint8_t pickPc(uint8_t prev, uint8_t pos) {
+static uint8_t pickPc(uint8_t prev, uint8_t pos, uint8_t prevRoot,
+                      uint8_t prevQ, uint8_t prevSd) {
   uint32_t sc[12];
   uint32_t total = 0;
   for (uint8_t pc = 0; pc < 12; pc++) {
-    sc[pc] = scorePc(prev, pc, pos);
+    sc[pc] = scorePc(prev, pc, pos, prevRoot, prevQ, prevSd);
     total += sc[pc];
   }
   if (total == 0) return 0xFF;
@@ -424,14 +566,14 @@ static uint8_t pickPc(uint8_t prev, uint8_t pos) {
 // ---------------------------------------------------------------------------
 void k4Refresh() {
   buildFw();
-  uint8_t prev, bass, r0, q0;
-  prevContext(&prev, &bass, &r0, &q0);
+  uint8_t prev, bass, r0, q0, sd0;
+  prevContext(&prev, &bass, &r0, &q0, &sd0);
 
   uint32_t sc[12];
   uint8_t order[12];
   uint8_t n = 0;
   for (uint8_t pc = 0; pc < 12; pc++) {
-    sc[pc] = scorePc(prev, pc, sFocus);
+    sc[pc] = scorePc(prev, pc, sFocus, r0, q0, sd0);
     sBorrow[pc] = !fwHas(pc);
     if (sc[pc] > 0) order[n++] = pc;
   }
@@ -444,14 +586,15 @@ void k4Refresh() {
     }
     order[j + 1] = key;
   }
-  for (uint8_t pc = 0; pc < 12; pc++) sRank[pc] = -1;
+  for (uint8_t pc = 0; pc < 12; pc++) { sRank[pc] = -1; sSd[pc] = 255; }
   // every scored pitch class gets its rank - the whole degree set sits on
   // the keyboard, brightness carries the probability (rank 0 hottest); the
   // header only spells out the top K4_PROPOSE
   for (uint8_t i = 0; i < n; i++) {
     uint8_t pc = order[i];
     sRank[pc] = (int8_t)i;
-    deriveProposal(prev, pc, bass, &sQual[pc], &sExtBits[pc], &sInv[pc], 255);
+    deriveProposal(prev, pc, bass, &sQual[pc], &sExtBits[pc], &sInv[pc],
+                   255, &sSd[pc]);
   }
 }
 
@@ -638,6 +781,7 @@ int k4KeyOn(uint8_t kidx) {
     if (n) {
       sChainDeg = decodeChord(nt, n, &sChainRoot, &sChainQ);
       sChainBass = (uint8_t)(nt[0] % 12);
+      sChainSd = sSd[kidx];       // the proposal's SD target, if it was one
       sChain = true;
       histPush(sChainRoot, sChainQ);   // the walk the header shows
     }
@@ -674,6 +818,7 @@ int k4KeyCommitted() {
   uint8_t n = chordCount();
   if (n == 0) return -1;
   stepSnapshotTake();                       // undo remembers this gesture
+  sRegenSnap = false;                       // ...and ends any tweak burst
   if (stepChordWrite(sFocus, nt, n) < 0) return -1;
   if (sAuto) focusAdvance();
   k4Refresh();
@@ -688,14 +833,16 @@ int k4KeyCommitted() {
 // bVII->V (degree space; the swap lands on that degree's pitch class)
 static const uint8_t subSw[7] = {2, 3, 0, 1, 6, 3, 4};
 
-int k4ApplyAll() {
+static int k4ApplyBody() {
   int L = seqPatLen();
   if (L <= 0) return 0;
-  stepSnapshotTake();
   sChain = false;                         // the pattern itself is the context
   buildFw();
   uint8_t prev = 0;                       // start: the tonic
   uint8_t prevBass = sFw[0];
+  uint8_t prevRoot = sFw[0];              // voice-leading context
+  uint8_t prevQ = fwQuality(0);
+  uint8_t prevSd = 255;                   // no secondary dominant yet
   int written = 0;
   // phase A: the main progression on every unlocked step (odd steps too -
   // they keep this main chord when the passing rule declines it)
@@ -714,7 +861,7 @@ int k4ApplyAll() {
       }
       continue;
     }
-    uint8_t pc = pickPc(prev, st);
+    uint8_t pc = pickPc(prev, st, prevRoot, prevQ, prevSd);
     if (pc > 11) continue;
     if (sEmbMode == 2 && fwHas(pc)) {      // PASS+SUB: swap the degree,
       uint32_t h = hash32(sSeed ^ ((uint32_t)st << 8) ^     // rolled once
@@ -723,8 +870,8 @@ int k4ApplyAll() {
       if (subP == 255) subP = k4EmbSubProb();
       if ((h % 100u) < (uint32_t)subP) pc = sFw[subSw[fwDeg(pc)]];
     }
-    uint8_t q, ext, inv;
-    deriveProposal(prev, pc, prevBass, &q, &ext, &inv, st);
+    uint8_t q, ext, inv, sd;
+    deriveProposal(prev, pc, prevBass, &q, &ext, &inv, st, &sd);
     uint8_t root = (uint8_t)(12 * keyOctave() + 24 + pc);
     uint8_t notes[8];
     uint8_t n = chordBuild(root, q, ext, inv, notes);
@@ -736,6 +883,9 @@ int k4ApplyAll() {
     mOk[st] = true;
     prev = mDeg[st];
     prevBass = mBass[st];
+    prevRoot = pc;                        // the next step hears this chord
+    prevQ = q;
+    prevSd = sd;
   }
   // phase B (PASS/P+S): the odd steps become passing chords - a triad on
   // the scale degree one below the FOLLOWING main chord, quality and
@@ -756,7 +906,8 @@ int k4ApplyAll() {
       uint32_t h = hash32(sSeed ^ ((uint32_t)st << 8) ^ 0xE4u);
       if ((h % 100u) >= (uint32_t)passP) continue;
       uint8_t q, ext, inv;
-      deriveProposal(mDeg[pr], sFw[passD], mBass[pr], &q, &ext, &inv, st);
+      deriveProposal(mDeg[pr], sFw[passD], mBass[pr], &q, &ext, &inv, st,
+                     0);
       uint8_t root = (uint8_t)(12 * keyOctave() + 24 + sFw[passD]);
       uint8_t notes[8];
       uint8_t n = chordBuild(root, q, ext, inv, notes);
@@ -770,6 +921,24 @@ int k4ApplyAll() {
   return written;
 }
 
+int k4ApplyAll() {
+  stepSnapshotTake();
+  sRegenSnap = false;
+  return k4ApplyBody();
+}
+
+// live re-apply while a GENRE/knob turn changes the parameters: same walk
+// as M3, but the undo slot is claimed only once per tweak burst - the
+// first count after any other gesture snapshots, so M3-hold still lands
+// on the pre-tweak progression.  Locked steps are never touched
+int k4Regenerate() {
+  if (!sRegenSnap) {
+    stepSnapshotTake();
+    sRegenSnap = true;
+  }
+  return k4ApplyBody();
+}
+
 int k4Variation() {
   sSeed = hash32(sSeed ^ (uint32_t)millis() ^ 0xB5297A4Du);
   if (sSeed == 0) sSeed = 0x9E3779B9u;
@@ -778,6 +947,7 @@ int k4Variation() {
 
 int k4Undo() {
   if (stepSnapshotRestore() < 0) return -1;
+  sRegenSnap = false;               // the next tweak claims a fresh slot
   sChain = false;
   histRebuild();
   k4Refresh();
@@ -787,6 +957,7 @@ int k4Undo() {
 void k4Stop() {
   chordKey4Clear();
   sChain = false;
+  sChainSd = 255;
   sHistN = 0;
   sHold = false;
   sEmbMenu = false;            // the EMB row never outlives KEYMODE4
@@ -803,6 +974,7 @@ void k4Stop() {
 // G#Dim").  No held chord: re-anchor on the stored step before the focus
 void k4Enter() {
   sChain = false;
+  sChainSd = 255;
   if (chordCount() > 0) {
     const uint8_t *nt = chordNotes();
     uint8_t r, q;
@@ -811,6 +983,7 @@ void k4Enter() {
     sChainBass = (uint8_t)(nt[0] % 12);
     sChainRoot = r;
     sChainQ = q;
+    sChainSd = sdTgtOfNotes(nt, chordCount(), r);   // V/x seeds the pull
     sChain = true;
     sHistN = 0;
     histPush(r, q);
@@ -897,13 +1070,15 @@ static int annAppend(char *buf, int off, size_t cap, const char *s) {
   return off;
 }
 
-// the header's progression: focus, the walk so far (first chord = the
-// KEYMODE2 chord on entry / the stored step before the focus), then the
-// proposals the lit keys offer - "f3 V vi > I IV".  It STAYS in the
+// the header's progression: the walk so far (first chord = the KEYMODE2
+// chord on entry / the stored step before the focus), then the proposals
+// the lit keys offer - "V vi > I IV".  The focused step itself needs no
+// header prefix: the sequencer pads already mark it.  It STAYS in the
 // header (persistent slot); only transient messages overlay it
 void k4Announce() {
   char buf[24];
-  int off = snprintf(buf, sizeof(buf), "f%u", (unsigned)(sFocus + 1));
+  int off = 0;
+  buf[0] = '\0';
   for (uint8_t i = 0; i < sHistN; i++) {
     char sym[8], piece[10];
     numeral(sHistRoot[i], sHistQ[i], sym, sizeof(sym));

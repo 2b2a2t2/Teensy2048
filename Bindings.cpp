@@ -26,21 +26,25 @@ static const ModeBinding table[3][4] = {
   },
 };
 
-// placeholder encoder names — edit rows to real function names
+// encoder legend rows: the DEFAULT (idle) bindings of each set - overlays
+// repaint over them when they take the row (arp/gen pages, step-edit radio,
+// CC banks, held-step rows).  "--" = no idle binding (the knob only comes
+// alive under its page/radio, e.g. SEQ ENC2-4 = the M2 page knobs, ENC7 =
+// the POLY FX/TYPE dial)
 static const char* encLabels[ENC_SET_COUNT][8] = {
-  /* ENC_SEQ          */ { "OCT", "SQ2", "SQ3", "SQ4", "SQ5", "SQ6", "SQ7", "SQ8" },
-  /* ENC_SEQ2         */ { "OCT", "S22", "S23", "S24", "S25", "S26", "S27", "S28" },
+  /* ENC_SEQ          */ { "OCT", "--", "--", "--", "GATE", "VEL", "--", "PROB" },
+  /* ENC_SEQ2         */ { "OCT", "--", "--", "--", "GATE", "VEL", "--", "PROB" },
   /* ENC_SEQ3         */ { "OCT", "LEN", "FOLLOW", "SPEED", "INCH", "TRACK", "TYPE", "BPM" },
-  /* ENC_SEQ4         */ { "OCT", "S42", "S43", "S44", "S45", "S46", "S47", "S48" },
+  /* ENC_SEQ4         */ { "OCT", "--", "--", "--", "GATE", "VEL", "--", "PROB" },
   /* ENC_ENC          */ { "CC17", "CC18", "CC19", "CC20", "CC1", "CC2", "CC3", "CC4" },
   /* ENC_ENC2         */ { "CC17", "CC18", "CC19", "CC20", "CC1", "CC2", "CC3", "CC4" },
   /* ENC_ENC3         */ { "CC17", "CC18", "CC19", "CC20", "CC1", "CC2", "CC3", "CC4" },
   /* ENC_ENC4         */ { "CC17", "CC18", "CC19", "CC20", "CC1", "CC2", "CC3", "CC4" },
-  /* ENC_KEY          */ { "OCT", "SCALE", "KEY", "KY4", "KY5", "KY6", "KY7", "KY8" },
+  /* ENC_KEY          */ { "OCT", "SCALE", "KEY", "--", "--", "--", "--", "--" },
   /* ENC_KEY2         */ { "OCT", "SCALE", "KEY", "FSCALE", "BASS", "SPRD", "DENS", "LATCH" },
-  /* ENC_KEY3         */ { "OCT", "SCALE", "K33", "K34", "K35", "K36", "K37", "K38" },
+  /* ENC_KEY3         */ { "OCT", "SCALE", "--", "--", "--", "--", "--", "--" },
   /* ENC_KEY4         */ { "GENRE", "MOOD", "TENS", "MOTION", "CAD", "CPX", "ERA", "SURP" },
-  /* ENC_SEQ_STEP_HELD*/ { "HD1", "HD2", "HD3", "HD4", "HD5", "HD6", "HD7", "HD8" },
+  /* ENC_SEQ_STEP_HELD*/ { "--", "--", "--", "--", "--", "--", "--", "--" },  // set not wired yet
   /* ENC_SEQ_GNR8_OV  */ { "ROT", "--", "--", "--", "--", "--", "--", "--" },
   /* ENC_KEY2_PREV    */ { "OCT", "SCALE", "KEY", "LATCH", "KLOCK", "PERF", "--", "--" },
   /* ENC_KEY4_PREV    */ { "OCT", "SCALE", "KEY", "FSCALE", "SUB", "INV", "PAS", "COL" },

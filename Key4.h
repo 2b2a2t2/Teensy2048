@@ -100,6 +100,7 @@ void k4GestureEnd();            // last key up / mode exit
 int  k4KeyCommitted();          // after press: write focus + advance
                                  // 0 = written, 1 = audition only, -1 = blocked
 int  k4ApplyAll();              // M3 tap: generate every unlocked step
+int  k4Regenerate();            // GENRE/knob turn: re-generate live (burst undo)
 int  k4Variation();             // F1: reseed, then generate
 int  k4Undo();                  // M3 hold: restore the last snapshot
 void k4Stop();                  // leaving KEYMODE4

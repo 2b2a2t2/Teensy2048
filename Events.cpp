@@ -624,14 +624,19 @@ void handleButtonEvents() {
       } else if (ev == EV_CLICKED && stepEditCtx()) {
         // SEQMODE + MONO: CLICK on M1 cycles the edit radio - OFF -> ON
         // (STEPS target), ON+STEPS -> OFF, ON+attribute -> back to STEPS.
-        // Turning it ON closes the M2 GNR8 page first - the two keys are
-        // mutually exclusive (the page's own toggle does the reverse)
-        bool droppedGen = false;
+        // Turning it ON closes the M2 GNR8/ARP page first - the keys are
+        // one radio (each page's own toggle does the reverse)
+        bool droppedPage = false;
         if (!stepEditOn) {
           if (genPageActive()) {      // M1 wins: the GNR8 page leaves
             genPageDismiss();
-            droppedGen = true;
+            droppedPage = true;
             if (logRoom(48)) Serial.println("  gen page off (edit on)");
+          }
+          if (arpPageActive()) {      // ...and so does the ARP page
+            arpPageDismiss();
+            droppedPage = true;
+            if (logRoom(48)) Serial.println("  arp page off (edit on)");
           }
           stepEditSet(true, 0);
           headerShow("EDIT ON");
@@ -646,7 +651,7 @@ void handleButtonEvents() {
           if (logRoom(48)) Serial.println("  step edit off");
         }
         refreshAllLeds();
-        if (droppedGen) refreshMainScreen();   // the encoder row changes
+        if (droppedPage) refreshMainScreen();   // the encoder row changes
       } else if (ev == EV_CLICKED && stepEditAccCtx()) {
         // SEQMODE + DRUM/POLY: a QUICK tap of M1 toggles the edit master only
         // (a HOLD still opens the part select - hold suppresses the click)
@@ -770,7 +775,15 @@ void handleButtonEvents() {
         kl >= groupControls[5] && kl <= groupControls[8]) {
       uint8_t idx = (uint8_t)(kl - groupControls[5]);      // 0..3
       static const char *const tn[4] = { "TIE", "GLIDE", "ACCENT", "PROB" };
+      bool droppedArp = false;
       if (stepEditCtx()) {
+        // arming a target wins over the M2 ARP page (the radio is one
+        // group - same exclusivity the GNR8 page has with its F row)
+        if (arpPageActive()) {
+          arpPageDismiss();
+          droppedArp = true;
+          if (logRoom(48)) Serial.println("  arp page off (edit target)");
+        }
         stepEditSet(true, (uint8_t)(idx + 1));
         headerShow(tn[idx]);
         if (logRoom(48)) {
@@ -831,6 +844,7 @@ void handleButtonEvents() {
         }
       }
       refreshAllLeds();
+      if (droppedArp) refreshMainScreen();  // the encoder row changes
     }
 
     // M3 in ENCMODE: toggles the page group of the ENC5..8 banks (off =
@@ -908,8 +922,18 @@ void handleButtonEvents() {
         refreshAllLeds();
         refreshMainScreen();
       } else if (ev == EV_CLICKED && arpTrackCtx()) {
-        // SEQMODE 1/2/4 + MONO/ARP: M2 clicks the ARP encoder page on/off
+        // SEQMODE 1/2/4 + MONO/ARP: M2 clicks the ARP encoder page on/off.
+        // Opening it drops the M1 edit radio - the two keys are mutually
+        // exclusive (M1's toggle closes this page instead)
         arpPageToggle();
+        if (arpPageActive()) {
+          if (stepEditIsOn()) {
+            stepEditSet(false, 0);
+            if (logRoom(48)) Serial.println("  edit off (arp open)");
+          }
+        } else {
+          stepChainDisarm();           // the F row leaves too
+        }
         headerShow(arpPageActive() ? "ARP" : "ARP OFF");
         if (logRoom(48)) {
           Serial.print("  arp page ");
@@ -1445,7 +1469,11 @@ void handleEncoderEvents() {
 
     // KEYMODE4: the main context row = ENC1 GENRE (1 count = 1 genre,
     // wraps), ENC2..ENC8 = MOOD/TENS/MOTION/CAD/CPX/ERA/SURP (1 count =
-    // 1 unit, clamped 0..100).  Every change re-ranks the proposals
+    // 1 unit, clamped 0..100).  Every change re-ranks the proposals AND
+    // re-generates every unlocked step live, so the progression playing
+    // in the sequencer follows the knobs in real time (locked steps are
+    // never touched; the first count of a tweak burst claims the undo
+    // slot, so M3-hold restores the pre-tweak progression)
     if (modeBase == MODE_KEY && modeVariant == 4 && ed != 0 &&
         currentBinding().enc == ENC_KEY4) {
       if (ei == 0) {
@@ -1463,6 +1491,7 @@ void handleEncoderEvents() {
           Serial.println(k4Knob((uint8_t)(ei - 1)));
         }
       }
+      k4Regenerate();       // the written progression follows the knobs
       refreshAllLeds();   // the keyboard repaints the re-ranked proposals
       k4Announce();       // ...and the header names them (I V vi IV)
       any = true;

@@ -202,7 +202,7 @@ void refreshMainScreen() {
     if (genOv) {
       // rotate row: ENC1 = the rotation position, the rest stay idle
       if (c == 0) snprintf(val, sizeof(val), "%u", seqGenShiftPos() + 1);
-      else snprintf(val, sizeof(val), "---");
+      else snprintf(val, sizeof(val), "");
     } else if (gSub == 0) {
       // F1 full options page: ENC1 TONES, ENC2 RANGE, ENC3 LOW, ENC4 ALGO
       if (c == 0) {
@@ -231,19 +231,19 @@ void refreshMainScreen() {
           }
         } else if (c == 2) {
           snprintf(val, sizeof(val), "%s", seqMapName(seqMap()));
-        } else snprintf(val, sizeof(val), "---");
+        } else snprintf(val, sizeof(val), "");
       } else if (gSub == 2) {
         if (c == 2) {
           if (ss < 0) snprintf(val, sizeof(val), "pick");
           else if (stepBrwAt((uint8_t)ss) == 0)
             snprintf(val, sizeof(val), "off");
           else snprintf(val, sizeof(val), "%u", stepBrwAt((uint8_t)ss));
-        } else snprintf(val, sizeof(val), "---");
+        } else snprintf(val, sizeof(val), "");
       } else {
         if (c == 3) {
           if (ss < 0) snprintf(val, sizeof(val), "pick");
           else snprintf(val, sizeof(val), "%u%%", stepModPAt((uint8_t)ss));
-        } else snprintf(val, sizeof(val), "---");
+        } else snprintf(val, sizeof(val), "");
       }
     } else if (modeBase == MODE_SEQ && c == 0) {
       snprintf(val, sizeof(val), "%d", seqOctaveShift()); // ENC1 = octave shift
@@ -293,7 +293,7 @@ void refreshMainScreen() {
     } else if (key4Emb && c == 1) {
       snprintf(val, sizeof(val), "%s", k4EmbPlaceName()); // ENC2 = PLACE
     } else if (key4Emb) {
-      snprintf(val, sizeof(val), "---");                   // ENC3/4 idle
+      snprintf(val, sizeof(val), "");                   // ENC3/4 idle
     } else if (key4Step) {
       // held-step values: the step's own OCT / degree / inversion / spread
       int8_t ss = k4StepSelGet();
@@ -302,7 +302,7 @@ void refreshMainScreen() {
                   k4StepLabels((uint8_t)ss, dgs, sizeof(dgs),
                                ivs, sizeof(ivs)));
       if (!has) {
-        snprintf(val, sizeof(val), "---");                 // no step / empty
+        snprintf(val, sizeof(val), "");                 // no step / empty
       } else if (c == 0) {
         int ov = stepOctAt((uint8_t)ss);                   // ENC1 = octave
         if (ov == 0) snprintf(val, sizeof(val), "0");
@@ -338,12 +338,14 @@ void refreshMainScreen() {
       snprintf(val, sizeof(val), "%s", chordFScale() ? "ON" : "OFF"); // ENC4
     } else if (modeBase == MODE_ENC) {
       snprintf(val, sizeof(val), "%u", encCcValue(c));       // CC value
+    } else if (l1[0] == '-' && l1[1] == '-') {
+      snprintf(val, sizeof(val), "");      // "--" legend: no position noise
     } else {
       snprintf(val, sizeof(val), "%ld", encPosition(c));
     }
     u8g2.drawStr(x, 30, val);
     // row-2 labels follow the step-edit bindings while the radio is on
-    // (the raw SQ5/SQ6/SQ8 set names would contradict the values)
+    // (the idle default row would contradict the live values)
     const char* l2 = encLabel(b.enc, 4 + c);
     if (seqGe) {
       static const char* sl[4] = { "GATE", "VEL", "---", "PROB" };
@@ -369,9 +371,9 @@ void refreshMainScreen() {
     if (gSub != 0xFF) l2 = "---";            // option sub-page: row 2 idle
     u8g2.drawStr(x, 38, l2);
     if (genOv) {
-      snprintf(val, sizeof(val), "---");              // rotate row idle
+      snprintf(val, sizeof(val), "");              // rotate row idle
     } else if (gSub != 0xFF) {
-      snprintf(val, sizeof(val), "---");        // option sub-page: idle
+      snprintf(val, sizeof(val), "");        // option sub-page: idle
     } else if (c == 1 && f3AccentActive()) {
       snprintf(val, sizeof(val), "%d", seqAccentVelocity()); // ENC6 = acc vel
     } else if (arpP && 4 + c == 6) {
@@ -394,13 +396,13 @@ void refreshMainScreen() {
     } else if (seqGe && 4 + c == 5) {
       snprintf(val, sizeof(val), "%d", seqVelocity());      // ENC6 = vel
     } else if (seqGe && 4 + c == 6) {
-      snprintf(val, sizeof(val), "---");                    // ENC7 = free
+      snprintf(val, sizeof(val), "");                    // ENC7 = free
     } else if (seqGe && 4 + c == 7) {
       snprintf(val, sizeof(val), "%d%%", seqProbPct());  // ENC8 = track probability
     } else if (seqDrumGe && 4 + c == 4) {
-      snprintf(val, sizeof(val), "---");                    // ENC5 free
+      snprintf(val, sizeof(val), "");                    // ENC5 free
     } else if (seqDrumGe && 4 + c == 5) {
-      snprintf(val, sizeof(val), "---");                    // ENC6 free
+      snprintf(val, sizeof(val), "");                    // ENC6 free
     } else if (seqDrumGe && 4 + c == 6) {
       if (stepEditSel() == 7) {
         // EMB target: show SUB/INV/PAS/COL for focused step
@@ -412,7 +414,7 @@ void refreshMainScreen() {
       } else {
         snprintf(val, sizeof(val), "%s",
                  stepEditSel() == 5 ? stepFxSelName()
-                 : stepEditSel() == 6 ? stepTypeArmName() : "---"); // ENC7
+                 : stepEditSel() == 6 ? stepTypeArmName() : ""); // ENC7
       }
     } else if (seqDrumGe && 4 + c == 7) {
       snprintf(val, sizeof(val), "%d%%", seqProbPct());  // ENC8 = track probability
@@ -425,7 +427,7 @@ void refreshMainScreen() {
     } else if (key4 && 4 + c == 7) {
       snprintf(val, sizeof(val), "%u", k4Knob(6));          // SURP
     } else if (key4Ov || key4Emb) {
-      snprintf(val, sizeof(val), "---");          // overlay row 2 idle
+      snprintf(val, sizeof(val), "");          // overlay row 2 idle
     } else if (keyOv && 4 + c == 4) {
       snprintf(val, sizeof(val), "%s", chordKeyLock() ? "ON" : "OFF");
     } else if (keyOv && 4 + c == 5) {
@@ -440,6 +442,8 @@ void refreshMainScreen() {
       snprintf(val, sizeof(val), "%s", chordLatch() ? "ON" : "OFF"); // ENC8
     } else if (modeBase == MODE_ENC) {
       snprintf(val, sizeof(val), "%u", encCcValue(4 + c)); // CC value
+    } else if (l2[0] == '-' && l2[1] == '-') {
+      snprintf(val, sizeof(val), "");      // "--" legend: no position noise
     } else {
       snprintf(val, sizeof(val), "%ld", encPosition(4 + c));
     }
