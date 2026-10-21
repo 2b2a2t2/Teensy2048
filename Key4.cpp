@@ -274,6 +274,20 @@ uint8_t decodeChord(const uint8_t *nt, uint8_t n,
   return fwDeg((uint8_t)(nt[0] % 12));
 }
 
+// LIVE follow (playback, Keyboard.cpp): one feeder note that actually
+// PLAYED - post-probability, post-fold/arp-walk - becomes the plain
+// root-position triad of its nearest scale degree, in the same register
+// the bake writes.  An out-of-scale note snaps to the nearest in-scale
+// degree's chord (FScale philosophy); the diatonic quality is the degree's
+// own (same voicing k4HarmBody bakes), so live chords match stored ones
+uint8_t k4HarmLiveChord(uint8_t note, uint8_t *out) {
+  buildFw();
+  uint8_t rootPc = 0, q = CHORD_Q_MAJ;
+  uint8_t deg = decodeChord(&note, 1, &rootPc, &q);
+  uint8_t root = (uint8_t)(12 * keyOctave() + 24 + sFw[deg]);
+  return chordBuild(root, q, 0, 0, out);   // plain triad, root pos
+}
+
 // the chord BEFORE the focus, walked like the apply chain: locked and
 // empty steps are skipped.  Degree feeds the transition matrix, bass pc
 // feeds the VOICE-LEAD inversion choice; root/quality feed the header;

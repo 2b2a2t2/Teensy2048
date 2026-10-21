@@ -205,7 +205,7 @@ void refreshMainScreen() {
       l1 = ll[c];
     }
     if (harmP) {
-      static const char *hl[4] = { "GENRE", "SRC", "HOLD", "---" };
+      static const char *hl[4] = { "GENRE", "FILL", "SRC", "HOLD" };
       l1 = hl[c];
     }
     if (key4Emb) {
@@ -297,9 +297,12 @@ void refreshMainScreen() {
     } else if (harmP && c == 0) {
       snprintf(val, sizeof(val), "%s", k4GenreShort());       // ENC1 = genre
     } else if (harmP && c == 1) {
-      snprintf(val, sizeof(val), "%s", k4HarmInputName());    // ENC2 = src
+      snprintf(val, sizeof(val), "%u%%",
+               seqGenFillOf((uint8_t)(seqEditChannel() - 1))); // ENC2 = fill
     } else if (harmP && c == 2) {
-      snprintf(val, sizeof(val), "%s", k4HarmHoldName());     // ENC3 = hold
+      snprintf(val, sizeof(val), "%s", k4HarmInputName());    // ENC3 = src
+    } else if (harmP && c == 3) {
+      snprintf(val, sizeof(val), "%s", k4HarmHoldName());     // ENC4 = hold
     } else if (seq3 && c == 1) {
       snprintf(val, sizeof(val), "%d", seqPatLen());      // ENC2 = steps
     } else if (seq3 && c == 2) {

@@ -122,6 +122,12 @@ int  k4HarmStepChord(uint8_t step, uint8_t *notes);  // the chord HARM infers
                                 // for ONE step (HARM track step activation with
                                 // no held gesture): same Viterbi the bake uses;
                                 // returns note count (0 = nothing to record)
+uint8_t k4HarmLiveChord(uint8_t note, uint8_t *out);  // LIVE follow: one
+                                // feeder note that actually PLAYED (post-
+                                // probability) -> the plain root-position triad
+                                // of its nearest scale degree, bake register;
+                                // playback re-derives each active HARM step
+                                // from it while FOLLOW is on (returns count)
 int  k4Undo();                  // M3 hold: restore the last snapshot
 void k4Stop();                  // leaving KEYMODE4
 void k4Enter();                 // entering: seed from the engine's chord

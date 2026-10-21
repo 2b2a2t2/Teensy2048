@@ -165,6 +165,10 @@ static uint8_t seqAccVel[SEQ_CH_COUNT] = {101,101,101,101,101,101,101,101,
 static uint8_t seqGate[SEQ_CH_COUNT] = {100,100,100,100,100,100,100,100,
                                         100,100,100,100,100,100,100,100};
 static uint32_t gateOffAt[SEQ_CH_COUNT] = {0};   // 0 = no pending note-off
+static uint8_t  harmLiveN[SEQ_CH_COUNT] = {0};   // LIVE HARM follow: chord
+static uint8_t  harmLive[SEQ_CH_COUNT][CHORD_MAX]; // carried from the last
+                                 // pass (a silent feeder replays it - the
+                                 // harmony holds through a prob miss)
 static uint8_t advPrev[SEQ_CH_COUNT] = {          // per-track step of the
   0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,  // previous advance
   0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}; // (TIE/GLIDE carry)
@@ -1942,6 +1946,20 @@ static void strumEnqueue(uint8_t c, const uint8_t *note, const uint8_t *vel,
   strumQ[c].timed = dts != 0;
 }
 
+// mute = USB OUTPUT gate only: a muted track keeps PLAYING internally -
+// follow chains advance, gates fire, seqNotes fills - so listeners (the
+// HARM live follow reads the feeder's sounding notes) stay coherent; only
+// the wire traffic is suppressed
+static void seqOutOn(uint8_t c, uint8_t note, uint8_t vel) {
+  if (seqIsMuted(c)) return;
+  usbMIDI.sendNoteOn(note, vel, c + 1);
+}
+
+static void seqOutOff(uint8_t c, uint8_t note) {
+  if (seqIsMuted(c)) return;
+  usbMIDI.sendNoteOff(note, 0, c + 1);
+}
+
 // drain due rake notes (called from the loop, next to seqGatePoll)
 void seqStrumPoll() {
   uint32_t now = millis();
@@ -1960,18 +1978,18 @@ void seqStrumPoll() {
           // first rake note: on BEFORE the old notes go (legato overlap
           // when GLIDE deferred them, plain cut otherwise - the latter
           // cannot happen: the step-boundary release already ran)
-          usbMIDI.sendNoteOn(note, vel, c + 1);
+          seqOutOn(c, note, vel);
           if (strumQ[c].offOld) {
             for (uint8_t j = 0; j < seqLen[c]; j++)
-              usbMIDI.sendNoteOff(seqNotes[c][j], 0, c + 1);
+              seqOutOff(c, seqNotes[c][j]);
             seqLen[c] = 0;
             gateOffAt[c] = 0;
             strumQ[c].offOld = false;
           }
         } else {
           if (seqLen[c])
-            usbMIDI.sendNoteOff(seqNotes[c][0], 0, c + 1);
-          usbMIDI.sendNoteOn(note, vel, c + 1);
+            seqOutOff(c, seqNotes[c][0]);
+          seqOutOn(c, note, vel);
         }
         seqNotes[c][0] = note;
         seqLen[c] = 1;
@@ -1980,7 +1998,7 @@ void seqStrumPoll() {
           seqNotes[c][seqLen[c]] = note;
           seqLen[c]++;
         }
-        usbMIDI.sendNoteOn(note, vel, c + 1);
+        seqOutOn(c, note, vel);
       }
       strumQ[c].i++;
       if (!strumQ[c].timed) strumQ[c].at = now + strumQ[c].every;
@@ -1999,7 +2017,7 @@ void seqStrumPoll() {
 // release one sequence's sounding notes and cancel its gate timer
 static void releaseCh(uint8_t c) {
   for (uint8_t i = 0; i < seqLen[c]; i++)
-    usbMIDI.sendNoteOff(seqNotes[c][i], 0, c + 1);
+    seqOutOff(c, seqNotes[c][i]);
   seqLen[c] = 0;
   gateOffAt[c] = 0;
   strumCancel(c);
@@ -2052,7 +2070,7 @@ static void handBufStore(uint8_t c, const uint8_t *src, uint8_t n) {
       for (uint8_t j = 0; j < npn && !keep; j++)
         keep = ((uint8_t)(seqNotes[c][i] % 12) == np[j]);
       if (keep) seqNotes[c][m++] = seqNotes[c][i];
-      else usbMIDI.sendNoteOff(seqNotes[c][i], 0, c + 1);
+      else seqOutOff(c, seqNotes[c][i]);
     }
     seqLen[c] = m;
     handRing[c] = (m && strumSus()) ? HAND_RING_STRUM : 0;
@@ -2360,7 +2378,15 @@ static void seqAdvanceOnce(bool start, const bool *go,
   // though it was fed while the playhead sat on step 1
   for (uint8_t c = 0; c < SEQ_CH_COUNT; c++)
     if (go[c]) histAt(c, chStep[c]);
+  // two passes over the note-on section: every track first, then the POLY
+  // +HARM followers (FOLLOW on, input != self) - so a follower always
+  // reads the feeder's note for THIS tick regardless of channel order
+  for (uint8_t pass = 0; pass < 2; pass++)
   for (uint8_t c = 0; c < SEQ_CH_COUNT; c++) {
+    bool harmFol = seqTrackOf(c) == SEQ_TRACK_POLY &&
+                   seqPolyTypeOf(c) == SEQ_POLY_HARM && seqFollowOf(c) &&
+                   seqInCh[c] != (uint8_t)(c + 1);
+    if (harmFol != (pass == 1)) continue;
     if (!go[c]) continue;                 // did not advance this sub-tick
     if (!inRng[c]) continue;              // parked outside its window
     if (tied[c]) continue;              // merged note keeps sounding
@@ -2423,7 +2449,10 @@ static void seqAdvanceOnce(bool start, const bool *go,
     bool mono = (seqTrackOf(c) == SEQ_TRACK_MONO);
     bool drumTrack = (seqTrackOf(c) == SEQ_TRACK_DRUM);
     uint8_t att = drumTrack ? 0 : stepAtt[c][stp];   // DRUM rolls per voice
-    bool plays = (len > 0) && !seqIsMuted(c);
+    // a muted track still PLAYS here (internal communication: follow
+    // chains, arp index, the HARM live follow) - seqOutOn/seqOutOff
+    // suppress the wire traffic at the send
+    bool plays = (len > 0);
     // probability gate (MONO/POLY): the track's own %, read live so ENC8
     // moves every armed step at once; a miss silences the step this pass
     if (plays && (att & SEQ_ATT_PROB) &&
@@ -2433,16 +2462,45 @@ static void seqAdvanceOnce(bool start, const bool *go,
       // ARP SKIP: a rest (or a probability miss) still walks the arp
       // position, so the sequence keeps running over dead steps instead
       // of pausing on them
-      if (!seqIsMuted(c) && seqTrackOf(c) == SEQ_TRACK_MONO &&
+      if (seqTrackOf(c) == SEQ_TRACK_MONO &&
           seqMonoTypeOf(c) == SEQ_MONO_ARP && seqArpSkipOf(c))
         arpIdx[c]++;
       // a rest / probability miss keeps HAND's ring sounding (the next
       // chord, a mute or leaving the window cuts it)
-      if (!handRing[c] || seqIsMuted(c)) releaseCh(c);   // also ends a glide
+      if (!handRing[c]) releaseCh(c);       // also ends a glide
       continue;
     }
     uint8_t *ch = follow ? stepChord[seqInCh[c] - 1][fstp]
                          : stepChord[c][stp];
+    // LIVE HARM follow: with FOLLOW on the chord is re-derived from the
+    // feeder's SOUNDING note this tick (post-probability) instead of the
+    // stored step chord - prob rolls and arp walks re-harmonize every
+    // pass.  A feeder silent for ONE pass (prob miss / rest) replays the
+    // chord carried from the previous pass; a muted feeder keeps playing
+    // internally (mute gates the USB output only), so its notes still
+    // feed this path.  Cold start = stored baked chord.  FOLLOW off =
+    // stored playback
+    uint8_t live[CHORD_MAX];
+    if (harmFol) {
+      uint8_t fx2 = (uint8_t)(seqInCh[c] - 1);
+      uint8_t ln = 0;
+      if (seqLen[fx2] > 0) {             // sounding: this tick's note
+        uint8_t src = seqNotes[fx2][0];
+        for (uint8_t i = 1; i < seqLen[fx2]; i++)
+          if (seqNotes[fx2][i] < src) src = seqNotes[fx2][i];
+        ln = k4HarmLiveChord(src, live);
+        if (ln) {                       // remember for the carry
+          for (uint8_t i = 0; i < ln; i++) harmLive[c][i] = live[i];
+          harmLiveN[c] = ln;
+        }
+      }
+      if (ln == 0 && harmLiveN[c]) {    // quiet pass: harmony holds
+        ln = harmLiveN[c];
+        for (uint8_t i = 0; i < ln; i++) live[i] = harmLive[c][i];
+      }
+      if (ln) { ch = live; len = ln; }
+      // ln == 0 (cold start): the stored baked chord plays as-is
+    }
     // step FX (POLY embellishments): SUS/ext reshape the chord and COLOR
     // appends its raw approach note BEFORE the FScale snap below, so the
     // ghost stays chromatic while the core follows the scale.  MONO picks
@@ -2588,13 +2646,13 @@ static void seqAdvanceOnce(bool start, const bool *go,
         }
         if (defer[c]) {
           // GLIDE: new note-on BEFORE the old note-off (legato overlap)
-          usbMIDI.sendNoteOn(note, vel, c + 1);
+          seqOutOn(c, note, vel);
           for (uint8_t i = 0; i < seqLen[c]; i++)
-            usbMIDI.sendNoteOff(seqNotes[c][i], 0, c + 1);
+            seqOutOff(c, seqNotes[c][i]);
           seqLen[c] = 0;
           gateOffAt[c] = 0;
         } else {
-          usbMIDI.sendNoteOn(note, vel, c + 1);
+          seqOutOn(c, note, vel);
         }
         seqNotes[c][0] = note;
         seqLen[c] = 1;
@@ -2646,7 +2704,7 @@ static void seqAdvanceOnce(bool start, const bool *go,
           }
         } else {
           seqNotes[c][seqLen[c]] = note;
-          usbMIDI.sendNoteOn(note, dvel, c + 1);
+          seqOutOn(c, note, dvel);
           seqLen[c]++;
         }
       }
@@ -2777,8 +2835,10 @@ void seqStepAdvance(bool start) {
 
 void seqStepStop() {
   seqRelease();
-  for (uint8_t c = 0; c < SEQ_CH_COUNT; c++)
+  for (uint8_t c = 0; c < SEQ_CH_COUNT; c++) {
     advPrev[c] = 0xFF;               // no carry-over into the next run
+    harmLiveN[c] = 0;                // LIVE HARM: no chord carried into a run
+  }
   fBlinkMask = 0;
   if (recState == 2) recState = 1;   // interrupted pass re-arms for the next run
   recStarted = false;
@@ -3058,7 +3118,7 @@ void seqMuteToggle(uint8_t seq) {
 // propagates an empty source), so "erase all" loops every track
 static void seqEraseNotes(uint8_t s) {
   for (uint8_t i = 0; i < seqLen[s]; i++)
-    usbMIDI.sendNoteOff(seqNotes[s][i], 0, s + 1);
+    seqOutOff(s, seqNotes[s][i]);
   seqLen[s] = 0;
   arpIdx[s] = 0;
   strumCancel(s);              // an erase also drops the un-sent rake tail
@@ -3289,7 +3349,9 @@ void keySetChannel(uint8_t ch) {
       keySounding[k] = false;
     }
   chordCut();                     // chord engine notes, old channel
-  releaseCh((uint8_t)(keyCh - 1));  // strummed strings ringing on the OLD channel
+  // playback notes on the OLD channel stay: the playhead owns them (gate
+  // timer / step boundary / SUS chord-change release them there) - cutting
+  // them here would truncate a recorded step the moment the keyboard moves
   keyCh = ch;
   if (monoEngaged()) {
     // new channel is a MONO track: held keys stay silent, the chord engine
