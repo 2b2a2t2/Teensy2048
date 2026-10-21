@@ -121,13 +121,17 @@ static const char* ctrlLegend(uint8_t i) {
     if (modeBase == MODE_SEQ && modeVariant != 3 &&
         seqTrack() == SEQ_TRACK_MONO && seqMonoType() == SEQ_MONO_BASS)
       return "GNR8";
+    if (modeBase == MODE_SEQ && modeVariant != 3 &&
+        seqTrack() == SEQ_TRACK_MONO && seqMonoType() == SEQ_MONO_LEAD)
+      return "LEAD";
     if (key4) return "AUTO";
     return key2 ? "Min" : "M2";
   }
   if (i == 4) {
-    // GNR8 track: M3 = generate (tap) / undo (hold), like KEYMODE4 APPLY
+    // GNR8/LEAD track: M3 = generate (tap) / undo (hold), like KEYMODE4 APPLY
     if (modeBase == MODE_SEQ && modeVariant != 3 &&
-        seqTrack() == SEQ_TRACK_MONO && seqMonoType() == SEQ_MONO_BASS)
+        seqTrack() == SEQ_TRACK_MONO &&
+        (seqMonoType() == SEQ_MONO_BASS || seqMonoType() == SEQ_MONO_LEAD))
       return "GEN";
     // ENCMODE M3 = the ENC5..8 page-group toggle (CC1..16 / CC21..36)
     if (modeBase == MODE_ENC) return "PAGE";
@@ -157,6 +161,13 @@ void refreshMainScreen() {
   // other four keep their knobs (ENC1 octave, 5/6/8 gate/vel/prob)
   bool genP = genPageActive();
   uint8_t genSeq = (uint8_t)(seqEditChannel() - 1);
+  // SEQMODE + M2 LEAD page: ENC2/3/4/7 take contour/low/range/density,
+  // the other four keep their knobs (ENC1 octave, 5/6/8 gate/vel/prob)
+  bool leadP = leadPageActive();
+  uint8_t leadSeq = (uint8_t)(seqEditChannel() - 1);
+  // SEQMODE + M2 HARM page (POLY TYPE=HARM): ENC1/2/3 take genre/src/hold,
+  // the other five keep their knobs
+  bool harmP = harmPageActive();
   // ...and with PREV held on that page the rotate row takes the encoders
   bool genOv = (b.enc == ENC_SEQ_GNR8_OV);
   // ...or with an F radio armed the whole row is the option sub-page
@@ -188,6 +199,18 @@ void refreshMainScreen() {
     if (genP && !genOv && c >= 1 && c <= 3) {
       static const char *gl[4] = { "OCT", "FILL", "ACC", "GLIDE" };
       l1 = gl[c];
+    }
+    if (leadP && c >= 1 && c <= 3) {
+      static const char *ll[4] = { "OCT", "CONTOUR", "LOW", "RANGE" };
+      l1 = ll[c];
+    }
+    if (harmP) {
+      static const char *hl[4] = { "GENRE", "SRC", "HOLD", "---" };
+      l1 = hl[c];
+    }
+    if (key4Emb) {
+      static const char *el[4] = { "EMB", "PLACE", "---", "---" };
+      l1 = el[c];
     }
     if (gSub == 0) {             // F1 full page: the four option knobs
       static const char *fl[4] = { "TONES", "RNG", "LOW", "ALGO" };
@@ -262,6 +285,21 @@ void refreshMainScreen() {
     } else if (arpP && c == 3) {
       snprintf(val, sizeof(val), "%s",
                seqArpModeName(seqArpModeOf(arpSeq)));  // ENC4 = mode
+    } else if (leadP && c == 1) {
+      snprintf(val, sizeof(val), "%s",
+               seqLeadContourName(seqLeadContourOf(leadSeq))); // ENC2 contour
+    } else if (leadP && c == 2) {
+      snprintf(val, sizeof(val), "%s",
+               seqGenLowName(seqGenLowOf(leadSeq)));          // ENC3 = LOW
+    } else if (leadP && c == 3) {
+      snprintf(val, sizeof(val), "%uoct",
+               seqGenRangeOf(leadSeq));                       // ENC4 = RANGE
+    } else if (harmP && c == 0) {
+      snprintf(val, sizeof(val), "%s", k4GenreShort());       // ENC1 = genre
+    } else if (harmP && c == 1) {
+      snprintf(val, sizeof(val), "%s", k4HarmInputName());    // ENC2 = src
+    } else if (harmP && c == 2) {
+      snprintf(val, sizeof(val), "%s", k4HarmHoldName());     // ENC3 = hold
     } else if (seq3 && c == 1) {
       snprintf(val, sizeof(val), "%d", seqPatLen());      // ENC2 = steps
     } else if (seq3 && c == 2) {
@@ -293,7 +331,7 @@ void refreshMainScreen() {
     } else if (key4Emb && c == 1) {
       snprintf(val, sizeof(val), "%s", k4EmbPlaceName()); // ENC2 = PLACE
     } else if (key4Emb) {
-      snprintf(val, sizeof(val), "");                   // ENC3/4 idle
+      snprintf(val, sizeof(val), "");                   // ENC3..8 idle
     } else if (key4Step) {
       // held-step values: the step's own OCT / degree / inversion / spread
       int8_t ss = k4StepSelGet();
@@ -361,6 +399,7 @@ void refreshMainScreen() {
     if (c == 1 && f3AccentActive()) l2 = "ACC";   // F3 held: ENC6 = accent
     if (arpP && 4 + c == 6) l2 = "INST";          // arp page: ENC7 = insert
     if (genP && 4 + c == 6) l2 = "TIE";           // gen page: ENC7 = tie %
+    if (leadP && 4 + c == 6) l2 = "DENS";         // lead page: ENC7 = density
     if (genOv) l2 = "---";                        // rotate row: all idle
     if (seqDrumGe && 4 + c == 6 && stepEditSel() == 5)
       l2 = "FX";                                  // POLY edit: ENC7 = FX type
@@ -381,6 +420,8 @@ void refreshMainScreen() {
                seqArpInstName(seqArpInstOf(arpSeq)));  // ENC7 = insert mode
     } else if (genP && 4 + c == 6) {
       snprintf(val, sizeof(val), "%u%%", seqGenTieOf(genSeq));  // ENC7 tie
+    } else if (leadP && 4 + c == 6) {
+      snprintf(val, sizeof(val), "%u%%", seqGenFillOf(leadSeq)); // ENC7 dens
     } else if (seq3 && 4 + c == 4) {
       snprintf(val, sizeof(val), "%u", seqInputChannel()); // ENC5 = input ch
     } else if (seq3 && 4 + c == 5) {

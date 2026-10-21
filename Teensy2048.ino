@@ -57,6 +57,8 @@ void loop() {
   // drain ticks queued during touch/Serial/LED work, THEN block on the OLED
   // send (~25ms I2C); incoming ticks buffer in the USB RX ring meanwhile
   pollSeqClock();
+  harmRebakePoll();   // HARM tracks re-bake after feeder changes: the draw
+                      // below shows the re-derived steps (Keyboard.cpp)
   displayUpdate();
   uint32_t t4 = micros();
   seqDiagNote(3, t4 - t3);

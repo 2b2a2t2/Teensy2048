@@ -394,7 +394,7 @@ static CRGB modeLedHook(uint8_t pad, bool isTouched, CRGB defaultColor) {
       else if (seqPolyRadio && sel == 6) wantF = 2;
       else wantF = sel;
     }
-    bool pageOwns = arpPageActive() || genPageActive();
+    bool pageOwns = arpPageActive() || genPageActive() || leadPageActive();
     if ((sel == 0 && !pageOwns && led == groupControls[2]) ||
         (wantF != 0 && led >= groupControls[5] &&
          wantF == (uint8_t)(led - groupControls[5] + 1))) {
@@ -461,6 +461,56 @@ static CRGB modeLedHook(uint8_t pad, bool isTouched, CRGB defaultColor) {
   // hold = undo): a slow dim hue cycle, mirroring KEYMODE4's APPLY
   if (modeBase == MODE_SEQ && modeVariant != 3 &&
       seqTrack() == SEQ_TRACK_MONO && seqMonoType() == SEQ_MONO_BASS &&
+      led == groupControls[4]) {
+    if (isTouched) return CRGB::White;
+    return CHSV((uint8_t)(millis() >> 2), 255, 100);  // full cycle ~1s
+  }
+  // SEQMODE M2 on a MONO+LEAD track: medium sea green = the LEAD generator
+  // lives behind that pad, and while its encoder page is open it BREATHES
+  // instead of sitting dim (mirrors the BASS M2 rule, sea green to tell the
+  // two generator tracks apart)
+  if (modeBase == MODE_SEQ && modeVariant != 3 &&
+      seqTrack() == SEQ_TRACK_MONO && seqMonoType() == SEQ_MONO_LEAD &&
+      led == groupControls[3]) {
+    if (isTouched) return CRGB::White;
+    CRGB g = CRGB::MediumSeaGreen;
+    if (leadPageActive()) {
+      uint8_t s = sin8((uint32_t)millis() * 256UL / PULSE_PERIOD_MS);
+      g.nscale8((uint8_t)(48 + scale8(s, 144)));  // 48..192 breathing
+    } else {
+      g.nscale8(48);
+    }
+    return g;
+  }
+  // ...and M3 on that track is the LEAD generator button (tap = generate,
+  // hold = undo): the same slow dim hue cycle as the BASS generator
+  if (modeBase == MODE_SEQ && modeVariant != 3 &&
+      seqTrack() == SEQ_TRACK_MONO && seqMonoType() == SEQ_MONO_LEAD &&
+      led == groupControls[4]) {
+    if (isTouched) return CRGB::White;
+    return CHSV((uint8_t)(millis() >> 2), 255, 100);  // full cycle ~1s
+  }
+  // SEQMODE M2 on a POLY+HARM track: teal = the HARM generator lives behind
+  // that pad, and while its encoder page is open it BREATHES instead of
+  // sitting dim (mirrors the BASS/LEAD M2 rules; teal tells the harmonizer
+  // apart from the sea-green LEAD and purple BASS generators)
+  if (modeBase == MODE_SEQ && modeVariant != 3 &&
+      seqTrack() == SEQ_TRACK_POLY && seqPolyType() == SEQ_POLY_HARM &&
+      led == groupControls[3]) {
+    if (isTouched) return CRGB::White;
+    CRGB t = CRGB::Teal;
+    if (harmPageActive()) {
+      uint8_t s = sin8((uint32_t)millis() * 256UL / PULSE_PERIOD_MS);
+      t.nscale8((uint8_t)(48 + scale8(s, 144)));  // 48..192 breathing
+    } else {
+      t.nscale8(48);
+    }
+    return t;
+  }
+  // ...and M3 on that track is the harmonizer button (tap = bake, hold =
+  // undo): the same slow dim hue cycle as the BASS/LEAD generators
+  if (modeBase == MODE_SEQ && modeVariant != 3 &&
+      seqTrack() == SEQ_TRACK_POLY && seqPolyType() == SEQ_POLY_HARM &&
       led == groupControls[4]) {
     if (isTouched) return CRGB::White;
     return CHSV((uint8_t)(millis() >> 2), 255, 100);  // full cycle ~1s
@@ -664,6 +714,34 @@ void pollModeLeds() {
   }
   if (genActive && (long)(millis() - genFlip) >= 0) {
     genFlip = millis() + 30;
+    refreshAllLeds();
+  }
+
+  // M2 LEAD-page pulse: same breathing sea green + M3 hue cycle while the
+  // LEAD generator page is open (mirrors the GNR8 pulse driver)
+  static bool leadActive = false;
+  static unsigned long leadFlip = 0;
+  bool leadNow = leadPageActive();
+  if (leadNow != leadActive) {
+    leadActive = leadNow;
+    refreshAllLeds();
+  }
+  if (leadActive && (long)(millis() - leadFlip) >= 0) {
+    leadFlip = millis() + 30;
+    refreshAllLeds();
+  }
+
+  // M2 HARM-page pulse: breathing teal + M3 hue cycle while the HARM
+  // generator page is open (mirrors the GNR8/LEAD pulse drivers)
+  static bool harmActive = false;
+  static unsigned long harmFlip = 0;
+  bool harmNow = harmPageActive();
+  if (harmNow != harmActive) {
+    harmActive = harmNow;
+    refreshAllLeds();
+  }
+  if (harmActive && (long)(millis() - harmFlip) >= 0) {
+    harmFlip = millis() + 30;
     refreshAllLeds();
   }
 

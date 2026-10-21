@@ -23,6 +23,11 @@ static uint8_t genLow[16]   = { 1, 1, 1, 1, 1, 1, 1, 1,
                                 1, 1, 1, 1, 1, 1, 1, 1 };   // SEQ_GEN_LOW_C1
 static uint8_t genRange[16] = { 2, 2, 2, 2, 2, 2, 2, 2,
                                 2, 2, 2, 2, 2, 2, 2, 2 };   // 2 octaves
+// LEAD melodic contour (M2 LEAD page).  Boot ARCH everywhere.  Shares the
+// FILL/LOW/RANGE slots with GNR8 (a track is one TYPE or the other), so
+// only the contour is new storage.
+static uint8_t leadContour[16] = { 0 };          // SEQ_LEAD_ARCH
+static int16_t genLeadRes;                       // contour residual (4 = 1)
 
 // encoder residuals: 4 counts = 1 unit, kept between channels like the
 // other SEQ knobs (a stray count lands on the next turn of the same knob)
@@ -122,6 +127,23 @@ const char* seqGenAlgoName(uint8_t v) {
   return n[v <= SEQ_GEN_EUCLID ? v : SEQ_GEN_CLASSIC];
 }
 
+// LEAD contour knob (per track, RAM; 4 counts = 1 step, clamped no wrap)
+void seqLeadContourAdjust(int16_t c) {
+  genAdjust(&leadContour[genIdx()], &genLeadRes, c,
+            SEQ_LEAD_ARCH, SEQ_LEAD_WALK);
+}
+void seqLeadContourSet(uint8_t i, uint8_t v) {
+  if (i >= 16) return;
+  leadContour[i] = v <= SEQ_LEAD_WALK ? v : SEQ_LEAD_ARCH;
+}
+uint8_t seqLeadContourOf(uint8_t i) {
+  return i < 16 ? leadContour[i] : SEQ_LEAD_ARCH;
+}
+const char* seqLeadContourName(uint8_t v) {
+  static const char* n[3] = { "ARCH", "DESC", "WALK" };
+  return n[v <= SEQ_LEAD_WALK ? v : SEQ_LEAD_ARCH];
+}
+
 // ---------------------------------------------------------------------------
 // generate
 // ---------------------------------------------------------------------------
@@ -175,15 +197,21 @@ static uint8_t genSnapNote(uint8_t note) {
   return note;
 }
 
-int seqGenProduce() {
-  uint8_t ch = seqEditChannel() - 1;
-  uint16_t n = seqPatLenOf(ch);
-  if (n == 0 || n > SEQ_GEN_STEPS) return -1;
+// one lazy randomSeed() for every generator's rolls (GNR8/LEAD produce,
+// the HARM bake's FILL gate): the first roll of a boot picks the seed
+void genSeedOnce() {
   static bool seeded = false;
   if (!seeded) {                      // one lazy seed: differs per boot
     randomSeed((uint32_t)(micros() ^ (millis() << 16)));
     seeded = true;
   }
+}
+
+int seqGenProduce() {
+  uint8_t ch = seqEditChannel() - 1;
+  uint16_t n = seqPatLenOf(ch);
+  if (n == 0 || n > SEQ_GEN_STEPS) return -1;
+  genSeedOnce();
   uint8_t idx = genIdx();
   uint8_t fill = seqGenFillOf(idx), accp = seqGenAccOf(idx);
   uint8_t glp = seqGenGlideOf(idx), tiep = seqGenTieOf(idx);
@@ -231,6 +259,88 @@ int seqGenProduce() {
     if (!on[p] && !(stepAttrs((uint8_t)q) & SEQ_ATT_TIE)) continue;
     if ((stepAttrs((uint8_t)p) & SEQ_ATT_TIE)) continue;
     if ((uint8_t)random(100) < tiep) stepAttrToggle((uint8_t)p, SEQ_ATT_TIE);
+  }
+  return written;
+}
+
+// ---------------------------------------------------------------------------
+// LEAD generate: walk a melodic CONTOUR over the in-scale ladder of the
+// LOW..RANGE window.  Rhythm reuses the shared FILL% density gate (classic
+// or Bjorklund/Euclid via ALGO); the pitch follows the contour (ARCH rises
+// to a mid-pattern peak then falls, DESC steps down and wraps, WALK random
+// -walks ±1/±2 scale steps and reflects at the ends).  Notes stay in the
+// KEY + SCALE.  Stored like GNR8 (one note per step, undo snapshot first).
+// At playback LEAD + FOLLOW + MAP (ct/gd) re-resolves these skeleton notes
+// onto the feeder track's chord - see mapBassNote() in Keyboard.cpp.
+int seqLeadProduce() {
+  uint8_t ch = seqEditChannel() - 1;
+  uint16_t n = seqPatLenOf(ch);
+  if (n == 0 || n > SEQ_GEN_STEPS) return -1;
+  genSeedOnce();
+  uint8_t idx = genIdx();
+  uint8_t fill = seqGenFillOf(idx);
+  uint8_t low = (uint8_t)(24 + 12 * seqGenLowOf(idx));      // 24 / 36 / 48
+  uint8_t octs = seqGenRangeOf(idx);                        // 1..5
+  if (octs < 1) octs = 1;
+  int hi = (int)low + 12 * (int)octs - 1;
+  if (hi > 127) hi = 127;
+  genBuildAllowed();
+  uint8_t contour = seqLeadContourOf(idx);
+
+  // in-scale ladder inside the window: the contour walks these degrees
+  uint8_t ladder[48];
+  uint8_t ln = 0;
+  for (int v = low; v <= hi && ln < 48; v++)
+    if (keyIsInScale((uint8_t)(v % 12))) ladder[ln++] = (uint8_t)v;
+  if (ln == 0) { ladder[0] = low; ln = 1; }   // never empty
+  uint8_t top = (uint8_t)(ln - 1);
+
+  bool euclid = seqGenAlgoOf(idx) == SEQ_GEN_EUCLID;
+  uint64_t bits = 0;
+  if (euclid) {
+    Bjorklund<uint64_t, 10> eu;
+    int16_t pulses = (int16_t)(((uint32_t)n * fill + 50) / 100);
+    if (pulses > (int16_t)n) pulses = n;
+    bits = eu.compute((int8_t)n, (int8_t)pulses);
+  }
+
+  stepSnapshotTake();                 // M3 hold = undo back to here
+  bool on[SEQ_GEN_STEPS];
+  int written = 0;
+  uint16_t half = (n > 1) ? (uint16_t)((n - 1) / 2) : 0;   // ARCH peak
+  int pos = ln / 2;                   // WALK running position
+  for (uint16_t i = 0; i < n; i++) {
+    on[i] = euclid ? (((bits >> i) & 1) != 0)
+                   : ((uint8_t)random(100) < fill);
+    if (!on[i]) {
+      stepGenClear((uint8_t)i);
+      continue;
+    }
+    uint8_t note;
+    switch (contour) {
+      case SEQ_LEAD_DESC: {          // step down across the pattern, wrap
+        uint8_t deg = (uint8_t)(top - (uint16_t)i * top /
+                                       (n > 1 ? (uint16_t)(n - 1) : 1));
+        note = ladder[deg];
+        break;
+      }
+      case SEQ_LEAD_WALK: {          // random ±1/±2 scale-step walk
+        pos += (int)random(-2, 3);   // -2..2
+        if (pos < 0) pos = -pos;                        // reflect low
+        if (pos > (int)top) pos = 2 * (int)top - pos;   // reflect high
+        if (pos < 0) pos = 0;
+        if (pos > (int)top) pos = (int)top;
+        note = ladder[pos];
+        break;
+      }
+      default: {                     // ARCH: rise to mid peak, fall back
+        uint16_t t = (i <= half) ? i : (uint16_t)(n - 1 - i);
+        uint8_t deg = half ? (uint8_t)((uint16_t)t * top / half) : 0;
+        note = ladder[deg];
+        break;
+      }
+    }
+    if (stepGenWrite((uint8_t)i, note, 0) >= 0) written++;
   }
   return written;
 }

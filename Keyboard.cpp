@@ -242,6 +242,54 @@ static void seqOctClamp(uint8_t s) {
   if (seqOct[s] > hi) seqOct[s] = (int8_t)hi;
 }
 
+// --- deferred HARM auto re-bake --------------------------------------------
+// A POLY track with TYPE = HARM derives its steps from its input channel
+// (the FOLLOW feeder), so every write to that channel leaves the bake
+// stale.  All content writes funnel through stepSyncFrom, which only MARKS
+// the HARM tracks feeding from the changed channel; harmRebakePoll (main
+// loop, before the OLED draw) runs the actual re-bakes, so a burst of
+// writes - a full GNR8 produce, a live knob re-generate - costs one Viterbi
+// pass instead of one per step.  FOLLOW gates it exactly like the manual M3
+// bake, a track is never marked through its own channel (manual HARM step
+// edits and an M3 bake on track X stand), and a mark whose inference did
+// not move converges to zero writes (k4HarmRebake skips unchanged steps),
+// so input-channel cycles stay bounded
+static bool sHarmDirty[SEQ_CH_COUNT];
+static bool sHarmDirtyAny = false;
+
+void harmFeederChanged(uint8_t ch0) {
+  if (ch0 >= SEQ_CH_COUNT) return;
+  for (uint8_t w = 0; w < SEQ_CH_COUNT; w++) {
+    if (w == ch0) continue;                    // never self (edits stand)
+    if (seqInCh[w] != (uint8_t)(ch0 + 1)) continue;   // its SRC points at ch0
+    if (seqTrackOf(w) != SEQ_TRACK_POLY || seqPolyTypeOf(w) != SEQ_POLY_HARM)
+      continue;
+    if (!seqFollowOf(w)) continue;             // FOLLOW gates the source
+    sHarmDirty[w] = true;
+    sHarmDirtyAny = true;
+  }
+}
+
+// run every marked re-bake (Teensy2048.ino calls this once per loop pass,
+// right before displayUpdate, so the drawn step grid and the next playhead
+// pass already see the re-derived chords).  The edit focus is switched by
+// direct assignment and restored around the pass - seqSetEditChannel would
+// reset the partial-encoder residues that belong to the real focus - and a
+// re-bake only ever writes its own track, which its own write never marks,
+// so each pass runs a given track at most once
+void harmRebakePoll() {
+  if (!sHarmDirtyAny) return;
+  sHarmDirtyAny = false;
+  uint8_t saved = seqEditCh;
+  for (uint8_t y = 0; y < SEQ_CH_COUNT; y++) {
+    if (!sHarmDirty[y]) continue;
+    sHarmDirty[y] = false;
+    seqEditCh = y;
+    k4HarmRebake();
+  }
+  seqEditCh = saved;
+}
+
 // timeline adaptation: when track x's step chords are written, every MONO
 // or POLY sequence listening to x's channel (input channel = x+1) re-derives
 // its ACTIVE steps from x's timeline - each takes the last chord at or before
@@ -252,10 +300,18 @@ static void seqOctClamp(uint8_t s) {
 // copies do not re-trigger, so input-channel cycles cannot recurse
 static void stepSyncFrom(uint8_t x) {
   if (x >= SEQ_CH_COUNT) return;
+  harmFeederChanged(x);        // HARM tracks feeding from x re-derive (deferred)
   for (uint8_t y = 0; y < SEQ_CH_COUNT; y++) {
     if (y == x || seqInCh[y] != x + 1) continue;
     uint8_t ltr = seqTrackOf(y);
     if (ltr != SEQ_TRACK_MONO && ltr != SEQ_TRACK_POLY) continue;  // DRUM never follows
+    // ...but a POLY track with TYPE = HARM is never re-derived from its
+    // input: that channel is only the GENERATION source (k4Harm reads it to
+    // bake chords), so its baked steps must not be clobbered by a later
+    // write to the feeder (otherwise a bass re-record would stamp its raw
+    // single notes over the inferred triads).  It re-bakes instead - see
+    // harmFeederChanged above, which marked it when x changed
+    if (ltr == SEQ_TRACK_POLY && seqPolyTypeOf(y) == SEQ_POLY_HARM) continue;
     bool changed = false;
     for (uint8_t n = 0; n < STEP_MAX; n++) {
       if (stepChordLen[y][n] == 0) continue;   // never creates active steps
@@ -266,7 +322,10 @@ static void stepSyncFrom(uint8_t x) {
       stepChordLen[y][n] = stepChordLen[x][idx];
       changed = true;
     }
-    if (changed) seqOctClamp(y);               // content changed -> re-clamp
+    if (changed) {
+      seqOctClamp(y);           // content changed -> re-clamp
+      harmFeederChanged(y);     // cascade: A -> B (mirror) -> HARM feeding B
+    }
   }
 }
 
@@ -947,7 +1006,20 @@ int stepChordPress(uint8_t step) {
     if (hn > 0) {
       src = held;                     // held/latched chord insert
       n = hn;
+    } else if (seqPolyType() == SEQ_POLY_HARM) {
+      // HARM, no held gesture: with FOLLOW on, record the chord it infers for
+      // this step from the input channel (the same Viterbi the M3 bake uses) -
+      // a chord that fits the source, never the feeder's raw single note.
+      // FOLLOW off = the input channel is ignored, so it keeps the pending
+      // chord (default above).  A HARM track never mirrors its input raw
+      if (seqFollow()) {
+        static uint8_t hnotes[CHORD_MAX];
+        int hn2 = k4HarmStepChord(step, hnotes);
+        if (hn2 > 0) { src = hnotes; n = (uint8_t)hn2; }
+      }
+      // else: FOLLOW off / source empty up to here - keep pending (above)
     } else {
+      // a POLY follower mirrors its input timeline (raw source content)
       uint8_t x = seqInCh[seqEditCh] - 1;        // the INPUT track
       int8_t idx = srcStepBack(x, step);
       if (idx >= 0) {
@@ -988,6 +1060,8 @@ int stepChordClick(uint8_t step) {
   stepChordLen[seqEditCh][step] = 0;
   stepAttClear(seqEditCh, step);   // a dead step carries no tie/prob over
   seqOctClamp(seqEditCh);     // content shrank: shift range may have grown
+  stepSyncFrom(seqEditCh);    // the tap IS a content change: mirrors and the
+                              // HARM re-bake follow the disabled step too
   return 0;
 }
 
@@ -1012,10 +1086,44 @@ int stepChordWrite(uint8_t step, const uint8_t *notes, uint8_t n) {
   return (int)stepChordLen[ch][step];
 }
 
+// true when the step already stores exactly what stepChordWrite would store
+// for these notes - the automatic HARM re-bake uses it to leave untouched
+// (attribute-carrying) steps alone when the inference did not move
+bool stepChordSame(uint8_t step, const uint8_t *notes, uint8_t n) {
+  if (step >= STEP_MAX || n == 0 || n > CHORD_MAX || notes == 0) return false;
+  uint8_t ch = seqEditCh;
+  if (stepChordLen[ch][step] != n) return false;
+  int pre = -12 * (int)seqOct[ch];
+  for (uint8_t i = 0; i < n; i++) {
+    int v = (int)notes[i] + pre;
+    if (v < 0) v = 0;
+    else if (v > 127) v = 127;
+    if (stepChord[ch][step][i] != (uint8_t)v) return false;
+  }
+  return true;
+}
+
 const uint8_t* stepChordAt(uint8_t step, uint8_t *len) {
   if (step >= STEP_MAX || len == 0) { if (len) *len = 0; return stepChord[0][0]; }
   *len = stepChordLen[seqEditCh][step];
   return stepChord[seqEditCh][step];
+}
+
+// HARM source: the input channel the edit channel follows (1-based, self by
+// default) and a channel-targeted step reader, so the harmonizer in Key4.cpp
+// can read another track's stored bassline/arp
+uint8_t seqFeederChannel() {
+  if (seqEditCh >= SEQ_CH_COUNT) return 0;
+  return seqInCh[seqEditCh];                    // 1-based (self unless remapped)
+}
+
+const uint8_t* stepChordAtCh(uint8_t ch, uint8_t step, uint8_t *len) {
+  if (ch < 1 || ch > SEQ_CH_COUNT || step >= STEP_MAX || len == 0) {
+    if (len) *len = 0;
+    return stepChord[0][0];
+  }
+  *len = stepChordLen[ch - 1][step];
+  return stepChord[ch - 1][step];
 }
 
 // --- GNR8 generator write path (Gen.cpp drives it) -------------------------
@@ -2114,6 +2222,36 @@ static uint8_t mapBassNote(uint8_t c, uint8_t stp, const uint8_t *ch,
     case SEQ_MAP_IVL:                    // lowest tone + semitone offset
       base = winOct((int)t[0] + (int)rel, n, lo, hi);  // may leave the chord
       break;
+    case SEQ_MAP_CT: {                   // chord TONE, octave follows the
+      uint8_t best = winOct(t[0], n, lo, hi);         // generated contour
+      int bd = (int)(best > n ? best - n : n - best); // note (melody shape)
+      for (uint8_t i = 1; i < tn; i++) {              // kept across the chord
+        uint8_t cand = winOct(t[i], n, lo, hi);
+        int d = (int)(cand > n ? cand - n : n - cand);
+        if (d < bd) { bd = d; best = cand; }
+      }
+      base = best;
+      break;
+    }
+    case SEQ_MAP_GD: {                   // GUIDE tones: the chord's 3rd and
+      uint8_t gt[2];                     // 7th (2nd and 4th tone) only
+      uint8_t gn = 0;
+      if (tn > 1) gt[gn++] = t[1];       // 3rd
+      if (tn > 3) gt[gn++] = t[3];       // 7th
+      if (gn == 0) {                     // single tone: behave like NEAR
+        base = winNear(t[0], lo, hi, n);
+        break;
+      }
+      uint8_t best = winNear(gt[0], lo, hi, n);
+      int bd = (int)(best > n ? best - n : n - best);
+      for (uint8_t i = 1; i < gn; i++) {
+        uint8_t cand = winNear(gt[i], lo, hi, n);
+        int d = (int)(cand > n ? cand - n : n - cand);
+        if (d < bd) { bd = d; best = cand; }
+      }
+      base = best;
+      break;
+    }
     default: {                           // NEAR: nearest chord tone in the
       uint8_t best = winNear(t[0], lo, hi, n);         // window
       int bd = (int)(best > n ? best - n : n - best);
@@ -2237,8 +2375,15 @@ static void seqAdvanceOnce(bool start, const bool *go,
     // FOLLOW: the own active step gates the rhythm, the NOTES are read
     // from the feeding track's current playhead (MONO/POLY listener with
     // its input pointing at another track; no feeder / DRUM = unchanged)
+    // ...but a POLY track with TYPE = HARM never follows at playback: its
+    // input channel is only the GENERATION source (k4Harm reads it to bake
+    // chords), so it always plays back its own baked steps - otherwise a
+    // follow-on HARM track would replay the feeder's raw bass notes instead
+    // of the triads it inferred
+    bool harmTrack = seqTrackOf(c) == SEQ_TRACK_POLY &&
+                     seqPolyTypeOf(c) == SEQ_POLY_HARM;
     bool follow = seqFollowOf(c) && seqTrackOf(c) != SEQ_TRACK_DRUM &&
-                  seqInCh[c] != (uint8_t)(c + 1);
+                  seqInCh[c] != (uint8_t)(c + 1) && !harmTrack;
     uint8_t fstp = 0;                  // feeder's step while following
     if (follow) {
       uint8_t fx = (uint8_t)(seqInCh[c] - 1);
@@ -2401,17 +2546,19 @@ static void seqAdvanceOnce(bool start, const bool *go,
         bool modOn = !hasMod ||
                      (uint8_t)random(100) < (uint8_t)stepModP[c][stp];
         bool mapped = false;
-        if (seqMonoTypeOf(c) == SEQ_MONO_BASS) {
+        uint8_t mtype = seqMonoTypeOf(c);
+        if (mtype == SEQ_MONO_BASS || mtype == SEQ_MONO_LEAD) {
           if (follow) {
             // map the own generated pitch onto the feeder chord (window +
-            // MAP mode); sound space already, shNote below is skipped
+            // MAP mode; LEAD uses ct/gd for chord/guide-tone resolution) -
+            // sound space already, shNote below is skipped
             note = mapBassNote(c, stp, ch, len, sh, modOn);
             mapped = true;
           } else {
             note = ch[0];
             for (uint8_t i = 1; i < len; i++) if (ch[i] < note) note = ch[i];
           }
-        } else if (seqMonoTypeOf(c) == SEQ_MONO_ARP) {
+        } else if (mtype == SEQ_MONO_ARP) {
           uint8_t elen = 0;
           note = arpNoteAt(ch, len, c, arpIdx[c], &elen);
           if (!elen) note = ch[0];       // degenerate walk: hold the chord
@@ -2420,12 +2567,12 @@ static void seqAdvanceOnce(bool start, const bool *go,
           note = rootOf(ch, len);         // SEQ_MONO_ROOT
         }
         if (!mapped) {
-          // BASS: fold the STORED line into the live LOW..RANGE window
+          // BASS/LEAD: fold the STORED line into the live LOW..RANGE window
           // first (RANGE 2->1 lowers the upper octave into it, 1->2
           // restores the originals - stored notes never change), then
           // apply SEQMODE ENC1's octave shift: shifting AFTER the fold
           // keeps the transposition (folding after shNote would cancel it)
-          if (seqMonoTypeOf(c) == SEQ_MONO_BASS) {
+          if (mtype == SEQ_MONO_BASS || mtype == SEQ_MONO_LEAD) {
             int wlo = 24 + 12 * seqGenLowOf(c);
             int whi = wlo + 12 * seqGenRangeOf(c) - 1;
             if (whi > 127) whi = 127;
@@ -2949,14 +3096,15 @@ void seqEraseAll() {
 // their defaults - saved config survives the upgrade
 static const uint8_t  SEQ_EE_MAGIC = 0x53;
 static const uint16_t SEQ_EE_ADDR = 160;
-static const uint16_t SEQ_EE_LEN = 388;
-static const uint16_t SEQ_EE_LEN_OLD = 260;
+static const uint16_t SEQ_EE_LEN = 404;       // + LEAD contour[16] (b[387..402])
+static const uint16_t SEQ_EE_LEN_GNR8 = 388;  // previous: GNR8 params (b[259..386])
+static const uint16_t SEQ_EE_LEN_OLD = 260;   // legacy: before GNR8
 
 void seqCfgSave() {
   uint8_t b[SEQ_EE_LEN];
   b[0] = SEQ_EE_MAGIC;
   b[1] = seqEditCh + 1;
-  b[2] = seqMap();                    // GNR8 F2 mapping mode (0..3; was the
+  b[2] = seqMap();                    // GNR8/LEAD mapping mode (0..5; was the
                                       // shared prob clipboard)
   for (uint8_t i = 0; i < SEQ_CH_COUNT; i++) {
     b[3 + i] = (uint8_t)seqOct[i];
@@ -2983,6 +3131,7 @@ void seqCfgSave() {
     b[339 + i] = seqGenLowOf(i);              // GNR8 low note 0..2
     b[355 + i] = seqGenRangeOf(i);            // GNR8 range 1..5 octaves
     b[371 + i] = seqGenAlgoOf(i);             // GNR8 classic/euclid
+    b[387 + i] = seqLeadContourOf(i);         // LEAD contour 0..2 (ARCH/DESC/WALK)
   }
   uint8_t sum = 0;
   for (uint16_t i = 0; i < SEQ_EE_LEN - 1; i++) sum += b[i];
@@ -2993,15 +3142,20 @@ void seqCfgSave() {
 void seqCfgLoad() {
   uint8_t b[SEQ_EE_LEN];
   EEPROM.get(SEQ_EE_ADDR, b);
-  uint8_t sum = 0;
-  for (uint16_t i = 0; i < SEQ_EE_LEN - 1; i++) sum += b[i];
-  bool ext = (b[0] == SEQ_EE_MAGIC && sum == b[SEQ_EE_LEN - 1]);
-  if (!ext) {
-    // legacy 260-byte block: same magic, checksum right after follow[16]
-    uint8_t oldSum = 0;
-    for (uint16_t i = 0; i < SEQ_EE_LEN_OLD - 1; i++) oldSum += b[i];
-    if (b[0] != SEQ_EE_MAGIC || oldSum != b[SEQ_EE_LEN_OLD - 1]) return;
+  // pick the NEWEST block length whose magic + checksum validate, so an
+  // older save (388 = GNR8, 260 = legacy) still restores its fields and
+  // the newer ones keep their defaults
+  uint16_t len = 0;
+  for (uint16_t L = SEQ_EE_LEN;; L = (L == SEQ_EE_LEN) ? SEQ_EE_LEN_GNR8
+                                                        : SEQ_EE_LEN_OLD) {
+    uint8_t sum = 0;
+    for (uint16_t i = 0; i < L - 1; i++) sum += b[i];
+    if (b[0] == SEQ_EE_MAGIC && sum == b[L - 1]) { len = L; break; }
+    if (L == SEQ_EE_LEN_OLD) break;
   }
+  if (!len) return;
+  bool extG = (len >= SEQ_EE_LEN_GNR8);   // GNR8 params present
+  bool extL = (len >= SEQ_EE_LEN);        // LEAD contour present
   for (uint8_t i = 0; i < SEQ_CH_COUNT; i++) {
     int v = (int8_t)b[3 + i];            // octave: keep the cast signed
     if (v < -60) v = -60;
@@ -3037,8 +3191,8 @@ void seqCfgLoad() {
     seqOctClamp(i);                      // content bounds (empty = convention)
   }
   seqSetEditChannel(b[1]);               // validates 1..16, keeps focus sane
-  seqMapSet(b[2]);                       // GNR8 F2 mapping (bad -> NEAR)
-  if (ext) {                             // GNR8 params (new-format block;
+  seqMapSet(b[2]);                       // GNR8/LEAD mapping (bad -> NEAR)
+  if (extG) {                            // GNR8 params (new-format block;
     for (uint8_t i = 0; i < SEQ_CH_COUNT; i++) {   // legacy blocks keep the
       seqGenFillSet(i, b[259 + i]);                 // defaults above)
       seqGenAccSet(i, b[275 + i]);
@@ -3049,6 +3203,10 @@ void seqCfgLoad() {
       seqGenRangeSet(i, b[355 + i]);
       seqGenAlgoSet(i, b[371 + i]);
     }
+  }
+  if (extL) {                            // LEAD contour (newest block only)
+    for (uint8_t i = 0; i < SEQ_CH_COUNT; i++)
+      seqLeadContourSet(i, b[387 + i]);  // clamped inside (bad -> ARCH)
   }
 }
 

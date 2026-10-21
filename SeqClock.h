@@ -37,12 +37,18 @@ void seqSetTrackType(uint8_t idx, uint8_t t);  // raw set (EEPROM load), clamped
 // BASS = lowest note, ARP = chord notes ascending, 1 note per playhead
 // step, wraps; counter resets on transport stop.  STRUM = the whole chord
 // raked inside each step (ascending, each note cutting the last, last note
-// held to the gate).  Default ROOT everywhere.
+// held to the gate).  LEAD = the generated MELODY line: its own steps gate
+// the rhythm, the notes are re-resolved onto the feeding track's chord via
+// FOLLOW + MAP (ct = nearest chord tone, gd = nearest guide tone = 3rd/7th)
+// - see the LEAD generator in Gen.cpp.  Default ROOT everywhere.
+// NOTE: POLY shares this byte (0..2 is always a valid POLY value; a stale
+// 3/4 from a MONO edit reads as STEP).
 enum SeqMonoType : uint8_t { SEQ_MONO_ROOT = 0, SEQ_MONO_BASS = 1,
-                             SEQ_MONO_ARP = 2, SEQ_MONO_STRUM = 3 };
+                             SEQ_MONO_ARP = 2, SEQ_MONO_STRUM = 3,
+                             SEQ_MONO_LEAD = 4 };
 void seqMonoTypeAdjust(int16_t counts);  // edit channel; 4 counts = 1 step, no wrap
 uint8_t seqMonoType();                   // edit channel
-const char* seqMonoTypeName();           // "ROOT" / "BASS" / "ARP" / "STRUM"
+const char* seqMonoTypeName();           // "ROOT" / "BASS" / "ARP" / "STRUM" / "LEAD"
 uint8_t seqMonoTypeOf(uint8_t idx);      // sequence idx 0..15
 void seqSetMonoType(uint8_t idx, uint8_t m);   // raw set (EEPROM load), clamped
 
@@ -52,14 +58,18 @@ void seqSetMonoType(uint8_t idx, uint8_t m);   // raw set (EEPROM load), clamped
 // is raked ascending with the fixed tempo-based spread (8-40 ms), HAND =
 // the keyboard performs: chord building is silent (incoming chords still
 // update it), the 7 white keys strum the chord, REC captures the strum
-// gesture (note order + real timing) for playback.  Stored in the same
-// byte as the MONO transform; stale MONO values > 2 read as STEP.
+// gesture (note order + real timing) for playback.  HARM = the track is a
+// harmonizer: it plays its stored chords like STEP, but the M2 HARM page
+// (M3) bakes a chord progression inferred from the FOLLOW feeder's bassline
+// into the steps (inverse FOLLOW - bass -> HARM -> chords).  Stored in the
+// same byte as the MONO transform; stale MONO values > 3 read as STEP (the
+// track kind stored alongside disambiguates on load).
 enum SeqPolyType : uint8_t { SEQ_POLY_STEP = 0, SEQ_POLY_STRUM = 1,
-                             SEQ_POLY_HAND = 2 };
+                             SEQ_POLY_HAND = 2, SEQ_POLY_HARM = 3 };
 void seqPolyTypeAdjust(int16_t counts);  // edit channel; 4 counts = 1 step, no wrap
-uint8_t seqPolyType();                   // edit channel, clamped 0..2
-const char* seqPolyTypeName();           // "STEP" / "STRUM" / "HAND"
-uint8_t seqPolyTypeOf(uint8_t idx);      // sequence idx 0..15, clamped 0..2
+uint8_t seqPolyType();                   // edit channel, clamped 0..3
+const char* seqPolyTypeName();           // "STEP" / "STRUM" / "HAND" / "HARM"
+uint8_t seqPolyTypeOf(uint8_t idx);      // sequence idx 0..15, clamped 0..3
 
 // ARP options (SEQMODE M2 page, edit track must be MONO + TYPE=ARP):
 // span = octaves the arp is stretched over (Arpie: up to 3 more octaves on
@@ -119,15 +129,19 @@ bool seqFollow();                        // ENC3: edit track follows its feeder
 bool seqFollowOf(uint8_t ch);            // follow state of sequence ch 0..15
 void seqFollowSet(bool on);              // edit track (4 counts = state, CW=ON)
 void seqFollowSetOf(uint8_t ch, bool on);      // restore (seqCfgLoad)
-// GNR8 BASS mapping (F2 ENC3): how FOLLOW re-resolves a generated step
-// note onto the incoming chord - NEAR = nearest chord tone inside the
-// LOW..RANGE window, ROOT = the chord's lowest tone (octave-shaped),
-// DEGREE = scale degree -> Nth chord tone, IVL = lowest tone + semitone
-// offset from KEY root (can leave the chord).  Global, boot NEAR,
-// persisted in the reserved SEQ config byte b[2]
-enum { SEQ_MAP_NEAR = 0, SEQ_MAP_ROOT, SEQ_MAP_DEG, SEQ_MAP_IVL };
-uint8_t     seqMap();                   // current mode 0..3
+// GNR8 BASS mapping (F2 ENC3) + LEAD melody resolution: how FOLLOW
+// re-resolves a generated step note onto the incoming chord - NEAR =
+// nearest chord tone inside the LOW..RANGE window, ROOT = the chord's
+// lowest tone (octave-shaped), DEGREE = scale degree -> Nth chord tone,
+// IVL = lowest tone + semitone offset from KEY root (can leave the chord),
+// CT = chord TONE whose OCTAVE follows the generated contour note (melody
+// shape preserved across the chord), GD = nearest GUIDE tone = the chord's
+// 3rd and 7th only (falls back to NEAR when the chord has none).  Global,
+// boot NEAR, persisted in the reserved SEQ config byte b[2] (0..5)
+enum { SEQ_MAP_NEAR = 0, SEQ_MAP_ROOT, SEQ_MAP_DEG, SEQ_MAP_IVL,
+       SEQ_MAP_CT, SEQ_MAP_GD };
+uint8_t     seqMap();                   // current mode 0..5
 void        seqMapSet(uint8_t m);       // clamped (bad -> NEAR); restore path
 void        seqMapAdjust(int16_t counts);  // edit map (4 counts = 1 mode)
-const char *seqMapName(uint8_t m);      // "near" "root" "deg" "ivl"
+const char *seqMapName(uint8_t m);      // "near" "root" "deg" "ivl" "ct" "gd"
 void seqDiagNote(uint8_t section, uint32_t us);  // track worst loop stalls; 1Hz report

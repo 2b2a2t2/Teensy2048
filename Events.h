@@ -100,6 +100,25 @@ uint8_t genOptionSel();
 // nothing valid is picked - dies with the page
 int8_t genStepSelStep();
 
+// SEQMODE M2 (variants 1/2/4) on a MONO+LEAD edit track: a click toggles
+// the LEAD encoder page - ENC2 = contour (ARCH/DESC/WALK), ENC3 = LOW,
+// ENC4 = RANGE, ENC7 = density %; ENC1/5/6/8 keep OCT/GATE/VEL/PROB.
+// M3 tap = generate the melody / M3 hold = undo, mirroring GNR8.
+// Composite active check like the arp page: a mid-hold channel / TYPE /
+// mode switch drops the page by itself
+void leadPageToggle();
+void leadPageDismiss();
+bool leadPageActive();
+
+// SEQMODE M2 (variants 1/2/4) on a POLY+HARM edit track: a click toggles
+// the HARM encoder page - ENC1 = GENRE, ENC2 = SRC (bass/arp), ENC3 = HOLD.
+// M3 tap = bake the progression inferred from the FOLLOW feeder's bassline
+// / M3 hold = undo, mirroring GNR8/LEAD.  Composite active check like the
+// other pages: a mid-hold channel / TYPE / mode switch drops it by itself
+void harmPageToggle();
+void harmPageDismiss();
+bool harmPageActive();
+
 // GNR8 TIE span fill (MONO+BASS, TIE target only): HOLD a step to arm the
 // span start, the next tap on another step stamps TIE across the span
 // (called on target / mode / channel / track switches so a stale arm can

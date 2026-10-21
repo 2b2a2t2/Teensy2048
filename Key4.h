@@ -52,6 +52,14 @@ void    k4EmbPlaceAdjust(int16_t counts); // CW = dist, CCW = odd
 uint8_t k4EmbPlace();                     // 0 odd, 1 distance
 const char* k4EmbPlaceName();             // "ODD" / "DIST"
 
+// --- HARM settings (POLY TYPE=HARM page: ENC1 = GENRE, ENC2 = SRC, ENC3 = HOLD)
+void    k4HarmInputAdjust(int16_t counts); // CW = arp, CCW = bass
+bool    k4HarmInput();                     // false = bass (A), true = arp (B)
+const char* k4HarmInputName();             // "BASS" / "ARP"
+void    k4HarmHoldAdjust(int16_t counts);  // CW = on, CCW = off
+bool    k4HarmHold();                      // force hold on repeated bass
+const char* k4HarmHoldName();              // "OFF" / "ON"
+
 // --- embellishment encoders (PREV hold: EN5-8) -------------------------------
 void    k4EmbSubProbAdjust(int16_t counts);  // EN5: substitution probability 0..100
 uint8_t k4EmbSubProb();
@@ -102,6 +110,18 @@ int  k4KeyCommitted();          // after press: write focus + advance
 int  k4ApplyAll();              // M3 tap: generate every unlocked step
 int  k4Regenerate();            // GENRE/knob turn: re-generate live (burst undo)
 int  k4Variation();             // F1: reseed, then generate
+int  k4Harm();                  // POLY TYPE=HARM page M3: inverse FOLLOW -
+                                // harmonize the FOLLOW feeder's bassline/arp
+                                // into chords baked into the HARM track
+                                // (Viterbi over source-fit + genre; returns
+                                // steps written, -1 refused)
+int  k4HarmRebake();            // automatic re-bake after a feeder change:
+                                // same inference, no undo snapshot, unchanged
+                                // steps left untouched (K4 context untouched)
+int  k4HarmStepChord(uint8_t step, uint8_t *notes);  // the chord HARM infers
+                                // for ONE step (HARM track step activation with
+                                // no held gesture): same Viterbi the bake uses;
+                                // returns note count (0 = nothing to record)
 int  k4Undo();                  // M3 hold: restore the last snapshot
 void k4Stop();                  // leaving KEYMODE4
 void k4Enter();                 // entering: seed from the engine's chord

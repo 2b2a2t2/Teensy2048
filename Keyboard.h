@@ -217,8 +217,23 @@ void stepAssignSet(int8_t step);     // step = 0..63 to arm, -1 to disarm
 int            stepChordWrite(uint8_t step, const uint8_t *notes, uint8_t n);
                                                            // stored n, -1 = bad
 const uint8_t* stepChordAt(uint8_t step, uint8_t *len);    // stored chord (edit seq)
+// HARM (Key4.cpp reads the feeder bassline): the input channel the edit
+// channel follows (1-based, 0 = none/self) and a channel-targeted step
+// reader so the harmonizer can read another track's stored notes
+uint8_t        seqFeederChannel();
+const uint8_t* stepChordAtCh(uint8_t ch, uint8_t step, uint8_t *len);
 void           stepSnapshotTake();     // snapshot the edit sequence for undo
 int            stepSnapshotRestore();  // 0 = restored (switches back the ch), -1 = none
+// true when the step already holds exactly these notes as stepChordWrite
+// would store them (same count, same octave pre-compensation) - lets the
+// automatic HARM re-bake skip a step whose chord did not move
+bool           stepChordSame(uint8_t step, const uint8_t *notes, uint8_t n);
+// HARM auto re-bake: harmFeederChanged marks every POLY+HARM track that
+// feeds from ch0 (FOLLOW on); harmRebakePoll runs the marked bakes - called
+// once per loop pass from Teensy2048.ino right before the display draw, so
+// a burst of feeder writes costs one Viterbi pass instead of one per step
+void           harmFeederChanged(uint8_t ch0);
+void           harmRebakePoll();
 
 // GNR8 generator write path (Gen.cpp drives it): one note per step,
 // stamped like stepChordWrite (octave pre-compensated, followers and the

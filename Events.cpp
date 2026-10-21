@@ -183,6 +183,39 @@ void genPageDismiss() {
 bool genPageActive()  { return genPageOn && genTrackCtx(); }
 uint8_t genOptionSel() { return genPageActive() ? genOptSel : 0xFF; }
 
+// --- SEQMODE M2 "LEAD" page (variants 1/2/4) -------------------------------
+// Clicking M2 on a MONO+LEAD edit track rebinds ENC2/3/4/7 to the melody
+// generator's knobs (contour/low/range/density).  Like the ARP/GNR8 pages
+// the active check is composite, so a mid-hold channel/TYPE/mode switch
+// can never leave a stale page behind.  ROOT/BASS/ARP/STRUM never take it.
+static bool leadPageOn = false;
+
+static bool leadTrackCtx() {
+  return modeBase == MODE_SEQ && modeVariant != 3 &&
+         seqTrack() == SEQ_TRACK_MONO && seqMonoType() == SEQ_MONO_LEAD;
+}
+
+void leadPageToggle() { leadPageOn = !leadPageOn; }
+void leadPageDismiss() { leadPageOn = false; }
+bool leadPageActive()  { return leadPageOn && leadTrackCtx(); }
+
+// --- SEQMODE M2 "HARM" page (variants 1/2/4) --------------------------------
+// Clicking M2 on a POLY+HARM edit track rebinds the encoder row to the
+// harmonizer: ENC1 = GENRE (the harmonic grammar), ENC2 = SRC (bass/arp
+// source), ENC3 = HOLD (force hold on a repeated bass).  M3 bakes the
+// progression inferred from the FOLLOW feeder's bassline into the track's
+// steps, M3 hold undoes it.  Composite active check like the other pages.
+static bool harmPageOn = false;
+
+static bool harmTrackCtx() {
+  return modeBase == MODE_SEQ && modeVariant != 3 &&
+         seqTrack() == SEQ_TRACK_POLY && seqPolyType() == SEQ_POLY_HARM;
+}
+
+void harmPageToggle() { harmPageOn = !harmPageOn; }
+void harmPageDismiss() { harmPageOn = false; }
+bool harmPageActive()  { return harmPageOn && harmTrackCtx(); }
+
 // selected step for the mod dials (F2/F3/F4), or -1: nothing picked yet,
 // or the pattern shrank / the step lost its content under the selection
 int8_t genStepSelStep() {
@@ -376,6 +409,8 @@ void handleButtonEvents() {
             arpPageDismiss();       // the new track may not be an arp
             strumFRowDismiss();     // ...and it may not strum either
             genPageDismiss();       // nor a BASS track for the GNR8 page
+            leadPageDismiss();      // nor a LEAD track for the LEAD page
+            harmPageDismiss();      // nor a HARM track for the HARM page
             stepChainDisarm();      // ...nor an armed chain span (old ch)
             refreshAllLeds();        // M1 + F-row follow the radio again
             // the whole grid belongs to the new channel (length, speed,
@@ -638,6 +673,16 @@ void handleButtonEvents() {
             droppedPage = true;
             if (logRoom(48)) Serial.println("  arp page off (edit on)");
           }
+          if (leadPageActive()) {     // ...and the LEAD page
+            leadPageDismiss();
+            droppedPage = true;
+            if (logRoom(48)) Serial.println("  lead page off (edit on)");
+          }
+          if (harmPageActive()) {     // ...and the HARM page
+            harmPageDismiss();
+            droppedPage = true;
+            if (logRoom(48)) Serial.println("  harm page off (edit on)");
+          }
           stepEditSet(true, 0);
           headerShow("EDIT ON");
           if (logRoom(48)) Serial.println("  step edit on (steps)");
@@ -783,6 +828,16 @@ void handleButtonEvents() {
           arpPageDismiss();
           droppedArp = true;
           if (logRoom(48)) Serial.println("  arp page off (edit target)");
+        }
+        if (leadPageActive()) {     // ...same exclusivity for the LEAD page
+          leadPageDismiss();
+          droppedArp = true;
+          if (logRoom(48)) Serial.println("  lead page off (edit target)");
+        }
+        if (harmPageActive()) {     // ...and the HARM page
+          harmPageDismiss();
+          droppedArp = true;
+          if (logRoom(48)) Serial.println("  harm page off (edit target)");
         }
         stepEditSet(true, (uint8_t)(idx + 1));
         headerShow(tn[idx]);
@@ -958,6 +1013,46 @@ void handleButtonEvents() {
         if (logRoom(48)) {
           Serial.print("  gen page ");
           Serial.println(genPageActive() ? "on" : "off");
+        }
+        refreshAllLeds();
+        refreshMainScreen();
+      } else if (ev == EV_CLICKED && leadTrackCtx()) {
+        // SEQMODE 1/2/4 + MONO/LEAD: M2 clicks the LEAD encoder page on/off.
+        // Opening it drops the M1 edit radio - the two keys are mutually
+        // exclusive (M1's toggle closes this page instead)
+        leadPageToggle();
+        if (leadPageActive()) {
+          if (stepEditIsOn()) {
+            stepEditSet(false, 0);
+            if (logRoom(48)) Serial.println("  edit off (lead open)");
+          }
+        } else {
+          stepChainDisarm();           // the F row leaves too
+        }
+        headerShow(leadPageActive() ? "LEAD" : "LEAD OFF");
+        if (logRoom(48)) {
+          Serial.print("  lead page ");
+          Serial.println(leadPageActive() ? "on" : "off");
+        }
+        refreshAllLeds();
+        refreshMainScreen();
+      } else if (ev == EV_CLICKED && harmTrackCtx()) {
+        // SEQMODE 1/2/4 + POLY/HARM: M2 clicks the HARM encoder page on/off.
+        // Opening it drops the M1 edit radio - the two keys are mutually
+        // exclusive (M1's toggle closes this page instead)
+        harmPageToggle();
+        if (harmPageActive()) {
+          if (stepEditIsOn()) {
+            stepEditSet(false, 0);
+            if (logRoom(48)) Serial.println("  edit off (harm open)");
+          }
+        } else {
+          stepChainDisarm();           // the F row leaves too
+        }
+        headerShow(harmPageActive() ? "HARM" : "HARM OFF");
+        if (logRoom(48)) {
+          Serial.print("  harm page ");
+          Serial.println(harmPageActive() ? "on" : "off");
         }
         refreshAllLeds();
         refreshMainScreen();
@@ -1150,6 +1245,61 @@ void handleButtonEvents() {
         if (logRoom(48)) {
           Serial.print("  ");
           Serial.println(gb);
+        }
+      } else if (ev == EV_HOLD) {
+        int u = stepSnapshotRestore();
+        headerShow(u == 0 ? "undo" : "nothing to undo");
+        refreshAllLeds();
+        refreshMainScreen();
+        if (logRoom(48))
+          Serial.println(u == 0 ? "  undo" : "  nothing to undo");
+      }
+    }
+
+    // LEAD (SEQMODE 1/2/4 + MONO/LEAD): M3 tap = generate the melody from
+    // the page's contour + LOW/RANGE/density (notes inside the KEY + SCALE,
+    // stored as a skeleton LEAD + FOLLOW + MAP re-resolves onto the feeder
+    // chord), M3 hold = undo - the shared one-level step snapshot, exactly
+    // like the GNR8 generate/undo pair
+    if (modeBase == MODE_SEQ && modeVariant != 3 && leadTrackCtx() &&
+        k4ci == 4) {
+      if (ev == EV_CLICKED) {
+        int w = seqLeadProduce();
+        char lb[24];
+        snprintf(lb, sizeof(lb), "lead %d steps", w > 0 ? w : 0);
+        headerShow(lb);
+        refreshAllLeds();       // the step LEDs follow the new melody
+        refreshMainScreen();
+        if (logRoom(48)) {
+          Serial.print("  ");
+          Serial.println(lb);
+        }
+      } else if (ev == EV_HOLD) {
+        int u = stepSnapshotRestore();
+        headerShow(u == 0 ? "undo" : "nothing to undo");
+        refreshAllLeds();
+        refreshMainScreen();
+        if (logRoom(48))
+          Serial.println(u == 0 ? "  undo" : "  nothing to undo");
+      }
+    }
+
+    // HARM (SEQMODE 1/2/4 + POLY/HARM): M3 tap = bake the chord progression
+    // inferred from the FOLLOW feeder's bassline/arp into this track's steps
+    // (k4Harm: Viterbi over source-fit + the KEYMODE4 genre grammar), M3
+    // hold = undo - the shared one-level step snapshot, like GNR8/LEAD
+    if (modeBase == MODE_SEQ && modeVariant != 3 && harmTrackCtx() &&
+        k4ci == 4) {
+      if (ev == EV_CLICKED) {
+        int w = k4Harm();
+        char hb[24];
+        snprintf(hb, sizeof(hb), "harm %d steps", w > 0 ? w : 0);
+        headerShow(hb);
+        refreshAllLeds();       // the step LEDs follow the new chords
+        refreshMainScreen();
+        if (logRoom(48)) {
+          Serial.print("  ");
+          Serial.println(hb);
         }
       } else if (ev == EV_HOLD) {
         int u = stepSnapshotRestore();
@@ -1713,8 +1863,9 @@ void handleEncoderEvents() {
           }
         }
         any = true;
-      } else if (ei == 0 && ed != 0) {
+      } else if (ei == 0 && ed != 0 && !harmPageActive()) {
         seqOctaveShiftAdjust(ed);           // octave shift of the edit seq
+        // (the open HARM page takes ENC1 for its GENRE - handled below)
         if (logRoom(48)) {
           Serial.print("  octshift ");
           Serial.println(seqOctaveShift());
@@ -1788,6 +1939,76 @@ void handleEncoderEvents() {
               Serial.print("  inst ");
               Serial.println(seqArpInstName(seqArpInstOf(seq)));
             }
+          }
+        // M2 LEAD page: ENC2 = contour (ARCH/DESC/WALK), ENC3 = LOW,
+        // ENC4 = RANGE (1..5 oct), ENC7 = density % (the shared FILL slot).
+        // These four are the page's own knobs; ENC1 (octave), ENC5/6
+        // (gate/vel) and ENC8 (prob) keep their bindings, and a TYPE/
+        // channel/mode change drops the page
+        } else if (ed != 0 && leadPageActive() &&
+            (ei == 1 || ei == 2 || ei == 3 || ei == 6)) {
+          uint8_t seq = (uint8_t)(seqEditChannel() - 1);
+          if (ei == 1) {
+            seqLeadContourAdjust(ed);
+            if (logRoom(48)) {
+              Serial.print("  contour ");
+              Serial.println(seqLeadContourName(seqLeadContourOf(seq)));
+            }
+          } else if (ei == 2) {
+            seqGenLowAdjust(ed);
+            if (logRoom(48)) {
+              Serial.print("  low ");
+              Serial.println(seqGenLowName(seqGenLowOf(seq)));
+            }
+          } else if (ei == 3) {
+            seqGenRangeAdjust(ed);
+            if (logRoom(48)) {
+              Serial.print("  range ");
+              Serial.print(seqGenRangeOf(seq));
+              Serial.println(" oct");
+            }
+          } else {
+            seqGenFillAdjust(ed);          // LEAD density % (shared FILL)
+            if (logRoom(48)) {
+              Serial.print("  dens ");
+              Serial.print(seqGenFillOf(seq));
+              Serial.println("%");
+            }
+          }
+        // M2 HARM page: ENC1 = GENRE (the harmonic grammar), ENC2 = FILL
+        // (the HARM track's FILL% - the same per-track roll gate the
+        // generators use; M3 lands chords on the rolled steps and clears
+        // the rest), ENC3 = SRC (bass/arp source for the feeder read),
+        // ENC4 = HOLD (force hold on a repeated bass).  M3 bakes; ENC5..8
+        // keep their bindings, and a TYPE/channel/mode change drops the page
+        } else if (ed != 0 && harmPageActive() &&
+            (ei == 0 || ei == 1 || ei == 2 || ei == 3)) {
+          if (ei == 0) {
+            k4GenreAdjust(ed);
+            headerShow(k4GenreShort());   // announce the picked genre
+            if (logRoom(48)) {
+              Serial.print("  genre ");
+              Serial.println(k4GenreName());
+            }
+          } else if (ei == 1) {
+            seqGenFillAdjust(ed);         // FILL% of the HARM track itself
+            char fb[10];
+            snprintf(fb, sizeof(fb), "FILL %u%%",
+                     seqGenFillOf((uint8_t)(seqEditChannel() - 1)));
+            headerShow(fb);
+            if (logRoom(48)) { Serial.print("  "); Serial.println(fb); }
+          } else if (ei == 2) {
+            k4HarmInputAdjust(ed);
+            char sb[10];
+            snprintf(sb, sizeof(sb), "SRC %s", k4HarmInputName());
+            headerShow(sb);
+            if (logRoom(48)) { Serial.print("  "); Serial.println(sb); }
+          } else {
+            k4HarmHoldAdjust(ed);
+            char hh[12];
+            snprintf(hh, sizeof(hh), "HOLD %s", k4HarmHoldName());
+            headerShow(hh);
+            if (logRoom(48)) { Serial.print("  "); Serial.println(hh); }
           }
         // F3 held: ENC6 = ACCENT velocity of the edit track (every track
         // type).  Otherwise the step-edit value encoders: ENC5 = gate %,
@@ -1903,6 +2124,8 @@ void handleEncoderEvents() {
         if (seqTrack() != SEQ_TRACK_MONO) arpPageDismiss();  // no arp left
         if (!strumFRowCtx()) strumFRowDismiss();   // nor a strum ADDS row
         genPageDismiss();                  // the GNR8 page needs MONO+BASS
+        leadPageDismiss();                 // ...the LEAD page needs MONO+LEAD
+        harmPageDismiss();                 // ...the HARM page needs POLY+HARM
         stepChainDisarm();                 // ...and a chain arm outlives nothing
         refreshAllLeds();                  // the step-edit radio follows the track type
         if (logRoom(48)) {
@@ -1914,18 +2137,20 @@ void handleEncoderEvents() {
                  (seqTrack() == SEQ_TRACK_MONO ||
                   seqTrack() == SEQ_TRACK_POLY)) {
         if (seqTrack() == SEQ_TRACK_MONO) {
-          seqMonoTypeAdjust(ed);           // TYPE: ROOT/BASS/ARP/STRUM (no wrap)
+          seqMonoTypeAdjust(ed);           // TYPE: ROOT/BASS/ARP/STRUM/LEAD
           if (seqMonoType() != SEQ_MONO_ARP) arpPageDismiss();
           strumFRowDismiss();     // a MONO track never takes the ADDS row
           genPageDismiss();       // only TYPE = BASS takes the GNR8 page
+          leadPageDismiss();      // ...and only TYPE = LEAD takes the LEAD page
           stepChainDisarm();      // ...and the chain arm belongs to BASS
           if (logRoom(48)) {
             Serial.print("  mono ");
             Serial.println(seqMonoTypeName());
           }
         } else {
-          seqPolyTypeAdjust(ed);           // TYPE: STEP/STRUM/HAND (no wrap)
+          seqPolyTypeAdjust(ed);     // TYPE: STEP/STRUM/HAND/HARM (no wrap)
           if (!strumFRowCtx()) strumFRowDismiss();   // left STRUM/HAND
+          if (seqPolyType() != SEQ_POLY_HARM) harmPageDismiss();  // left HARM
           if (logRoom(48)) {
             Serial.print("  poly ");
             Serial.println(seqPolyTypeName());

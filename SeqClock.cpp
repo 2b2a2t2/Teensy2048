@@ -277,14 +277,14 @@ void seqMonoTypeAdjust(int16_t counts) {
   if (!step) return;
   int16_t t = (int16_t)monoType[seqEditChannel() - 1] + step;
   if (t < SEQ_MONO_ROOT)  t = SEQ_MONO_ROOT;
-  if (t > SEQ_MONO_STRUM) t = SEQ_MONO_STRUM;
+  if (t > SEQ_MONO_LEAD)  t = SEQ_MONO_LEAD;
   monoType[seqEditChannel() - 1] = (uint8_t)t;
 }
 
 uint8_t seqMonoType() { return monoType[seqEditChannel() - 1]; }
 
 const char* seqMonoTypeName() {
-  static const char* names[4] = { "ROOT", "BASS", "ARP", "STRUM" };
+  static const char* names[5] = { "ROOT", "BASS", "ARP", "STRUM", "LEAD" };
   return names[seqMonoType()];
 }
 
@@ -294,17 +294,20 @@ uint8_t seqMonoTypeOf(uint8_t idx) {
 
 void seqSetMonoType(uint8_t idx, uint8_t m) {
   if (idx >= 16) return;
-  if (m > SEQ_MONO_STRUM) m = SEQ_MONO_STRUM;
+  if (m > SEQ_MONO_LEAD) m = SEQ_MONO_LEAD;
   monoType[idx] = m;
 }
 
 // SEQMODE3 TYPE (ENC7) on a POLY track: the track's default step playback
-// type, stored in the same byte as the MONO transform (0..2 is always a
-// valid POLY value; a stale 3 from a MONO edit reads as STEP and the first
+// type, stored in the same byte as the MONO transform (0..3 is a valid
+// POLY value; a stale 4 from a MONO/LEAD edit reads as STEP and the first
 // adjust snaps back into range).  STEP = chords play as blocks (as before),
 // STRUM = every step is raked with the fixed tempo spread, HAND = the
 // keyboard performs: silent chord build, white keys strum, REC captures
-// the gesture for playback.  A step can override this per step (F2 TYPE).
+// the gesture for playback, HARM = the track is a harmonizer (M2 HARM page
+// bakes a progression from the FOLLOW feeder's bassline; plays like STEP).
+// A step can override the playback style per step (F2 TYPE: STEP/STRUM/
+// HAND only - HARM is a track mode, not a per-step style).
 static int16_t polyRes = 0;               // leftover encoder counts (own)
 
 void seqPolyTypeAdjust(int16_t counts) {
@@ -320,25 +323,25 @@ void seqPolyTypeAdjust(int16_t counts) {
   bool wasHand = seqPolyTypeOf(ec) == SEQ_POLY_HAND;
   int16_t t = (int16_t)seqPolyType() + step;
   if (t < SEQ_POLY_STEP) t = SEQ_POLY_STEP;
-  if (t > SEQ_POLY_HAND) t = SEQ_POLY_HAND;
+  if (t > SEQ_POLY_HARM) t = SEQ_POLY_HARM;
   monoType[ec] = (uint8_t)t;
   if (wasHand != (seqPolyTypeOf(ec) == SEQ_POLY_HAND)) handRingCut(ec);
 }
 
 uint8_t seqPolyType() {
   uint8_t t = monoType[seqEditChannel() - 1];
-  return (t > SEQ_POLY_HAND) ? SEQ_POLY_STEP : t;
+  return (t > SEQ_POLY_HARM) ? SEQ_POLY_STEP : t;
 }
 
 const char* seqPolyTypeName() {
-  static const char* names[3] = { "STEP", "STRUM", "HAND" };
+  static const char* names[4] = { "STEP", "STRUM", "HAND", "HARM" };
   return names[seqPolyType()];
 }
 
 uint8_t seqPolyTypeOf(uint8_t idx) {
   if (idx >= 16) return SEQ_POLY_STEP;
   uint8_t t = monoType[idx];
-  return (t > SEQ_POLY_HAND) ? SEQ_POLY_STEP : t;
+  return (t > SEQ_POLY_HARM) ? SEQ_POLY_STEP : t;
 }
 
 // --- ARP options (SEQMODE M2 page), per track -----------------------------
@@ -462,7 +465,10 @@ void seqPatLenAdjust(int16_t counts) {
   int v = (int)patLen[ch] + step;
   if (v < 0) v = 0;
   if (v > 64) v = 64;
+  if ((uint8_t)v == patLen[ch]) return;
   patLen[ch] = (uint8_t)v;
+  harmFeederChanged(ch);   // the feeder window moved: HARM tracks that feed
+                           // from this channel re-bake (deferred, loop pass)
 }
 
 int seqPatLen() { return patLen[seqEditChannel() - 1]; }
@@ -581,7 +587,7 @@ static int16_t mapRes = 0;               // encoder residual (4 counts = 1)
 
 uint8_t seqMap() { return mapMode; }
 void seqMapSet(uint8_t m) {
-  mapMode = (m <= SEQ_MAP_IVL) ? m : SEQ_MAP_NEAR;
+  mapMode = (m <= SEQ_MAP_GD) ? m : SEQ_MAP_NEAR;
 }
 void seqMapAdjust(int16_t counts) {
   mapRes += counts;
@@ -591,7 +597,7 @@ void seqMapAdjust(int16_t counts) {
   if (!step) return;
   int16_t v = (int16_t)mapMode + step;
   if (v < SEQ_MAP_NEAR) v = SEQ_MAP_NEAR;
-  if (v > SEQ_MAP_IVL) v = SEQ_MAP_IVL;
+  if (v > SEQ_MAP_GD) v = SEQ_MAP_GD;
   mapMode = (uint8_t)v;
 }
 const char *seqMapName(uint8_t m) {
@@ -599,6 +605,8 @@ const char *seqMapName(uint8_t m) {
     case SEQ_MAP_ROOT: return "root";
     case SEQ_MAP_DEG:  return "deg";
     case SEQ_MAP_IVL:  return "ivl";
+    case SEQ_MAP_CT:   return "ct";
+    case SEQ_MAP_GD:   return "gd";
     default:           return "near";
   }
 }

@@ -3,6 +3,8 @@
 #include "Chords.h"       // chord engine build path, scale/root state
 #include "Keyboard.h"     // step writes, snapshots, edit sequence access
 #include "SeqClock.h"     // pattern length + edit window follow
+#include "Gen.h"          // FILL/ALGO gate for the bake's rhythm roll
+#include "bjorklund.h"    // Euclidean placement (same as the generators)
 #include "Display.h"      // headerShow: the progression announcement
 #include <stdio.h>
 #include <string.h>
@@ -27,6 +29,10 @@ static uint8_t  sEmbColorAmt = 50;  // EN8: extensions/sus/strum %
 static bool     sEmbMenu = false; // NEXT tap: the EMB/PLACE row is open
 static uint8_t  sEmbMode = 0;     // 0 = off, 1 = pass, 2 = pass + substitute
 static uint8_t  sEmbPlace = 0;    // 0 = every odd step, 1 = by bracket gap
+static bool     sHarmInput = false; // EMB ENC3: false = bass (Mode A),
+                                    // true = arp (Mode B) source for HARM
+static bool     sHarmHold  = false; // EMB ENC4: force hold when the bass
+                                    // repeats a note (independent of MOTION)
 static bool     sWrite = false;  // M1: boots in AUDITION, land = opt-in
 static bool     sAuto = false;   // M2: boots with auto-advance off
 static bool     sLead = false;   // F3: minimal-bass-movement inversions
@@ -665,6 +671,25 @@ const char* k4EmbPlaceName() {
 }
 
 // ---------------------------------------------------------------------------
+// HARM settings (EMB menu ENC3/ENC4)
+// ---------------------------------------------------------------------------
+// ENC3 picks the HARM source: BASS = treat each step's lowest note as a bass
+// line (Mode A, root-weighted consonance), ARP = treat the step notes as arp
+// tones (Mode B, any chord tone fits).  ENC4 forces a hold whenever the bass
+// repeats a note, independent of the MOTION knob.
+void k4HarmInputAdjust(int16_t counts) {
+  if (counts) sHarmInput = (counts > 0);        // CW = arp, CCW = bass
+}
+bool k4HarmInput() { return sHarmInput; }
+const char* k4HarmInputName() { return sHarmInput ? "ARP" : "BASS"; }
+
+void k4HarmHoldAdjust(int16_t counts) {
+  if (counts) sHarmHold = (counts > 0);         // CW = on, CCW = off
+}
+bool k4HarmHold() { return sHarmHold; }
+const char* k4HarmHoldName() { return sHarmHold ? "ON" : "OFF"; }
+
+// ---------------------------------------------------------------------------
 // embellishment encoders (PREV hold: EN5-8)
 // ---------------------------------------------------------------------------
 void k4EmbSubProbAdjust(int16_t counts) {
@@ -925,6 +950,261 @@ int k4ApplyAll() {
   stepSnapshotTake();
   sRegenSnap = false;
   return k4ApplyBody();
+}
+
+// ---------------------------------------------------------------------------
+// HARM: inverse FOLLOW - harmonize a feeder bassline into chords
+// ---------------------------------------------------------------------------
+// Reads the FOLLOW feeder track's stored notes (a MONOPHONIC BASSLINE or an
+// ARP, picked by the HARM page's SRC setting) and INFERS the chord that best
+// explains each step: a Viterbi pass over the 7 framework degrees where the
+// emission = how well the source fits as chord tones (bass: root > 5th >
+// 3rd; arp: any chord tone) and the transition = the existing scorePc term
+// (genre + motion + mood + cadence + voice-leading), so the source drives
+// the harmony while the genre grammar smooths the path.  Plain root-position
+// triads are baked into the HARM track's own steps (the feeder is only read,
+// never written), a REST in the source carries the previous chord; M3-hold
+// undoes the whole gesture.  Pairs with FOLLOW/LEAD: bass -> HARM -> chords
+// -> FOLLOW -> LEAD.  Driven by the POLY TYPE=HARM page (M3), reusing the
+// KEYMODE4 genre/knob grammar for the transitions.
+
+// how well a bass pitch class sits as a chord tone of rootPc in quality q
+// (root strongest, then the fifth, then the third; a non-chord-tone bass
+// falls off with the circular distance to the nearest chord tone)
+static uint8_t harmConsonance(uint8_t bassPc, uint8_t rootPc, uint8_t q) {
+  uint8_t t[3];
+  triadPcs(rootPc, q, t);
+  if (bassPc == t[0]) return 100;             // root position
+  if (bassPc == t[2]) return 85;              // fifth in the bass
+  if (bassPc == t[1]) return 70;              // third in the bass
+  uint8_t best = 12;
+  for (uint8_t i = 0; i < 3; i++) {
+    uint8_t d = (uint8_t)circDist(bassPc, t[i]);
+    if (d < best) best = d;
+  }
+  return (best <= 6) ? (uint8_t)(40u - 6u * best) : 0;   // non-chord tone
+}
+
+// feeder channel + length for the current HARM run (set by k4Harm before
+// the Viterbi; the harmonizer reads the FOLLOW feeder's stored bassline/arp)
+static uint8_t sHarmFeederCh = 0;    // 1-based (0 = none yet)
+static uint8_t sHarmFeederLen = 0;   // feeder pattern length
+
+// per-step emission for degree d at step t (50 = rest, flat so the
+// transitions decide).  Reads the FEEDER track's stored notes: arp = Mode B
+// every note is an arp tone (all chord tones fit equally); bass = Mode A
+// weights the lowest note root > fifth > third.  Read-only - writes happen
+// after the whole Viterbi, so re-reading is safe
+static uint8_t harmEmit(uint8_t t, uint8_t d, bool arp) {
+  uint8_t n = 0;
+  const uint8_t *nt = (t < sHarmFeederLen)
+                        ? stepChordAtCh(sHarmFeederCh, t, &n) : 0;
+  if (!nt || n == 0) return 50;                       // rest / past feeder
+  uint8_t rootPc = sFw[d];
+  uint8_t q = fwQuality(d);
+  if (!arp) {                                      // Mode A: bass
+    uint8_t low = nt[0];
+    for (uint8_t i = 1; i < n; i++) if (nt[i] < low) low = nt[i];
+    return harmConsonance((uint8_t)(low % 12), rootPc, q);
+  }
+  // Mode B: arp - every note should be a chord tone; average the fit
+  uint8_t tri[3];
+  triadPcs(rootPc, q, tri);
+  uint16_t sum = 0;
+  for (uint8_t i = 0; i < n; i++) {
+    uint8_t pc = (uint8_t)(nt[i] % 12);
+    if (pc == tri[0] || pc == tri[1] || pc == tri[2]) { sum += 100; continue; }
+    uint8_t bestD = 12;
+    for (uint8_t k = 0; k < 3; k++) {
+      uint8_t dd = (uint8_t)circDist(pc, tri[k]);
+      if (dd < bestD) bestD = dd;
+    }
+    sum += (bestD <= 6) ? (uint8_t)(40u - 6u * bestD) : 0;
+  }
+  return (uint8_t)(sum / n);
+}
+
+// emission scale: bass fit is the PRIMARY driver (a root-position fit must
+// outweigh a genre transition), the transitions then break ties / smooth
+#define HARM_EMIT_W 5000
+
+// Infer the full chord path from the feeder: reads the input channel's stored
+// bassline/arp, runs the Viterbi over the 7 framework degrees (emission = the
+// Mode A bass / Mode B arp fit, transition = the KEYMODE4 scorePc grammar) and
+// backtracks the best degree per step, then the hold-on-repeated-bass pass.
+// Fills path[0..L-1] (degree) and has[0..L-1] (feeder had content there);
+// returns the pattern length L (<=0 = nothing to infer).  Read-only: the
+// caller decides what to do with the path (bake every step, or just one)
+static int harmInferPath(uint8_t *path, bool *has) {
+  int L = seqPatLen();
+  if (L <= 0 || L > 64) return -1;
+  buildFw();
+  // FOLLOW gates the source: ON = read the INPUT channel (the bass/arp the
+  // HARM page points at), OFF = ignore it and harmonize this track's own
+  // notes in place.  The input channel is only HARM's generation source
+  // (never its mirror), and only while FOLLOW is on
+  sHarmFeederCh = seqFollow() ? seqFeederChannel() : seqEditChannel();
+  if (sHarmFeederCh < 1) sHarmFeederCh = seqEditChannel();
+  sHarmFeederLen = seqPatLenOf((uint8_t)(sHarmFeederCh - 1));
+  // read the whole feeder bassline first (lowest note pc per step; empty or
+  // past the feeder's length = rest)
+  uint8_t bass[64];
+  for (uint8_t st = 0; st < (uint8_t)L; st++) {
+    uint8_t n = 0;
+    const uint8_t *nt = (st < sHarmFeederLen)
+                          ? stepChordAtCh(sHarmFeederCh, st, &n) : 0;
+    if (!nt || n == 0) { has[st] = false; bass[st] = 0; continue; }
+    uint8_t low = nt[0];
+    for (uint8_t i = 1; i < n; i++) if (nt[i] < low) low = nt[i];
+    bass[st] = (uint8_t)(low % 12);
+    has[st] = true;
+  }
+  // Viterbi over the 7 framework degrees (emission = Mode A bass or Mode B
+  // arp fit, chosen by the EMB ENC3 setting; transition = scorePc)
+  static int32_t best[64][7];
+  static int8_t  back[64][7];
+  for (uint8_t d = 0; d < 7; d++)           // t = 0: emission only
+    best[0][d] = (int32_t)harmEmit(0, d, sHarmInput) * HARM_EMIT_W;
+  back[0][0] = -1;
+  for (uint8_t d = 1; d < 7; d++) back[0][d] = -1;
+  for (uint8_t t = 1; t < (uint8_t)L; t++) {
+    uint8_t consT[7];
+    for (uint8_t d = 0; d < 7; d++)
+      consT[d] = harmEmit(t, d, sHarmInput);
+    for (uint8_t d = 0; d < 7; d++) {
+      int32_t em = (int32_t)consT[d] * HARM_EMIT_W;
+      int32_t bestPrev = -1;
+      int8_t bestD = 0;
+      for (uint8_t dp = 0; dp < 7; dp++) {
+        uint32_t tr = scorePc(dp, sFw[d], t, sFw[dp], fwQuality(dp), 255);
+        int32_t cand = best[t - 1][dp] + (int32_t)tr;
+        if (cand > bestPrev) { bestPrev = cand; bestD = (int8_t)dp; }
+      }
+      best[t][d] = em + bestPrev;
+      back[t][d] = bestD;
+    }
+  }
+  // backtrack the best degree path
+  uint8_t dCur = 0;
+  {
+    int32_t m = -1;
+    for (uint8_t d = 0; d < 7; d++)
+      if (best[L - 1][d] > m) { m = best[L - 1][d]; dCur = d; }
+  }
+  for (int t = L - 1; t >= 0; t--) {
+    path[t] = dCur;
+    if (t > 0) dCur = (uint8_t)back[t][dCur];
+  }
+  // hold-on-repeated-bass (HARM page HOLD, bass mode only): a repeated bass
+  // note keeps the same degree instead of re-voicing, independent of MOTION
+  if (sHarmHold && !sHarmInput) {
+    for (uint8_t t = 1; t < (uint8_t)L; t++) {
+      if (!has[t] || !has[t - 1]) continue;
+      if (bass[t] == bass[t - 1]) path[t] = path[t - 1];
+    }
+  }
+  return L;
+}
+
+// shared bake body.  The manual M3 bake (automatic = false) claims the undo
+// slot and re-anchors the KEYMODE4 context; the automatic re-bake that
+// follows a feeder change (automatic = true) claims nothing - steps that
+// already hold the inferred chord are skipped entirely (attributes survive,
+// no sync churn) and the K4 context/proposal cache is left alone, so a
+// feeder edit never disturbs the focus or the M3-hold undo
+static int k4HarmBody(bool automatic) {
+  uint8_t path[64];
+  bool has[64];
+  int L = harmInferPath(path, has);
+  if (L <= 0) return -1;
+  // rhythm of the manual bake: the track's own FILL% / ALGO, the same roll
+  // gate the generators use (GNR8 page ENC2 / F1 ALGO) - a chord lands only
+  // on the rolled steps, a fail turns the step to rest, so the baked
+  // pattern keeps rests like a bassline instead of filling every step; M3
+  // re-rolls the rhythm on every press (M3-hold undoes it).  The automatic
+  // re-bake never rolls: it keeps the signature the last M3 roll left
+  uint8_t fill = 100;
+  bool euclid = false;
+  uint64_t bits = 0;
+  if (!automatic) {
+    stepSnapshotTake();                     // M3 hold = undo the harmonize
+    sRegenSnap = false;
+    sChain = false;
+    uint8_t idx = (uint8_t)(seqEditChannel() - 1);
+    fill = seqGenFillOf(idx);
+    euclid = seqGenAlgoOf(idx) == SEQ_GEN_EUCLID;
+    if (euclid) {
+      Bjorklund<uint64_t, 10> eu;
+      int16_t pulses = (int16_t)(((uint32_t)L * fill + 50) / 100);  // round
+      if (pulses > (int16_t)L) pulses = (int16_t)L;
+      bits = eu.compute((int8_t)L, (int8_t)pulses);
+    }
+    genSeedOnce();
+  }
+  // bake the inferred chords into the HARM track's own steps (the feeder is
+  // only read).  A REST step carries the previous chord, so the harmony
+  // holds through a source gap rather than inventing a new chord there
+  int written = 0;
+  uint8_t carry = path[0];
+  for (uint8_t st = 0; st < (uint8_t)L; st++) {
+    if (has[st]) carry = path[st];
+    if (automatic) {
+      // the re-bake keeps the rhythmic signature: it refreshes already-
+      // active steps only and never activates a disabled one
+      if (!stepIsActive(st)) continue;
+    } else {
+      bool on = euclid ? (((bits >> st) & 1) != 0)
+                       : ((uint8_t)random(100) < fill);
+      if (!on) {
+        if (stepIsActive(st)) stepGenClear(st);   // the roll says rest
+        continue;
+      }
+    }
+    uint8_t deg = has[st] ? path[st] : carry;
+    uint8_t q = fwQuality(deg);
+    uint8_t root = (uint8_t)(12 * keyOctave() + 24 + sFw[deg]);
+    uint8_t notes[8];
+    uint8_t n = chordBuild(root, q, 0, 0, notes);   // plain triad, root pos
+    if (n == 0) continue;
+    if (automatic && stepChordSame(st, notes, n)) { written++; continue; }
+    if (stepChordWrite(st, notes, n) < 0) continue;
+    written++;
+  }
+  if (!automatic) {
+    histRebuild();        // M3 re-anchors the K4 context on the pattern...
+    k4Refresh();          // ...and re-ranks the proposals
+  }
+  return written;
+}
+
+int k4Harm() { return k4HarmBody(false); }
+
+// the deferred auto re-bake entry (Keyboard.cpp harmRebakePoll): same
+// inference, no snapshot, no context rebuild
+int k4HarmRebake() { return k4HarmBody(true); }
+
+// The chord HARM infers for ONE step: the same Viterbi the M3 bake uses, so
+// activating a HARM track's step (with no held gesture) records exactly the
+// chord the bake would have written there - a chord that fits the feeder
+// bass/arp, never the feeder's raw single note.  Returns the note count
+// (0 = nothing to record: no feeder content yet, or step past the pattern)
+int k4HarmStepChord(uint8_t step, uint8_t *notes) {
+  if (!notes) return 0;
+  uint8_t path[64];
+  bool has[64];
+  int L = harmInferPath(path, has);
+  if (L <= 0 || step >= (uint8_t)L) return 0;
+  uint8_t carry = path[0];
+  bool any = false;
+  uint8_t deg = path[0];
+  for (uint8_t st = 0; st <= step; st++) {
+    if (has[st]) { carry = path[st]; any = true; }
+    deg = has[st] ? path[st] : carry;
+  }
+  if (!any) return 0;             // feeder empty up to here: keep pending
+  uint8_t q = fwQuality(deg);
+  uint8_t root = (uint8_t)(12 * keyOctave() + 24 + sFw[deg]);
+  return chordBuild(root, q, 0, 0, notes);   // plain triad, root pos
 }
 
 // live re-apply while a GENRE/knob turn changes the parameters: same walk
