@@ -40,6 +40,32 @@ static const int8_t kbPitchIdx[17] = {
 // last non-momentary variant per family (index = ModeBase), default 1
 static uint8_t familyMem[4] = { 0, 1, 1, 1 };
 
+// per-channel KEYMODE memory: each keyboard channel recalls the KEY
+// variant last latched on it (1/2/4 - the momentary hold, 3, is never
+// stored).  RAM only, like familyMem
+static uint8_t keyModeMem[16] = { 1, 1, 1, 1, 1, 1, 1, 1,
+                                  1, 1, 1, 1, 1, 1, 1, 1 };
+
+static void applyModeLeds();     // defined below; recall repaints too
+
+void keyModeRecall() {
+  uint8_t v = keyModeMem[keyChannel() - 1];
+  if (v < 1 || v > 4) v = 1;
+  familyMem[MODE_KEY] = v;    // next KEYMODE entry lands on it too
+  if (modeBase == MODE_KEY && modeVariant != v) {
+    // live switch while KEYMODE is showing (the keyboard moved to a
+    // channel with a different remembered variant): same chord/K4
+    // housekeeping modeOnEvent does on a variant change
+    bool wasK4 = (modeVariant == 4);
+    modeVariant = v;
+    if (v == 4 && !wasK4) k4Enter();
+    if (wasK4 && v != 4) k4Stop();
+    applyModeLeds();
+    headerSetLeft(modeName());
+    refreshMainScreen();
+  }
+}
+
 // playback blink phase: set by pollModeLeds(), read by modeLedHook() -
 // while the playhead sounds notes on the keyboard channel, their pitch
 // classes flash dim green on the keys (blink wins over the idle colors)
@@ -880,16 +906,18 @@ void modeOnEvent(uint8_t pad, uint8_t ev) {
 
   if (ev == EV_RELEASED) {
     // releasing the held mode button ends the hold.  ENCMODE3 always exits
-    // INTO ENCMODE: a hold started inside the ENCMODE family restores that
-    // variant, a hold started anywhere else lands on ENCMODE variant 1
+    // INTO ENCMODE and SEQMODE3 always exits INTO SEQMODE: a hold started
+    // inside that family restores that variant, a hold started anywhere
+    // else lands on that family's variant 1.  KEYMODE3 is the only one
+    // that restores the previous base/variant wherever it came from
     if (heldActive && pad == heldPad) {
       heldActive = false;
       if (modeBase == b && modeVariant == 3) {
-        if (b == MODE_ENC) {
-          modeBase = MODE_ENC;
-          modeVariant = (heldPrevBase == MODE_ENC) ? heldPrevVariant : 1;
+        if (b == MODE_ENC || b == MODE_SEQ) {
+          modeBase = b;
+          modeVariant = (heldPrevBase == b) ? heldPrevVariant : 1;
         } else {
-          modeBase = heldPrevBase;         // SEQ3 / KEY3: back where we were
+          modeBase = heldPrevBase;         // KEY3: back where we were
           modeVariant = heldPrevVariant;
         }
         applyModeLeds();
@@ -923,15 +951,20 @@ void modeOnEvent(uint8_t pad, uint8_t ev) {
       modeVariant = familyMem[b] ? familyMem[b] : 1;
     }
     familyMem[b] = modeVariant;
+    // a latched KEY variant belongs to the keyboard channel it was set
+    // on (the channel recalls it next time - keyModeRecall); the
+    // momentary hold (3) is never stored
+    if (b == MODE_KEY && modeVariant >= 1 && modeVariant <= 4)
+      keyModeMem[keyChannel() - 1] = modeVariant;
   }
   modeBase = b;
 
-  // entering the ENCMODE family from outside always restarts on the F1
-  // CC bank in the lower M3 page group (radio defaults; variant hops
-  // inside the family keep the armed bank / group)
+  // entering the ENCMODE family from outside takes the page (F bank +
+  // group) the CURRENT encoder channel last used - the per-channel
+  // memory, not a hard F1 reset (variant hops inside the family keep
+  // the armed bank / group as before)
   if (modeBase == MODE_ENC && wasBase != MODE_ENC) {
-    encBankSet(0);
-    encM3PageSet(false);
+    encPageRecall();
   }
 
   // the engine resets when the keyboard leaves the chord variants OR when

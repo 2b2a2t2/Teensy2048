@@ -1,4 +1,5 @@
 #include "Encoders.h"
+#include "Events.h"    // encPageRecall - per-channel F bank + page group
 #include <Encoder.h>
 
 Encoder enc1(40, 39);
@@ -64,7 +65,9 @@ long encPosition(uint8_t idx) {
 static uint8_t encCh = 1;
 
 void encSetChannel(uint8_t ch) {
-  if (ch >= 1 && ch <= 16) encCh = ch;
+  if (ch < 1 || ch > 16 || ch == encCh) return;
+  encCh = ch;
+  encPageRecall();   // the new channel takes its own last F bank + group
 }
 
 uint8_t encChannel() { return encCh; }

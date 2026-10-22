@@ -23,7 +23,23 @@ ideas. It persists across sessions — never rely on chat memory for tasks.
 1. Teensyduino (Arduino IDE or VS Code + PlatformIO), libraries: FastLED,
    U8g2, Encoder, Adafruit_MPR121, uClock.
 2. Open `Teensy2048.ino`, select **Teensy 4.1**, **USB Type: MIDI**, compile & upload.
-3. There is no automated test suite — verification is compiling plus on-hardware
+3. **Preferred: arduino-cli** — the IDE's own tooling, non-interactive, works headless.
+   ```sh
+   CLI="/Applications/Arduino IDE.app/Contents/Resources/app/lib/backend/resources/arduino-cli"
+   "$CLI" compile --fqbn "teensy:avr:teensy41:usb=midi,speed=600" \
+     --libraries /var/folders/dy/bnnskbx953j3xwngcqkb1c040000gn/T/opencode/t2048libs \
+     --build-path /var/folders/dy/bnnskbx953j3xwngcqkb1c040000gn/T/opencode/t2048build \
+     Teensy2048.ino
+   "$CLI" upload --fqbn "teensy:avr:teensy41:usb=midi,speed=600" \
+     --input-dir /var/folders/dy/bnnskbx953j3xwngcqkb1c040000gn/T/opencode/t2048build \
+     --port /dev/ttyUSB0 Teensy2048.ino
+   ```
+   The `<lib-symlink-dir>` holds **symlinks to FastLED + Encoder only** — the rest
+   (U8g2, uClock, Adafruit_MPR121) resolve from the sketchbook `~/Documents/Arduino/libraries`.
+   USB Type MIDI enumerates as "Teensy MIDI" (no serial tty); `--port /dev/ttyUSB0` is a
+   **placeholder** — the tool finds the board by USB VID/PID. The upload recipe expects
+   `Teensy2048.ino.hex` in `<build-dir>`, which is what compile produces.
+4. There is no automated test suite — verification is compiling plus on-hardware
    behavior. After edits, at minimum confirm the sketch still compiles.
 
 ## Conventions

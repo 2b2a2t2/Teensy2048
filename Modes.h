@@ -19,6 +19,11 @@ const char* modeName();              // "---", "ENC", "ENC2", "ENC3", "ENC4"...
 // mode is inherited by SEQMODE/ENCMODE)
 uint8_t keyBehaviorVariant();
 
+// per-channel KEYMODE memory: each keyboard channel recalls the KEY
+// variant last latched on it (RAM only).  keySetChannel() calls
+// keyModeRecall(); modeOnEvent() stores on every latched variant change
+void keyModeRecall();
+
 // true while the keyboard sounds through the chord engine: KEYMODE2
 // (diatonic chords) and KEYMODE4 (genre proposals) share it for the sound,
 // the pending snapshot and the MONO voice - the latched variant elsewhere

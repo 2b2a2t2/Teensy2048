@@ -24,6 +24,9 @@ uint8_t encCcNum(uint8_t ei);
 // RAM only, resets to F1 whenever the ENCMODE family is entered)
 uint8_t encBank();
 void    encBankSet(uint8_t b);
+// recall the F bank + page group the current encoder channel last used
+// (RAM-only per-channel memory; encBankSet/encM3PageSet store it)
+void    encPageRecall();
 
 // ENCMODE M3 toggle: page group of the ENC5..8 banks (off = F1..F4 send
 // CC1..16, on = CC21..36; RAM only, off again on ENCMODE entry)

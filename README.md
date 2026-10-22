@@ -78,7 +78,9 @@ The hardware has 48 touch pads but only 42 LEDs. The mapping (`padToLedList` in 
 
 ## Mode System
 
-Three mode families, each with 4 variants (1–4). Variant 3 is **momentary hold** (returns to previous on release). Variant 4 is **blinking** (double-click to enter).
+Three mode families, each with 4 variants (1–4). Variant 3 is **momentary hold**. Variant 4 is **blinking** (double-click to enter). On release of the held button, **ENCMODE3 always exits into ENCMODE** and **SEQMODE3 always exits into SEQMODE** — a hold started inside that family restores that variant, a hold started anywhere else lands on that family's variant 1; only **KEYMODE3** restores the previous base/variant wherever it came from.
+
+**Per-channel mode memory** (RAM, like the mode radios): each **keyboard channel** remembers the KEY variant last latched on it — switching the keyboard channel (its own variant-3 overlay, or a locked channel-link change) recalls that channel's variant live (KEYMODE2 for one track, KEYMODE4 for another) and the next KEYMODE entry lands on it. Each **encoder channel** likewise remembers its last **F bank + M3 page group** — switching the encoder channel or re-entering ENCMODE recalls that channel's page instead of resetting to F1.
 
 | Mode Button | Family | Variants |
 |-------------|--------|----------|
@@ -108,7 +110,7 @@ Each mode/variant combination selects an `EncSet`, `CtrlSet`, `StepSet`, `KeySet
 ## Workflows
 
 ### 1. Keyboard Playing (Any Mode)
-- **12 chromatic pads** (C–B) send MIDI notes on `keyChannel` (default ch2)
+- **12 chromatic pads** (C–B) send MIDI notes on `keyChannel` (default ch2; a KEYMODE3 **KBOARD lock** links it to the SEQ edit channel — see below)
 - **ENC1** (KEYMODE): Octave –2..+8 (4 counts = 1 octave, clamped)
 - **ENC2** (KEYMODE): Scale select (39 scales, Chromatic = no filter)
 - **KEYMODE2**: Chord engine active
@@ -132,6 +134,10 @@ Each mode/variant combination selects an `EncSet`, `CtrlSet`, `StepSet`, `KeySet
   - **Step pads**: press = move the focus (**white** in AUDITION, **red** in WRITE; locked = amber); a **tap** disables the step only while **WRITE** is on (**AUDITION** keeps it — nothing is written there); a **hold** overlays the encoder row onto that step — **ENC1 OCT** (per-step playback octave −2…+2, stored chord untouched), **ENC2 DEG** (shift every tone one scale degree in the key, intervals keep their shape), **ENC3 INV** (cycle the bass up / top down an octave, refuses to land on an existing tone), **ENC4 VOICE** (spread/close the upper voices one octave around the bass). Release hands the row back (or to the open EMB menu); the header echoes each turn (`5 oct +1`, `5 deg vi`, `5 inv 1st`, `5 voice 2oct`). A hold in **WRITE** still arms the usual assign gesture on top
   - **PLAY** works here too: start/stop the transport without leaving KEYMODE4
   - Nothing persists across a reboot (RAM only, by design); the progression grammar follows the current scale (7-note scales exactly, otherwise major degrees from the root)
+
+  - **KEYMODE3**: the **channel-picker variant** — the step pads are the variant-3 **channel overlay** (yellow): a pad press sets the keyboard output channel. **ENC1 = OCT**, **ENC2 = SCALE** (same as every variant), and **ENC3 = ENCOD** / **ENC4 = KBOARD** are the **channel-link switches** (two-state `free`/`locked`, **no wrap** — CW saturates at `locked`, CCW at `free`, a turn never flips past the end; header echoes each change):
+  - **free** (boot default): each mode keeps its own channel exactly as always — the ENCMODE3 encoder CCs, the KEYMODE3 keyboard and the SEQMODE3 edit focus change independently through their own overlays
+  - **locked**: that family's channel is **linked to the SEQ edit channel** (the hub). Any channel picked through any of the three variant-3 overlays then moves **all locked families at once** — e.g. with both locked, a pad on the keyboard's overlay sets the keyboard channel, the SEQ edit channel and the encoder channel together; same from the ENCMODE3 or SEQMODE3 overlay. Locked families boot onto the hub channel. The flags persist in the (567-byte) SEQ EEPROM block; older saves boot with both free
 
 #### HAND Strum Keyboard (POLY track, TYPE = HAND)
 - With the keyboard channel on a **POLY** sequence whose **TYPE = HAND** (ENC7 in SEQMODE3), the keyboard becomes a **strum zone** (Le Strum style): the track stays **silent** — each played step **buffers its chord** (post-FX / force-to-scale = what *would* have sounded) instead of sounding it, and the **7 white keys are the strings** (C…B, low to high) that strum that buffer. Pluck one string or sweep across; the strings read the **buffered chord first** (the progression under the playhead), then the pending chord (manual build / input), then the engine snapshot. Default voicing = **inversion spread**: the chord's sorted tones land **root position on E F G**, the two lower inversion notes fill **C D** (the 2nd and 3rd tones an octave down), and the upper ones fill **A B** (A = the 4th chord tone when there is one, else the 2nd tone an octave up; B = the 3rd tone an octave up) — e.g. C major strums `52 55 60 64 67 76 79` (E→C in first inversion, its 3rd in the bass). Degenerate chords leave strings without a tone **dark** (a lone root lights only E; no chord yet = silent but lit)
@@ -341,17 +347,17 @@ While an **F radio is armed** the whole row belongs to its sub-page instead (**F
 - **Hold a step** (non-DRUM, POLY+SKANK) arms the **per-step LOCK row** instead of the plain TRANS row (header `step N locks`): **ENC1–ENC7 override that step's TES/MOT/SHP/THN/EXT/SUB/TES%** — the OLED reads `inherit` while the page knob applies; turning from `inherit` grabs the track's current value and nudges it, turning below 0 clears the lock back to `inherit` (0 is a legal locked value and stays distinct), **ENC8 = that step's TRANS** (shared with the plain held-step row). NOT% stays page-level (no lock slot). A **TES lock parks MOT at 50** on that step (the lock sets the inversion alone; it pins the anchor knob, not the TES% roll). Locks are step content — they travel with a pattern **rotate** and die with the step's attributes (`stepAttClear`) — and stay **RAM only**, like every step field
 - **Comp rides the walk**: HITS stabs re-strike the **derived** voicing (`compOn` includes SKANK), so comping and the walk share one note source; a step's TYPE override (STRUM/HAND) also rides the derived chord
 - **Feeds followers live**: any MONO/POLY follower (arp, bass, lead, strum, STEP/STRUM/HAND) with **FOLLOW ON** pointing its input at a SKANK track plays the feeder's **sounding (walked)** notes — the walk exists only at the feeder's send time, so stored-step follow would be blind to it (a quiet feeder falls back to its stored step; other feeder types keep the stored-step convention; HARM keeps its own bass-line inference)
-- **Saved/restored with SEQMODE4+REC**: the eight page knobs of all 16 tracks persist in the extended (**564-byte**) SEQ EEPROM block — older (532/436/420/404/388/260-byte) saves load with their original six knobs and the randomizers at their defaults (MOT = 50, the rest 0). Stored patterns stay RAM only
+- **Saved/restored with SEQMODE4+REC**: the eight page knobs of all 16 tracks persist in the extended (**567-byte**) SEQ EEPROM block — older (564/532/436/420/404/388/260-byte) saves load with their original six knobs and the randomizers at their defaults (MOT = 50, the rest 0). Stored patterns stay RAM only
 - **LEDs**: **M2 = orange** (dim while the page is closed, breathing while it is open; touch still lights it white); the held step breathes **violet** while its lock row is up (playhead colors still win)
 
 #### Cross-Sequence Sync
 When a track's step chords are written, all MONO/POLY sequences **listening to that track's channel** re-derive their active steps from the source timeline (single-level, non-recursive). This enables "follow the leader" arrangements. A POLY track with **TYPE = HARM** never mirrors — it **re-bakes** instead (see the HARM Generative Page above).
 
 ### 3. Encoder/CC Mode (ENCMODE)
-- **ENC1–ENC4** send **CC 17–20** on `encChannel` (default ch1, selectable via step-pad overlay in variant 3)
+- **ENC1–ENC4** send **CC 17–20** on `encChannel` (default ch1, selectable via step-pad overlay in variant 3; a KEYMODE3 **ENCOD lock** links it to the SEQ edit channel — see Keyboard Playing)
 - **ENC5–ENC8** send the current **F-bank** block inside the active **M3 page group**: group 1 (M3 off) = **F1 = CC 1–4**, **F2 = CC 5–8**, **F3 = CC 9–12**, **F4 = CC 13–16**; group 2 (M3 on) = **F1 = CC 21–24**, **F2 = CC 25–28**, **F3 = CC 29–32**, **F4 = CC 33–36**
-- **F1–F4** = CC-bank radio (bright white = armed; RAM only, always one armed — defaults to **F1** whenever ENCMODE is entered). Idle color follows the page group: dim purple in group 1, dim medium sea green in group 2. In ENCMODE the F row leaves the inherited KEYMODE2 chord-extension job
-- **M3 (PAGE)** = page-group toggle: dim medium sea green = group 1 (CC 1–16), purple = group 2 (CC 21–36); off again on ENCMODE entry (also leaves the inherited KEYMODE2 chord-quality job)
+- **F1–F4** = CC-bank radio (bright white = armed; RAM only, always one armed — **remembered per encoder channel**: switching the encoder channel, or re-entering ENCMODE, recalls that channel's last bank + page group). Idle color follows the page group: dim purple in group 1, dim medium sea green in group 2. In ENCMODE the F row leaves the inherited KEYMODE2 chord-extension job
+- **M3 (PAGE)** = page-group toggle: dim medium sea green = group 1 (CC 1–16), purple = group 2 (CC 21–36); off on first entry (also leaves the inherited KEYMODE2 chord-quality job)
 - Values persist across mode changes (0–127, clamped, no wrap); DAW feedback on CC 1–36 syncs the matching knobs
 - Knob positions are stored **per CC number × channel** (36×16): switching the encoder channel loads that channel's own values instead of inheriting the previous channel's (no jump)
 - **ENCMODE4 + REC** saves all 36×16 knob values + channel to EEPROM (an older save is ignored, defaults stay)
@@ -397,6 +403,18 @@ Paged I2C write (1 page per `displayUpdate()` call, ~4 ms @ 400 kHz) to avoid bl
 3. Open `Teensy2048.ino`
 4. Select **Teensy 4.1**, **USB Type: MIDI**
 5. Compile & upload
+
+**arduino-cli** (USB Type MIDI enumerates as "Teensy MIDI", no serial tty — pass any placeholder port; the tool finds the board by USB VID/PID):
+
+```sh
+CLI="/Applications/Arduino IDE.app/Contents/Resources/app/lib/backend/resources/arduino-cli"
+"$CLI" compile --fqbn "teensy:avr:teensy41:usb=midi,speed=600" \
+  --libraries <lib-symlink-dir> --build-path <build-dir> Teensy2048.ino
+"$CLI" upload --fqbn "teensy:avr:teensy41:usb=midi,speed=600" \
+  --input-dir <build-dir> --port /dev/ttyUSB0 Teensy2048.ino
+```
+
+(Only FastLED + Encoder are symlinked in `<lib-symlink-dir>`; the rest — U8g2, uClock, Adafruit_MPR121 — must resolve from the sketchbook `~/Documents/Arduino/libraries`. The upload recipe expects `Teensy2048.ino.hex` in `<build-dir>`, which is what the compile step produces.)
 
 ## Key Constants (Keyboard.cpp / Chords.h / TouchChips.h)
 

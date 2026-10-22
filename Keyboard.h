@@ -35,6 +35,18 @@ void keyMonoPoll();               // reconcile the live voice (loop context)
 void seqSetEditChannel(uint8_t ch);
 uint8_t seqEditChannel();
 
+// KEYMODE3 ENC3/ENC4 channel link: ENCOD / KBOARD, states free/locked.
+// The SEQ edit channel is the hub - a LOCKED family moves with it (and a
+// change in a locked family drives the hub, so the other locked family
+// follows too); free stays independent (each mode's own channel, as
+// always).  Flags persist in the SEQ EEPROM block; at boot the locked
+// families take the hub channel
+bool chanEncLocked();
+bool chanKeyLocked();
+void chanEncLinkSet(uint8_t on);
+void chanKeyLinkSet(uint8_t on);
+void keyChannelForce(uint8_t ch);  // boot reconcile only (raw, no cleanup)
+
 // input (listen) channel of the edit sequence (1..16): notes arriving
 // there feed THAT sequence's pending chord - every sequence listening to
 // the channel is fed at once (no edit-focus gating).  Default sequence N

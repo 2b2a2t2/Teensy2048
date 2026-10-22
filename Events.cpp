@@ -369,7 +369,54 @@ void f3AccentHold(bool on) { f3AccentSel = on; }
 // composite: the flag can outlive a mid-hold mode switch - the rebind
 // only applies while the panel is still in SEQMODE variants 1/2/4
 bool f3AccentActive() {
-  return f3AccentSel && modeBase == MODE_SEQ && modeVariant != 3;
+  return f3AccentSel && modeBase == MODE_SEQ && modeVariant == 3;
+}
+
+// a SEQ channel switch always lands back in step edit on the new channel:
+// M1 (STEPS target) selected, radio on, and every page overlay of the OLD
+// track dismissed (the new track may be any type)
+static void seqEditChannelLand(uint8_t ch) {
+  seqSetEditChannel(ch);
+  stepEditSet(true, 0);
+  arpPageDismiss();       // the new track may not be an arp
+  strumFRowDismiss();     // ...and it may not strum either
+  genPageDismiss();       // nor a BASS track for the GNR8 page
+  leadPageDismiss();      // nor a LEAD track for the LEAD page
+  harmPageDismiss();      // nor a HARM track for the HARM page
+  compPageDismiss();      // nor a POLY/STEP track for the COMP page
+  skankPageDismiss();     // nor a POLY/SKANK track for the SKANK page
+  stepChainDisarm();      // ...nor an armed chain span (old ch)
+  refreshAllLeds();       // M1 + F-row follow the radio again
+  refreshMainScreen();
+  refreshHeader();
+}
+
+// KEYMODE3 ENC3/ENC4 channel link (ENCOD / KBOARD, free or locked): the
+// SEQ edit channel is the hub.  A LOCKED family follows every hub change;
+// a change in a locked family drives the hub, and the other locked family
+// follows transitively.  Free families stay independent - exactly the
+// pre-link behavior.  Only the variant-3 channel overlays call this
+// (EEPROM loads / internal focus swaps must never propagate)
+static void channelLinkPropagate(uint8_t from) {  // 0 = KEY, 1 = ENC, 2 = SEQ
+  static bool busy;
+  if (busy) return;
+  bool kL = chanKeyLocked(), eL = chanEncLocked();
+  if (!kL && !eL) return;                 // both free: nothing to do
+  if (from == 0 && !kL) return;           // a free family moved: local only
+  if (from == 1 && !eL) return;
+  busy = true;
+  uint8_t ch = (from == 0) ? keyChannel()
+             : (from == 1) ? encChannel()
+                           : seqEditChannel();   // already 1-based
+  if (from != 2 && ch != seqEditChannel())
+    seqEditChannelLand(ch);               // the hub takes the new channel
+  if (from != 1 && eL) encSetChannel(ch);
+  if (from != 0 && kL) keySetChannel(ch);
+  if (logRoom(48)) {
+    Serial.print("  channel link -> ");
+    Serial.println(ch);
+  }
+  busy = false;
 }
 
 void handleButtonEvents() {
@@ -450,27 +497,19 @@ void handleButtonEvents() {
         }
       } else if (chOverlay) {
         if (ev == EV_PRESSED) {
-          if (modeBase == MODE_KEY) keySetChannel(sidx + 1);
-          else if (modeBase == MODE_SEQ) {
-            seqSetEditChannel(sidx + 1);
-            // a channel switch always lands back in step edit on the new
-            // channel: M1 (STEPS target) selected, radio on
-            stepEditSet(true, 0);
-            arpPageDismiss();       // the new track may not be an arp
-            strumFRowDismiss();     // ...and it may not strum either
-            genPageDismiss();       // nor a BASS track for the GNR8 page
-            leadPageDismiss();      // nor a LEAD track for the LEAD page
-            harmPageDismiss();      // nor a HARM track for the HARM page
-            compPageDismiss();      // nor a POLY/STEP track for the COMP page
-            skankPageDismiss();     // nor a POLY/SKANK track for the SKANK page
-            stepChainDisarm();      // ...nor an armed chain span (old ch)
-            refreshAllLeds();        // M1 + F-row follow the radio again
-            // the whole grid belongs to the new channel (length, speed,
-            // follow, gate/vel/prob, ...) and the header may have been
-            // showing the ARP page - repaint both right away
-            refreshMainScreen();
-            refreshHeader();
-          } else encSetChannel(sidx + 1);
+          // each press moves its OWN family first, then the KEYMODE3
+          // channel link (ENCOD/KBOARD locked) propagates the change to
+          // the hub and the other locked families
+          if (modeBase == MODE_KEY) {
+            keySetChannel(sidx + 1);
+            channelLinkPropagate(0);
+          } else if (modeBase == MODE_SEQ) {
+            seqEditChannelLand(sidx + 1);
+            channelLinkPropagate(2);
+          } else {
+            encSetChannel(sidx + 1);
+            channelLinkPropagate(1);
+          }
           if (modeBase == MODE_ENC)
             refreshMainScreen();   // CC values belong to the new channel
           if (logRoom(48)) {
@@ -1577,20 +1616,40 @@ void handleButtonEvents() {
 // feedback updates the slots via encCcIncoming()
 static int16_t ccVal[36][16] = {{0}};
 
-// F1..F4 bank radio for ENC5..8 - RAM only, defaults back to F1 whenever
-// the ENCMODE family is entered (modeOnEvent)
+// F1..F4 bank radio for ENC5..8 - RAM only, remembered PER ENCODER
+// CHANNEL (the page last used on each channel is recalled when the
+// channel changes or ENCMODE is entered - encPageRecall)
 static uint8_t encBankSel = 0;
+static uint8_t encBankMem[16] = {0, 0, 0, 0, 0, 0, 0, 0,
+                                 0, 0, 0, 0, 0, 0, 0, 0};
 
 // M3 page group: off = the banks live in CC1..16, on = CC21..36 (the
-// upper group; CC17..20 stay reserved for ENC1..4).  RAM only, back to
-// off on ENCMODE entry
+// upper group; CC17..20 stay reserved for ENC1..4).  RAM only, likewise
+// remembered per encoder channel
 static bool encM3Sel = false;
+static bool encM3Mem[16] = {false, false, false, false, false, false,
+                            false, false, false, false, false, false,
+                            false, false, false, false};
 
 uint8_t encBank() { return (encBankSel < 4) ? encBankSel : 0; }
-void encBankSet(uint8_t b) { if (b < 4) encBankSel = b; }
+void encBankSet(uint8_t b) {
+  if (b >= 4) return;
+  encBankSel = b;
+  encBankMem[encChannel() - 1] = b;   // every change lands in this channel
+}
 
 bool encM3Page() { return encM3Sel; }
-void encM3PageSet(bool on) { encM3Sel = on; }
+void encM3PageSet(bool on) {
+  encM3Sel = on;
+  encM3Mem[encChannel() - 1] = on;    // ...so the switch can recall it
+}
+
+// encoder channel changed (or ENCMODE re-entered): take the page the new
+// channel last used (setters store, so this just replays them)
+void encPageRecall() {
+  encBankSet(encBankMem[encChannel() - 1]);
+  encM3PageSet(encM3Mem[encChannel() - 1]);
+}
 
 // CC number encoder ei (0..7) sends: ENC1..4 = CC17..20 (fixed), the
 // rest = the current bank's block of four in the active page group
@@ -1901,6 +1960,38 @@ void handleEncoderEvents() {
           Serial.println(chordParam(ei - 3));
         }
         any = true;
+      }
+    }
+
+    // KEYMODE3: ENC3 = ENCOD, ENC4 = KBOARD - channel-link switches,
+    // states free/locked (two-state, NO wrap: CW saturates at locked,
+    // CCW at free - a turn never flips past the end).  LOCKED = this
+    // family's channel moves with the SEQ edit channel (the hub) and with
+    // the other locked family (see channelLinkPropagate); FREE = each mode
+    // keeps its own independent channel, as always
+    if (modeBase == MODE_KEY && modeVariant == 3 && ed != 0 &&
+        (ei == 2 || ei == 3)) {
+      bool want = (ed > 0);          // CW = locked, CCW = free
+      if (ei == 2) {
+        if (want != chanEncLocked()) {
+          chanEncLinkSet(want);
+          headerShow(want ? "ENCOD locked" : "ENCOD free");
+          if (logRoom(48)) {
+            Serial.print("  encod link ");
+            Serial.println(want ? "locked" : "free");
+          }
+          any = true;
+        }
+      } else {
+        if (want != chanKeyLocked()) {
+          chanKeyLinkSet(want);
+          headerShow(want ? "KBOARD locked" : "KBOARD free");
+          if (logRoom(48)) {
+            Serial.print("  kboard link ");
+            Serial.println(want ? "locked" : "free");
+          }
+          any = true;
+        }
       }
     }
 

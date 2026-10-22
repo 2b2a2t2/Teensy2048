@@ -7,6 +7,7 @@
 #include "Key4.h"       // KEYMODE4 proposal gesture (press/release/commit)
 #include "Gen.h"        // GNR8 params (the SEQ EEPROM block stores them)
 #include "Skank.h"      // SKANK derive (POLY TYPE = SKANK playback)
+#include "Encoders.h"   // encSetChannel - boot reconcile of a locked ENCOD
 #include "bjorklund.h"  // COMP: Euclid stab pattern (same primitive as GNR8)
 #include <EEPROM.h>
 
@@ -3163,6 +3164,16 @@ void seqSetEditChannel(uint8_t ch) {
   for (uint8_t i = 0; i < 8; i++) skankRes[i] = 0;  // SKANK page dials too
 }
 
+// KEYMODE3 ENC3/ENC4 channel link: ENCOD / KBOARD free or locked (the SEQ
+// edit channel is the hub both lock against - see Keyboard.h)
+static uint8_t chanEncLink = 0;   // ENCOD: 0 = free, 1 = locked
+static uint8_t chanKeyLink = 0;   // KBOARD: 0 = free, 1 = locked
+
+bool chanEncLocked() { return chanEncLink != 0; }
+bool chanKeyLocked() { return chanKeyLink != 0; }
+void chanEncLinkSet(uint8_t on) { chanEncLink = on ? 1 : 0; }
+void chanKeyLinkSet(uint8_t on) { chanKeyLink = on ? 1 : 0; }
+
 uint8_t seqInputChannel() { return seqInCh[seqEditCh]; }
 
 // ENC1 in SEQMODE: octave shift of the edit sequence's playback, 4 counts
@@ -3479,13 +3490,15 @@ void seqEraseAll() {
 // prob[16] | patLen[16] | follow[16] | genFill[16] | genAcc[16] |
 // genGlide[16] | genTie[16] | genTones[16] | genLow[16] | genRange[16] |
 // genAlgo[16] | leadContour[16] | compHits[16] | trans[16] | skankPrmM[128] |
-// checksum = 564 bytes; blank or corrupt keeps the defaults.  A block
-// written by an older build (532/436/420/404/388/260 bytes) still loads: the
-// core fields are at the same offsets and the newer params keep their
-// defaults - saved config survives the upgrade
+// encLink | keyLink | checksum = 567 bytes; blank or corrupt keeps the
+// defaults.  A block written by an older build (564/532/436/420/404/388/260
+// bytes) still loads: the core fields are at the same offsets and the newer
+// params keep their defaults - saved config survives the upgrade
 static const uint8_t  SEQ_EE_MAGIC = 0x53;
 static const uint16_t SEQ_EE_ADDR = 160;
-static const uint16_t SEQ_EE_LEN = 564;       // + SKANK knobs[128] (b[435..562])
+static const uint16_t SEQ_EE_LEN = 567;       // + link flags (b[564..565])
+static const uint16_t SEQ_EE_LEN_SKANK2 = 564; // previous: SKANK knobs[128]
+                                              // TES..NOT% stride-8
 static const uint16_t SEQ_EE_LEN_SKANK = 532; // previous: SKANK knobs[96]
                                               // TES..SUB stride-6 (b[435..530])
 static const uint16_t SEQ_EE_LEN_TRANS = 436; // previous: TRANS[16]
@@ -3534,6 +3547,8 @@ void seqCfgSave() {
     for (uint8_t p = 0; p < 8; p++)
       b[435 + i * 8 + p] = skankPrmOf(i, p); // SKANK knobs TES..NOT% (0..100)
   }
+  b[564] = chanEncLocked() ? 1 : 0;  // KEYMODE3 ENCOD lock (0 = free)
+  b[565] = chanKeyLocked() ? 1 : 0;  // KEYMODE3 KBOARD lock
   uint8_t sum = 0;
   for (uint16_t i = 0; i < SEQ_EE_LEN - 1; i++) sum += b[i];
   b[SEQ_EE_LEN - 1] = sum;
@@ -3544,15 +3559,16 @@ void seqCfgLoad() {
   uint8_t b[SEQ_EE_LEN];
   EEPROM.get(SEQ_EE_ADDR, b);
   // pick the NEWEST block length whose magic + checksum validate, so an
-  // older save (532 = first SKANK block, 436 = TRANS, 404 = LEAD,
-  // 388 = GNR8, 260 = legacy) still restores its fields and the newer ones
-  // keep their defaults
+  // older save (564 = first link-less SKANK block, 532 = first SKANK
+  // block, 436 = TRANS, 404 = LEAD, 388 = GNR8, 260 = legacy) still
+  // restores its fields and the newer ones keep their defaults
   uint16_t len = 0;
   for (uint16_t L = SEQ_EE_LEN;;) {
     uint8_t sum = 0;
     for (uint16_t i = 0; i < L - 1; i++) sum += b[i];
     if (b[0] == SEQ_EE_MAGIC && sum == b[L - 1]) { len = L; break; }
-    if (L == SEQ_EE_LEN) L = SEQ_EE_LEN_SKANK;
+    if (L == SEQ_EE_LEN) L = SEQ_EE_LEN_SKANK2;
+    else if (L == SEQ_EE_LEN_SKANK2) L = SEQ_EE_LEN_SKANK;
     else if (L == SEQ_EE_LEN_SKANK) L = SEQ_EE_LEN_TRANS;
     else if (L == SEQ_EE_LEN_TRANS) L = SEQ_EE_LEN_COMP;
     else if (L == SEQ_EE_LEN_COMP) L = SEQ_EE_LEN_LEAD;
@@ -3566,7 +3582,8 @@ void seqCfgLoad() {
   bool extC = (len >= SEQ_EE_LEN_COMP);   // COMP hits present
   bool extT = (len >= SEQ_EE_LEN_TRANS);  // TRANS offset present
   bool extS = (len >= SEQ_EE_LEN_SKANK);  // first 6 SKANK knobs (stride-6)
-  bool extS2 = (len >= SEQ_EE_LEN);       // + TES%/NOT% (stride-8 layout)
+  bool extS2 = (len >= SEQ_EE_LEN_SKANK2); // + TES%/NOT% (stride-8 layout)
+  bool extK = (len >= SEQ_EE_LEN);        // KEYMODE3 channel-link flags
   for (uint8_t i = 0; i < SEQ_CH_COUNT; i++) {
     int v = (int8_t)b[3 + i];            // octave: keep the cast signed
     if (v < -60) v = -60;
@@ -3602,6 +3619,10 @@ void seqCfgLoad() {
     seqOctClamp(i);                      // content bounds (empty = convention)
   }
   seqSetEditChannel(b[1]);               // validates 1..16, keeps focus sane
+  if (extK) {                            // KEYMODE3 channel-link flags
+    chanEncLinkSet(b[564] != 0);
+    chanKeyLinkSet(b[565] != 0);
+  }
   seqMapSet(b[2]);                       // GNR8/LEAD mapping (bad -> NEAR)
   if (extG) {                            // GNR8 params (new-format block;
     for (uint8_t i = 0; i < SEQ_CH_COUNT; i++) {   // legacy blocks keep the
@@ -3639,6 +3660,10 @@ void seqCfgLoad() {
       for (uint8_t p = 0; p < 6; p++)
         skankPrmSet(i, p, b[435 + i * 6 + p]);  // TES%/NOT% keep their defaults
   }
+  // boot reconcile: a LOCKED family takes the hub channel (its own saved
+  // channel is stale by definition once the link is on)
+  if (chanEncLocked()) encSetChannel(seqEditChannel());
+  if (chanKeyLocked()) keyChannelForce(seqEditChannel());
 }
 
 // --- DRUM track: per-voice (part) sequencing -----------------------------
@@ -3742,4 +3767,12 @@ void keySetChannel(uint8_t ch) {
     if (!handLive()) chordRestore();  // HAND: the engine stays muted
   }
   monoApply();                    // re-sync engage state + voice for ch
+  keyModeRecall();                // the channel's own KEYMODE variant
+}
+
+// boot reconcile only: a LOCKED family takes the hub channel raw - at
+// seqCfgLoad time nothing sounds yet, so keySetChannel's note cleanup
+// would be noise
+void keyChannelForce(uint8_t ch) {
+  if (ch >= 1 && ch <= 16) keyCh = ch;
 }
