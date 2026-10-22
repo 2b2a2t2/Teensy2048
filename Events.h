@@ -100,6 +100,11 @@ uint8_t genOptionSel();
 // nothing valid is picked - dies with the page
 int8_t genStepSelStep();
 
+// SEQMODE non-DRUM: the step currently held for the per-step TRANS overlay
+// (ENC1), or -1 when none / the panel left SEQMODE.  EV_HOLD arms it,
+// EV_RELEASED clears it (the composite check drops a stale hold)
+int8_t seqTrStepSelGet();
+
 // SEQMODE M2 (variants 1/2/4) on a MONO+LEAD edit track: a click toggles
 // the LEAD encoder page - ENC2 = contour (ARCH/DESC/WALK), ENC3 = LOW,
 // ENC4 = RANGE, ENC7 = density %; ENC1/5/6/8 keep OCT/GATE/VEL/PROB.
@@ -111,13 +116,31 @@ void leadPageDismiss();
 bool leadPageActive();
 
 // SEQMODE M2 (variants 1/2/4) on a POLY+HARM edit track: a click toggles
-// the HARM encoder page - ENC1 = GENRE, ENC2 = SRC (bass/arp), ENC3 = HOLD.
-// M3 tap = bake the progression inferred from the FOLLOW feeder's bassline
-// / M3 hold = undo, mirroring GNR8/LEAD.  Composite active check like the
-// other pages: a mid-hold channel / TYPE / mode switch drops it by itself
+// the HARM encoder page - ENC1 = GENRE, ENC2 = FILL, ENC3 = SRC (bass/
+// arp), ENC4 = HOLD.  M3 tap = bake the progression inferred from the
+// FOLLOW feeder's bassline / M3 hold = undo, mirroring GNR8/LEAD.
+// Composite active check like the other pages: a mid-hold channel / TYPE /
+// mode switch drops it by itself
 void harmPageToggle();
 void harmPageDismiss();
 bool harmPageActive();
+
+// SEQMODE M2 (variants 1/2/4) on a POLY+STEP edit track: a click toggles
+// the COMP encoder page - ENC1 = HITS (chord stabs per step, Euclid in 8
+// slots, 0/1 = one block chord like before).  Same radio rules as HARM:
+// opening drops the M1 edit radio, a channel / TYPE / mode switch drops it
+void compPageToggle();
+void compPageDismiss();
+bool compPageActive();
+
+// SEQMODE M2 (variants 1/2/4) on a POLY+SKANK edit track: a click toggles
+// the SKANK encoder page - ENC1 = TES, ENC2 = MOT, ENC3 = SHP, ENC4 = THN,
+// ENC5 = EXT, ENC6 = SUB (the derivation knobs of Skank.h), ENC7 = LEN,
+// ENC8 = SPEED.  M1's radio and the other pages stay mutually exclusive
+// with it; a channel / TRACK / TYPE / mode switch drops it like the rest
+void skankPageToggle();
+void skankPageDismiss();
+bool skankPageActive();
 
 // GNR8 TIE span fill (MONO+BASS, TIE target only): HOLD a step to arm the
 // span start, the next tap on another step stamps TIE across the span

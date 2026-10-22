@@ -191,6 +191,18 @@ static CRGB modeLedHook(uint8_t pad, bool isTouched, CRGB defaultColor) {
                     (uint8_t)(56 + k * 48));       // 196/56 .. 236/248
       }
     }
+    // SKANK lock hold (POLY+SKANK + hold step): the step being locked
+    // breathes violet, same gesture as the GNR8 armed dial (the playhead
+    // above still wins so the head stays readable; the lock row's own
+    // 30 ms refresh loop drives the pulse)
+    if (currentBinding().enc == ENC_SEQ_SKANK_STEP &&
+        seqTrStepSelGet() == (int8_t)vst) {
+      uint8_t s = sin8((uint32_t)millis() * 256UL / PULSE_PERIOD_MS);
+      uint8_t b = 56 + scale8(s, 160);             // 56..216 breathing
+      CRGB p = CRGB::Purple;
+      p.nscale8(b);
+      return p;
+    }
     CRGB c;
     if (stepIsActive(vst)) {
       // selected-attribute pulse: while an attribute target is engaged,
@@ -394,7 +406,8 @@ static CRGB modeLedHook(uint8_t pad, bool isTouched, CRGB defaultColor) {
       else if (seqPolyRadio && sel == 6) wantF = 2;
       else wantF = sel;
     }
-    bool pageOwns = arpPageActive() || genPageActive() || leadPageActive();
+    bool pageOwns = arpPageActive() || genPageActive() || leadPageActive() ||
+                    harmPageActive() || compPageActive() || skankPageActive();
     if ((sel == 0 && !pageOwns && led == groupControls[2]) ||
         (wantF != 0 && led >= groupControls[5] &&
          wantF == (uint8_t)(led - groupControls[5] + 1))) {
@@ -514,6 +527,34 @@ static CRGB modeLedHook(uint8_t pad, bool isTouched, CRGB defaultColor) {
       led == groupControls[4]) {
     if (isTouched) return CRGB::White;
     return CHSV((uint8_t)(millis() >> 2), 255, 100);  // full cycle ~1s
+  }
+  // SEQMODE M2 on a POLY+STEP track: while the COMP page is open the pad
+  // BREATHES teal (the same chord-page family as the HARM generator);
+  // closed it keeps its generic M2 look
+  if (modeBase == MODE_SEQ && modeVariant != 3 &&
+      seqTrack() == SEQ_TRACK_POLY && seqPolyType() == SEQ_POLY_STEP &&
+      led == groupControls[3] && compPageActive()) {
+    if (isTouched) return CRGB::White;
+    CRGB t = CRGB::Teal;
+    uint8_t s = sin8((uint32_t)millis() * 256UL / PULSE_PERIOD_MS);
+    t.nscale8((uint8_t)(48 + scale8(s, 144)));  // 48..192 breathing
+    return t;
+  }
+  // ...and M2 on a POLY+SKANK track: orange = the walking-voicing page
+  // lives behind that pad, and while its encoder page is open it BREATHES
+  // instead of sitting dim (mirrors the HARM/LEAD M2 rules)
+  if (modeBase == MODE_SEQ && modeVariant != 3 &&
+      seqTrack() == SEQ_TRACK_POLY && seqPolyType() == SEQ_POLY_SKANK &&
+      led == groupControls[3]) {
+    if (isTouched) return CRGB::White;
+    CRGB t = CRGB::Orange;
+    if (skankPageActive()) {
+      uint8_t s = sin8((uint32_t)millis() * 256UL / PULSE_PERIOD_MS);
+      t.nscale8((uint8_t)(48 + scale8(s, 144)));  // 48..192 breathing
+    } else {
+      t.nscale8(48);
+    }
+    return t;
   }
   // ENCMODE function pads: always show their identity colors even when
   // idle - M1 dim orange, M2 dim orange-red (touch still wins).  M3 is
@@ -742,6 +783,33 @@ void pollModeLeds() {
   }
   if (harmActive && (long)(millis() - harmFlip) >= 0) {
     harmFlip = millis() + 30;
+    refreshAllLeds();
+  }
+
+  // M2 COMP-page pulse: breathing teal while the COMP encoder page is open
+  static bool compActive = false;
+  static unsigned long compFlip = 0;
+  bool compNow = compPageActive();
+  if (compNow != compActive) {
+    compActive = compNow;
+    refreshAllLeds();
+  }
+  if (compActive && (long)(millis() - compFlip) >= 0) {
+    compFlip = millis() + 30;
+    refreshAllLeds();
+  }
+
+  // M2 SKANK-page pulse: breathing orange while the SKANK encoder page is
+  // open (the lock row's held step pulses through the step LED path)
+  static bool skankActive = false;
+  static unsigned long skankFlip = 0;
+  bool skankNow = skankPageActive();
+  if (skankNow != skankActive) {
+    skankActive = skankNow;
+    refreshAllLeds();
+  }
+  if (skankActive && (long)(millis() - skankFlip) >= 0) {
+    skankFlip = millis() + 30;
     refreshAllLeds();
   }
 

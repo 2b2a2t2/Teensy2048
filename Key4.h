@@ -60,6 +60,14 @@ void    k4HarmHoldAdjust(int16_t counts);  // CW = on, CCW = off
 bool    k4HarmHold();                      // force hold on repeated bass
 const char* k4HarmHoldName();              // "OFF" / "ON"
 
+// --- SKANK substitution source (POLY TYPE=SKANK page: ENC6 = SUB) ----------
+// Sample the current genre's transition row from the degree nearest the
+// sounding bass (a passing chord out of the same 18-genre grammar the
+// HARM page and KEYMODE4 use) and return the sampled degree's root pitch
+// class + diatonic triad quality.  false = nothing coherent to offer,
+// the caller keeps the voicing it had.
+bool    k4BorrowSample(uint8_t bassPc, uint8_t *outPc, uint8_t *outQ);
+
 // --- embellishment encoders (PREV hold: EN5-8) -------------------------------
 void    k4EmbSubProbAdjust(int16_t counts);  // EN5: substitution probability 0..100
 uint8_t k4EmbSubProb();

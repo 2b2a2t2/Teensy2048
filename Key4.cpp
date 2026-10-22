@@ -288,6 +288,27 @@ uint8_t k4HarmLiveChord(uint8_t note, uint8_t *out) {
   return chordBuild(root, q, 0, 0, out);   // plain triad, root pos
 }
 
+// SKANK ENC6 (SUB): sample the current genre's transition row from the
+// degree nearest the sounding bass - one draw of the same matrix that
+// drives KEYMODE4 / the HARM page, so the passing chord arrives in the
+// language the progression speaks.  Returns the sampled degree's root
+// pitch class + diatonic triad quality for the caller to voice.
+bool k4BorrowSample(uint8_t bassPc, uint8_t *outPc, uint8_t *outQ) {
+  if (!outPc || !outQ) return false;
+  buildFw();
+  uint8_t from = fwDeg(bassPc);
+  const GenreData *g = &genreTable[sGenre];
+  long roll = random(100), acc = 0;
+  uint8_t to = from;
+  for (uint8_t d = 0; d < 7; d++) {
+    acc += g->trans[from][d];
+    if (roll < acc) { to = d; break; }   // rows sum to 100: always lands
+  }
+  *outPc = (uint8_t)(sFw[to] % 12);
+  *outQ = fwQuality(to);
+  return true;
+}
+
 // the chord BEFORE the focus, walked like the apply chain: locked and
 // empty steps are skipped.  Degree feeds the transition matrix, bass pc
 // feeds the VOICE-LEAD inversion choice; root/quality feed the header;

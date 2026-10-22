@@ -10,6 +10,7 @@
 #include "Chords.h"
 #include "Key4.h"       // KEYMODE4 controls (focus/apply/undo/locks)
 #include "Gen.h"        // GNR8 generator params / produce / rotate
+#include "Skank.h"      // SKANK page: shape name for the header
 
 // skip a log line if the USB TX buffer is congested (never block the loop —
 // a blocked Serial.write stalls pollSeqClock and freezes the playhead)
@@ -170,6 +171,11 @@ static bool genTrackCtx() {
          seqTrack() == SEQ_TRACK_MONO && seqMonoType() == SEQ_MONO_BASS;
 }
 
+// SEQMODE non-DRUM: a held step pad arms the per-step TRANS overlay (ENC1)
+// for that step; release closes it.  Kept separate from the GNR8-page
+// genStepSel (that one lives only while the GNR8 F-radio sub-page is up)
+static int8_t seqTrStepSel = -1;
+
 void genPageToggle() {
   genPageOn = !genPageOn;
   genOptSel = 0xFF;
@@ -201,10 +207,11 @@ bool leadPageActive()  { return leadPageOn && leadTrackCtx(); }
 
 // --- SEQMODE M2 "HARM" page (variants 1/2/4) --------------------------------
 // Clicking M2 on a POLY+HARM edit track rebinds the encoder row to the
-// harmonizer: ENC1 = GENRE (the harmonic grammar), ENC2 = SRC (bass/arp
-// source), ENC3 = HOLD (force hold on a repeated bass).  M3 bakes the
-// progression inferred from the FOLLOW feeder's bassline into the track's
-// steps, M3 hold undoes it.  Composite active check like the other pages.
+// harmonizer: ENC1 = GENRE (the harmonic grammar), ENC2 = FILL (density
+// gate of the baked triads), ENC3 = SRC (bass/arp source), ENC4 = HOLD
+// (force hold on a repeated bass).  M3 bakes the progression inferred from
+// the FOLLOW feeder's bassline into the track's steps, M3 hold undoes it.
+// Composite active check like the other pages.
 static bool harmPageOn = false;
 
 static bool harmTrackCtx() {
@@ -216,6 +223,42 @@ void harmPageToggle() { harmPageOn = !harmPageOn; }
 void harmPageDismiss() { harmPageOn = false; }
 bool harmPageActive()  { return harmPageOn && harmTrackCtx(); }
 
+// --- SEQMODE M2 "COMP" page (variants 1/2/4) --------------------------------
+// Clicking M2 on a POLY+STEP edit track rebinds the encoder row to the
+// comping: ENC1 = HITS (chord stabs per step on the Euclid on-positions of
+// 8 slots; 0 or 1 = today's single block chord).  ENC2..4 stay free
+// (rotation / per-stab gate are reserved).  Composite active check like
+// the other pages - a mid-turn channel / TYPE / mode switch drops it
+static bool compPageOn = false;
+
+static bool compTrackCtx() {
+  return modeBase == MODE_SEQ && modeVariant != 3 &&
+         seqTrack() == SEQ_TRACK_POLY && seqPolyType() == SEQ_POLY_STEP;
+}
+
+void compPageToggle() { compPageOn = !compPageOn; }
+void compPageDismiss() { compPageOn = false; }
+bool compPageActive()  { return compPageOn && compTrackCtx(); }
+
+// --- SEQMODE M2 "SKANK" page (variants 1/2/4) ------------------------------
+// Clicking M2 on a POLY+SKANK edit track rebinds the encoder row to the
+// derivation: ENC1 = TES (tessitura anchor), ENC2 = MOT (motion), ENC3 =
+// SHP (shape), ENC4 = THN (thinning), ENC5 = EXT (extension %), ENC6 =
+// SUB (substitution %), ENC7 = LEN, ENC8 = SPEED - the last two mirror
+// SEQMODE3's pattern knobs so the walk fits the track without a mode hop.
+// Composite active check like the other pages - a mid-turn channel /
+// TYPE / mode switch drops it
+static bool skankPageOn = false;
+
+static bool skankTrackCtx() {
+  return modeBase == MODE_SEQ && modeVariant != 3 &&
+         seqTrack() == SEQ_TRACK_POLY && seqPolyType() == SEQ_POLY_SKANK;
+}
+
+void skankPageToggle() { skankPageOn = !skankPageOn; }
+void skankPageDismiss() { skankPageOn = false; }
+bool skankPageActive()  { return skankPageOn && skankTrackCtx(); }
+
 // selected step for the mod dials (F2/F3/F4), or -1: nothing picked yet,
 // or the pattern shrank / the step lost its content under the selection
 int8_t genStepSelStep() {
@@ -226,6 +269,13 @@ int8_t genStepSelStep() {
     return -1;
   }
   return genStepSel;
+}
+
+// the held step for the SEQMODE per-step TRANS overlay; a mid-hold mode
+// switch drops it by itself (composite check like the page accessors)
+int8_t seqTrStepSelGet() {
+  if (seqTrStepSel < 0 || modeBase != MODE_SEQ) return -1;
+  return seqTrStepSel;
 }
 
 // 4 counts = 1 value step of dial i (0 = OCT, 1 = BRW, 2 = PROB)
@@ -411,6 +461,8 @@ void handleButtonEvents() {
             genPageDismiss();       // nor a BASS track for the GNR8 page
             leadPageDismiss();      // nor a LEAD track for the LEAD page
             harmPageDismiss();      // nor a HARM track for the HARM page
+            compPageDismiss();      // nor a POLY/STEP track for the COMP page
+            skankPageDismiss();     // nor a POLY/SKANK track for the SKANK page
             stepChainDisarm();      // ...nor an armed chain span (old ch)
             refreshAllLeds();        // M1 + F-row follow the radio again
             // the whole grid belongs to the new channel (length, speed,
@@ -609,7 +661,35 @@ void handleButtonEvents() {
           }
         } else if (!drum) {       // DRUM steps are toggles, no assign mode
           stepAssignSet((int8_t)stp);
-          if (logRoom(48)) {
+          // SEQMODE: the hold ALSO swaps ENC1 onto this step's TRANS
+          // offset (the other encoders keep their idle row; DRUM tracks
+          // never take it - their steps are voice toggles)
+          if (modeBase == MODE_SEQ) {
+            seqTrStepSel = (int8_t)stp;
+            // a POLY+SKANK track swaps the row onto its LOCK knobs instead
+            // (encoders 1..6 = per-step derivation overrides, 8 = TRANS)
+            bool skankRow = modeVariant != 3 &&
+                            seqTrack() == SEQ_TRACK_POLY &&
+                            seqPolyType() == SEQ_POLY_SKANK;
+            setOverlay(G_ENC, skankRow ? ENC_SEQ_SKANK_STEP
+                                       : ENC_SEQ_STEPOV);
+            refreshMainScreen();  // the encoder labels are the overlay's
+            char tb[24];
+            if (skankRow) {
+              snprintf(tb, sizeof(tb), "step %u locks", stp + 1);
+            } else {
+              int8_t tv = stepTrAt(stp);
+              if (tv >= 0)
+                snprintf(tb, sizeof(tb), "step %u trans +%d", stp + 1, tv);
+              else
+                snprintf(tb, sizeof(tb), "step %u trans %d", stp + 1, tv);
+            }
+            headerShow(tb);
+            if (logRoom(48)) {
+              Serial.print("  ");
+              Serial.println(tb);
+            }
+          } else if (logRoom(48)) {
             Serial.print("  step assign ");
             Serial.println(stp + 1);
           }
@@ -624,6 +704,15 @@ void handleButtonEvents() {
             if (k4EmbMenu()) setOverlay(G_ENC, ENC_KEY4_EMB);
           }
           refreshMainScreen();    // labels back to the mode's own row
+        }
+        if (seqTrStepSel >= 0) {
+          // SEQMODE step-trans row lets go (same never-clobber guard);
+          // both held-step rows (plain TRANS, SKANK locks) share the sel
+          seqTrStepSel = -1;
+          if (currentBinding().enc == ENC_SEQ_STEPOV ||
+              currentBinding().enc == ENC_SEQ_SKANK_STEP)
+            clearOverlay(G_ENC);
+          refreshMainScreen();
         }
         stepAssignSet(-1);
       }
@@ -682,6 +771,16 @@ void handleButtonEvents() {
             harmPageDismiss();
             droppedPage = true;
             if (logRoom(48)) Serial.println("  harm page off (edit on)");
+          }
+          if (compPageActive()) {     // ...and the COMP page
+            compPageDismiss();
+            droppedPage = true;
+            if (logRoom(48)) Serial.println("  comp page off (edit on)");
+          }
+          if (skankPageActive()) {    // ...and the SKANK page
+            skankPageDismiss();
+            droppedPage = true;
+            if (logRoom(48)) Serial.println("  skank page off (edit on)");
           }
           stepEditSet(true, 0);
           headerShow("EDIT ON");
@@ -838,6 +937,16 @@ void handleButtonEvents() {
           harmPageDismiss();
           droppedArp = true;
           if (logRoom(48)) Serial.println("  harm page off (edit target)");
+        }
+        if (compPageActive()) {     // ...and the COMP page
+          compPageDismiss();
+          droppedArp = true;
+          if (logRoom(48)) Serial.println("  comp page off (edit target)");
+        }
+        if (skankPageActive()) {    // ...and the SKANK page
+          skankPageDismiss();
+          droppedArp = true;
+          if (logRoom(48)) Serial.println("  skank page off (edit target)");
         }
         stepEditSet(true, (uint8_t)(idx + 1));
         headerShow(tn[idx]);
@@ -1053,6 +1162,44 @@ void handleButtonEvents() {
         if (logRoom(48)) {
           Serial.print("  harm page ");
           Serial.println(harmPageActive() ? "on" : "off");
+        }
+        refreshAllLeds();
+        refreshMainScreen();
+      } else if (ev == EV_CLICKED && compTrackCtx()) {
+        // SEQMODE 1/2/4 + POLY/STEP: M2 clicks the COMP encoder page on/off
+        compPageToggle();
+        if (compPageActive()) {
+          if (stepEditIsOn()) {
+            stepEditSet(false, 0);
+            if (logRoom(48)) Serial.println("  edit off (comp open)");
+          }
+        } else {
+          stepChainDisarm();           // the F row leaves too
+        }
+        headerShow(compPageActive() ? "COMP" : "COMP OFF");
+        if (logRoom(48)) {
+          Serial.print("  comp page ");
+          Serial.println(compPageActive() ? "on" : "off");
+        }
+        refreshAllLeds();
+        refreshMainScreen();
+      } else if (ev == EV_CLICKED && skankTrackCtx()) {
+        // SEQMODE 1/2/4 + POLY/SKANK: M2 clicks the SKANK encoder page on/
+        // off.  Opening it drops the M1 edit radio - the two keys are
+        // mutually exclusive (M1's toggle closes this page instead)
+        skankPageToggle();
+        if (skankPageActive()) {
+          if (stepEditIsOn()) {
+            stepEditSet(false, 0);
+            if (logRoom(48)) Serial.println("  edit off (skank open)");
+          }
+        } else {
+          stepChainDisarm();           // the F row leaves too
+        }
+        headerShow(skankPageActive() ? "SKANK" : "SKANK OFF");
+        if (logRoom(48)) {
+          Serial.print("  skank page ");
+          Serial.println(skankPageActive() ? "on" : "off");
         }
         refreshAllLeds();
         refreshMainScreen();
@@ -1315,15 +1462,17 @@ void handleButtonEvents() {
     // Oct/Scale/Root/Latch/KLock/Perf, KEYMODE4 to Oct/Scale/Key; release
     // restores it.  A quick KEYMODE4 tap (no hold) steps the focus back
     if (kl == groupControls[0]) {
-      if (ev == EV_PRESSED && genPageActive()) {
-        // GNR8 page: PREV held = the rotate row (ENC1 = pattern rotate,
-        // the other seven idle).  Checked FIRST - the KEYMODE2 quality row
-        // claims PREV via keyBehaviorVariant() no matter which mode is up,
-        // so it must not steal the hold while the GNR8 page is open
-        setOverlay(G_ENC, ENC_SEQ_GNR8_OV);
+      if (ev == EV_PRESSED && modeBase == MODE_SEQ) {
+        // SEQMODE: PREV held = the SHIFT/TRANS row (ENC1 = pattern rotate,
+        // ENC2 = semitone transpose of the sequence's playback).  The GNR8
+        // page's old rotate row lives on this same overlay (ENC1 still =
+        // rotate).  Checked FIRST - the KEYMODE2 quality row claims PREV
+        // via keyBehaviorVariant() no matter which mode is up, so it must
+        // not steal the hold in SEQMODE
+        setOverlay(G_ENC, ENC_SEQ_ROT_OV);
         prevOvActive = true;
         refreshMainScreen();
-        if (logRoom(48)) Serial.println("  overlay GNR8 ROT");
+        if (logRoom(48)) Serial.println("  overlay SEQ SHIFT/TRANS");
       } else if (ev == EV_PRESSED && keyBehaviorVariant() == 2) {
         setOverlay(G_ENC, ENC_KEY2_PREV);
         prevOvActive = true;
@@ -1786,9 +1935,11 @@ void handleEncoderEvents() {
     //           ENC7 = TYPE ROOT/BASS/ARP (MONO sequences only, no wrap)
     //           ENC8 = tempo 40..240 (moved from ENC1)
     if (modeBase == MODE_SEQ) {
-      if (ed != 0 && currentBinding().enc == ENC_SEQ_GNR8_OV) {
-        // GNR8 rotate overlay (PREV held): ENC1 = rotate the pattern,
-        // 4 counts = 1 step - the other seven are idle on this row
+      if (ed != 0 && currentBinding().enc == ENC_SEQ_ROT_OV) {
+        // SHIFT/TRANS overlay (PREV held): ENC1 = rotate the pattern,
+        // 4 counts = 1 step (GNR8 page's old ROT row, same knob); ENC2 =
+        // semitone TRANS of the sequence's playback, 1 count = 1 st,
+        // -12..+12 (DRUM tracks refuse the turn).  The other six idle
         if (ei == 0) {
           seqGenShiftAdjust(ed);
           char rb[12];
@@ -1797,6 +1948,91 @@ void handleEncoderEvents() {
           if (logRoom(48)) {
             Serial.print("  ");
             Serial.println(rb);
+          }
+        } else if (ei == 1) {
+          seqTransAdjust(ed);
+          char tb[16];
+          int8_t tv = (int8_t)seqTrans();
+          if (tv >= 0) snprintf(tb, sizeof(tb), "trans +%d", (int)tv);
+          else         snprintf(tb, sizeof(tb), "trans %d", (int)tv);
+          headerShow(tb);
+          if (logRoom(48)) {
+            Serial.print("  ");
+            Serial.println(tb);
+          }
+        }
+        any = true;
+      } else if (ed != 0 && currentBinding().enc == ENC_SEQ_STEPOV &&
+                 seqTrStepSel >= 0) {
+        // held-step overlay in SEQMODE (non-DRUM): ENC1 = the held step's
+        // TRANS offset, 1 count = 1 st, -12..+12 - a playback-only
+        // modifier like the step's octave, the stored chord never changes
+        if (ei == 0) {
+          int8_t cur = stepTrAt((uint8_t)seqTrStepSel);
+          int16_t nv = (int16_t)cur + ed;
+          if (nv < -12) nv = -12;
+          if (nv > 12) nv = 12;
+          stepTrSet((uint8_t)seqTrStepSel, (int8_t)nv);
+          char tb[20];
+          if (nv >= 0)
+            snprintf(tb, sizeof(tb), "step %d trans +%d", seqTrStepSel + 1, nv);
+          else
+            snprintf(tb, sizeof(tb), "step %d trans %d", seqTrStepSel + 1, nv);
+          headerShow(tb);
+          if (logRoom(48)) {
+            Serial.print("  ");
+            Serial.println(tb);
+          }
+        }
+        any = true;
+      } else if (ed != 0 && currentBinding().enc == ENC_SEQ_SKANK_STEP &&
+                 seqTrStepSel >= 0) {
+        // the SKANK lock row (a step held on a POLY+SKANK track): ENC1..7
+        // override THAT step's derivation knob - turning while "inherit"
+        // grabs the track's page value and nudges it, turning under 0
+        // clears the lock back to inherit (0 is a legal value, the lock
+        // storage keeps it distinct); ENC8 = the step's TRANS like the
+        // plain held-step row (NOT% stays page-level, no lock slot)
+        int8_t stp = seqTrStepSel;
+        if (ei < 7) {
+          static const char *nm[7] = { "tes", "mot", "shp", "thn",
+                                       "ext", "sub", "tes" };
+          int16_t cur = stepSkankLockAt((uint8_t)stp, (uint8_t)ei);
+          if (cur < 0) cur = skankPrm((uint8_t)ei);   // inherit: grab the knob
+          int16_t nv = cur + ed;
+          if (nv > 100) nv = 100;
+          if (nv < -1) nv = -1;
+          stepSkankLockSet((uint8_t)stp, (uint8_t)ei, nv);
+          char tb[24];
+          if (nv < 0)
+            snprintf(tb, sizeof(tb), "step %d %s inherit", stp + 1, nm[ei]);
+          else if (ei == 2)
+            snprintf(tb, sizeof(tb), "step %d shp %s", stp + 1,
+                     skankShpName((uint8_t)nv));
+          else if (ei == 6)
+            snprintf(tb, sizeof(tb), "step %d tes %d%%", stp + 1, nv);
+          else
+            snprintf(tb, sizeof(tb), "step %d %s %d", stp + 1, nm[ei], nv);
+          headerShow(tb);
+          if (logRoom(48)) {
+            Serial.print("  ");
+            Serial.println(tb);
+          }
+        } else if (ei == 7) {      // ENC8 = the step's TRANS (shared knob)
+          int8_t cur = stepTrAt((uint8_t)stp);
+          int16_t nv = (int16_t)cur + ed;
+          if (nv < -12) nv = -12;
+          if (nv > 12) nv = 12;
+          stepTrSet((uint8_t)stp, (int8_t)nv);
+          char tb[24];
+          if (nv >= 0)
+            snprintf(tb, sizeof(tb), "step %d trans +%d", stp + 1, nv);
+          else
+            snprintf(tb, sizeof(tb), "step %d trans %d", stp + 1, nv);
+          headerShow(tb);
+          if (logRoom(48)) {
+            Serial.print("  ");
+            Serial.println(tb);
           }
         }
         any = true;
@@ -1863,9 +2099,11 @@ void handleEncoderEvents() {
           }
         }
         any = true;
-      } else if (ei == 0 && ed != 0 && !harmPageActive()) {
+      } else if (ei == 0 && ed != 0 && !harmPageActive() && !compPageActive() &&
+                 !skankPageActive()) {
         seqOctaveShiftAdjust(ed);           // octave shift of the edit seq
-        // (the open HARM page takes ENC1 for its GENRE - handled below)
+        // (the open HARM page takes ENC1 for its GENRE, the COMP page for
+        //  its HITS and the SKANK page for its TES - handled below)
         if (logRoom(48)) {
           Serial.print("  octshift ");
           Serial.println(seqOctaveShift());
@@ -2010,6 +2248,43 @@ void handleEncoderEvents() {
             headerShow(hh);
             if (logRoom(48)) { Serial.print("  "); Serial.println(hh); }
           }
+        } else if (ed != 0 && compPageActive() && ei == 0) {
+          seqCompHitsAdjust(ed);            // ENC1 = HITS (stabs, 0..8,
+                                            // 4 counts = 1)
+          char cb[10];
+          if (seqCompHits() <= 1) {
+            headerShow("comp off");
+          } else {
+            snprintf(cb, sizeof(cb), "comp %d", seqCompHits());
+            headerShow(cb);
+          }
+          if (logRoom(48)) {
+            Serial.print("  comp hits ");
+            Serial.println(seqCompHits());
+          }
+        } else if (ed != 0 && skankPageActive()) {
+          // the SKANK row: ENC1 TES, ENC2 MOT, ENC3 SHP, ENC4 THN, ENC5
+          // EXT, ENC6 SUB, ENC7 TES%, ENC8 NOT% (0..100, 4 counts = 1
+          // unit each) - the last two are the per-hit randomizers: TES%
+          // rolls the inversion fully at random instead of the walk,
+          // NOT% mutates one voicing tone to a random in-scale note
+          if (ei < 8) {
+            skankPrmAdjust((uint8_t)ei, ed);
+            char sb[14];
+            if (ei == 2) {
+              snprintf(sb, sizeof(sb), "shp %s", skankShpName(skankPrm(2)));
+            } else if (ei == 4 || ei == 5 || ei == 6 || ei == 7) {
+              static const char *nm[4] = { "ext", "sub", "tes", "not" };
+              snprintf(sb, sizeof(sb), "%s %u%%", nm[ei - 4],
+                       skankPrm((uint8_t)ei));
+            } else {
+              static const char *nm[6] = { "tes", "mot", "shp", "thn",
+                                           "ext", "sub" };
+              snprintf(sb, sizeof(sb), "%s %u", nm[ei], skankPrm((uint8_t)ei));
+            }
+            headerShow(sb);
+            if (logRoom(48)) { Serial.print("  "); Serial.println(sb); }
+          }
         // F3 held: ENC6 = ACCENT velocity of the edit track (every track
         // type).  Otherwise the step-edit value encoders: ENC5 = gate %,
         // ENC6 = default velocity (MONO only), ENC7 = the FX type or the
@@ -2126,6 +2401,8 @@ void handleEncoderEvents() {
         genPageDismiss();                  // the GNR8 page needs MONO+BASS
         leadPageDismiss();                 // ...the LEAD page needs MONO+LEAD
         harmPageDismiss();                 // ...the HARM page needs POLY+HARM
+        compPageDismiss();                 // ...and COMP needs POLY+STEP
+        skankPageDismiss();                // ...and SKANK needs POLY+SKANK
         stepChainDisarm();                 // ...and a chain arm outlives nothing
         refreshAllLeds();                  // the step-edit radio follows the track type
         if (logRoom(48)) {
@@ -2142,6 +2419,8 @@ void handleEncoderEvents() {
           strumFRowDismiss();     // a MONO track never takes the ADDS row
           genPageDismiss();       // only TYPE = BASS takes the GNR8 page
           leadPageDismiss();      // ...and only TYPE = LEAD takes the LEAD page
+          compPageDismiss();      // ...and COMP needs a POLY track
+          skankPageDismiss();     // ...and so does the SKANK page
           stepChainDisarm();      // ...and the chain arm belongs to BASS
           if (logRoom(48)) {
             Serial.print("  mono ");
@@ -2151,6 +2430,9 @@ void handleEncoderEvents() {
           seqPolyTypeAdjust(ed);     // TYPE: STEP/STRUM/HAND/HARM (no wrap)
           if (!strumFRowCtx()) strumFRowDismiss();   // left STRUM/HAND
           if (seqPolyType() != SEQ_POLY_HARM) harmPageDismiss();  // left HARM
+          if (seqPolyType() != SEQ_POLY_STEP) compPageDismiss();  // left STEP
+          if (seqPolyType() != SEQ_POLY_SKANK)
+            skankPageDismiss();   // left SKANK
           if (logRoom(48)) {
             Serial.print("  poly ");
             Serial.println(seqPolyTypeName());

@@ -11,7 +11,11 @@ enum EncSet : uint8_t {
   ENC_ENC, ENC_ENC2, ENC_ENC3, ENC_ENC4,
   ENC_KEY, ENC_KEY2, ENC_KEY3, ENC_KEY4,
   ENC_SEQ_STEP_HELD,           // overlay: step held in SEQMODE
-  ENC_SEQ_GNR8_OV,             // overlay: PREV held on the GNR8 page (rotate)
+  ENC_SEQ_ROT_OV,              // overlay: PREV held on a SEQ page (SHIFT/TRANS;
+                               //   GNR8 page reuses it - ROT on ENC1 there)
+  ENC_SEQ_STEPOV,              // overlay: step held in SEQMODE (per-step TRANS)
+  ENC_SEQ_SKANK_STEP,           // overlay: step held on a POLY+SKANK track
+                               //   (per-step derivation locks, ENC8 = TRANS)
   ENC_KEY2_PREV,               // overlay: PREV held in KEYMODE2
   ENC_KEY4_PREV,               // overlay: PREV held in KEYMODE4
   ENC_KEY4_EMB,                // sticky: EMB menu open in KEYMODE4

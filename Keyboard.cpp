@@ -6,6 +6,8 @@
 #include "Display.h"    // headerShow (strum option / string feedback)
 #include "Key4.h"       // KEYMODE4 proposal gesture (press/release/commit)
 #include "Gen.h"        // GNR8 params (the SEQ EEPROM block stores them)
+#include "Skank.h"      // SKANK derive (POLY TYPE = SKANK playback)
+#include "bjorklund.h"  // COMP: Euclid stab pattern (same primitive as GNR8)
 #include <EEPROM.h>
 
 #define KEY_OCT_MIN   (-2)
@@ -102,6 +104,8 @@ static int16_t gateSRes = 0;             // leftover encoder counts (ENC5 gate)
 static int16_t velSRes = 0;              // leftover encoder counts (ENC6 vel)
 static int16_t accSRes = 0;              // leftover encoder counts (ENC6 acc)
 static int16_t probSRes = 0;             // leftover encoder counts (ENC8 prob)
+static int16_t compSRes = 0;             // leftover encoder counts (comp HITS)
+static int16_t skankRes[8] = {0};        // leftover counts (SKANK page dials)
 
 // per-channel per-step stored chord; len 0 = unassigned (plays pending[])
 static uint8_t stepChord[SEQ_CH_COUNT][STEP_MAX][CHORD_MAX];
@@ -151,6 +155,15 @@ static uint8_t drumProbOn[SEQ_CH_COUNT][STEP_MAX];
 static int8_t  stepOctM[SEQ_CH_COUNT][STEP_MAX];
 static uint8_t stepBrwM[SEQ_CH_COUNT][STEP_MAX];
 static uint8_t stepModP[SEQ_CH_COUNT][STEP_MAX];
+// per-step semitone transpose -12..+12 (the TRANS knob on the step-hold
+// row): non-destructive playback offset like stepOctM - the stored chord
+// never changes.  RAM only like every step field; rotates with SHIFT and
+// rides the GNR8 snapshot; defaults ride in stepAttClear
+static int8_t  stepTrM[SEQ_CH_COUNT][STEP_MAX];
+// per-step SKANK locks (hold-row encoders 1..6 on a POLY+SKANK track):
+// raw 0 = inherit the page knob, else value+1 (1..101 = 0..100).  Stored
+// with the step content (stepAttClear wipes), RAM only like every field
+static uint8_t stepSkankM[SEQ_CH_COUNT][STEP_MAX][7];
 static uint8_t seqVel[SEQ_CH_COUNT] = {90,90,90,90,90,90,90,90,
                                        90,90,90,90,90,90,90,90};
 // per-track PLAYBACK probability in % (100 = the step always plays).  ENC8
@@ -158,6 +171,25 @@ static uint8_t seqVel[SEQ_CH_COUNT] = {90,90,90,90,90,90,90,90,
 // no per-step copy to re-toggle afterwards
 static uint8_t seqProb[SEQ_CH_COUNT] = {100,100,100,100,100,100,100,100,
                                         100,100,100,100,100,100,100,100};
+// per-track COMP: chord stabs per POLY STEP step (Euclid pattern in 8
+// slots).  0 or 1 = today's single block chord, 2..8 = the chord re-strikes
+// on the Euclid on-positions.  Edited live on the COMP page (M2 on a POLY
+// STEP track, ENC1 = HITS); persists in the SEQ EEPROM block
+static uint8_t compHits[SEQ_CH_COUNT] = {0};
+// per-track SKANK page knobs (M2 on a POLY SKANK track): TES/MOT/SHP/THN/
+// EXT/SUB, all 0..100 - MOT boots 50 (centered on the tessitura anchor),
+// the rest 0 (no walk/no color/no sub = a plain block chord, like STEP).
+// Persisted in the SEQ EEPROM block
+static uint8_t skankPrmM[SEQ_CH_COUNT][8] = {
+  {0,50,0,0,0,0,0,0}, {0,50,0,0,0,0,0,0}, {0,50,0,0,0,0,0,0}, {0,50,0,0,0,0,0,0},
+  {0,50,0,0,0,0,0,0}, {0,50,0,0,0,0,0,0}, {0,50,0,0,0,0,0,0}, {0,50,0,0,0,0,0,0},
+  {0,50,0,0,0,0,0,0}, {0,50,0,0,0,0,0,0}, {0,50,0,0,0,0,0,0}, {0,50,0,0,0,0,0,0},
+  {0,50,0,0,0,0,0,0}, {0,50,0,0,0,0,0,0}, {0,50,0,0,0,0,0,0}, {0,50,0,0,0,0,0,0}};
+// per-track semitone transpose -12..+12 (the TRANS knob on the PREV-held
+// shift row): non-destructive playback offset, composed with the octave
+// shift at the send sites.  Persisted in the SEQ EEPROM block; 0 = off.
+// The DRUM track ignores it (its "notes" are drum-map ids, not pitches)
+static int8_t seqTransM[SEQ_CH_COUNT] = {0};
 // per-track velocity of an ACCENTED step (127 is the old hard-wire; 101 is
 // the boot default) - F3 held + ENC6 edits it
 static uint8_t seqAccVel[SEQ_CH_COUNT] = {101,101,101,101,101,101,101,101,
@@ -198,6 +230,9 @@ static void stepAttClear(uint8_t ch, uint8_t st) {
   stepOctM[ch][st] = 0;          // GNR8 mods: no octave shift, no borrow,
   stepBrwM[ch][st] = 0;          // modifier always passes (prob 100)
   stepModP[ch][st] = 100;
+  stepTrM[ch][st] = 0;           // per-step TRANS: no semitone offset
+  for (uint8_t i = 0; i < 7; i++)
+    stepSkankM[ch][st][i] = 0;   // SKANK locks: inherit the page knobs
   for (uint8_t i = 0; i < CHORD_MAX; i++) stepStrumDt[ch][st][i] = 0;
 }
 
@@ -1196,6 +1231,8 @@ void stepShiftPattern(uint8_t n, int8_t dir) {
     stepRotRow(stepOctM[ch], 1, n, d);
     stepRotRow(stepBrwM[ch], 1, n, d);
     stepRotRow(stepModP[ch], 1, n, d);
+    stepRotRow(stepTrM[ch], 1, n, d);
+    stepRotRow(stepSkankM[ch], 7, n, d);   // SKANK per-step locks travel too
   }
   seqOctClamp(ch);            // the note set moved: the shift range re-derives
   stepSyncFrom(ch);
@@ -1248,6 +1285,30 @@ void stepModPSet(uint8_t step, uint8_t v) {
   if (step >= STEP_MAX) return;
   if (v > 100) v = 100;
   stepModP[seqEditCh][step] = v;
+}
+int8_t stepTrAt(uint8_t step) {
+  return step < STEP_MAX ? stepTrM[seqEditCh][step] : 0;
+}
+void stepTrSet(uint8_t step, int8_t v) {
+  if (step >= STEP_MAX) return;
+  if (v < -12) v = -12;
+  if (v > 12) v = 12;
+  stepTrM[seqEditCh][step] = v;
+}
+
+// per-step SKANK locks (the hold-step lock row): value 0..100, -1 = inherit.
+// The playback reads the array of ITS channel directly; these accessors
+// walk the edit sequence like every other step field
+int16_t stepSkankLockAt(uint8_t step, uint8_t idx) {
+  if (step >= STEP_MAX || idx >= 7) return -1;
+  uint8_t raw = stepSkankM[seqEditCh][step][idx];
+  return raw ? (int16_t)(raw - 1) : -1;
+}
+void stepSkankLockSet(uint8_t step, uint8_t idx, int16_t v) {
+  if (step >= STEP_MAX || idx >= 7) return;
+  if (v < -1) v = -1;
+  if (v > 100) v = 100;
+  stepSkankM[seqEditCh][step][idx] = (uint8_t)(v < 0 ? 0 : v + 1);
 }
 
 // --- KEYMODE4 step-hold row: in-place chord transforms ---------------------
@@ -1386,6 +1447,7 @@ static uint16_t snapStrumB[STEP_MAX][CHORD_MAX];
 static int8_t  snapOctB[STEP_MAX];      // GNR8 per-step mods
 static uint8_t snapBrwB[STEP_MAX];
 static uint8_t snapModP[STEP_MAX];
+static int8_t  snapTrB[STEP_MAX];       // per-step TRANS
 static uint8_t snapCh = 0;
 static bool    snapValid = false;
 
@@ -1403,6 +1465,7 @@ void stepSnapshotTake() {
     snapOctB[st] = stepOctM[ch][st];
     snapBrwB[st] = stepBrwM[ch][st];
     snapModP[st] = stepModP[ch][st];
+    snapTrB[st] = stepTrM[ch][st];
     for (uint8_t i = 0; i < CHORD_MAX; i++) {
       snapChord[st][i] = stepChord[ch][st][i];
       snapStrumB[st][i] = stepStrumDt[ch][st][i];
@@ -1427,6 +1490,7 @@ int stepSnapshotRestore() {
     stepOctM[ch][st] = snapOctB[st];
     stepBrwM[ch][st] = snapBrwB[st];
     stepModP[ch][st] = snapModP[st];
+    stepTrM[ch][st] = snapTrB[st];
     for (uint8_t i = 0; i < CHORD_MAX; i++) {
       stepChord[ch][st][i] = snapChord[st][i];
       stepStrumDt[ch][st][i] = snapStrumB[st][i];
@@ -2014,6 +2078,80 @@ void seqStrumPoll() {
   }
 }
 
+// COMP: a POLY STEP chord re-struck on the Euclid on-positions of 8 slots
+// inside the step (per-track HITS 2..8).  compQ[] carries the pending
+// stabs, drained from loop context beside seqStrumPoll; each stab cuts the
+// previous one (the last rings to the step boundary, where releaseCh
+// cancels the tail - a rest, a length change or stop drops it, like the
+// strum queue).  MONO and DRUM never enqueue; STRUM/HAND/HARM steps keep
+// their own gestures
+static struct {
+  uint8_t note[CHORD_MAX];
+  uint8_t vel[CHORD_MAX];
+  uint8_t nn;               // notes per stab
+  uint8_t idx;              // next stab to send
+  uint8_t hi;               // stabs in the pattern
+  uint32_t at[8];           // absolute onset (millis) of each stab
+  bool on;
+} compQ[SEQ_CH_COUNT];
+
+static void compCancel(uint8_t c) { compQ[c].on = false; }
+
+// stage one step's comp stabs: notes arrive playback-shifted and
+// velocity-shaped; sd = this channel's step duration (ms, speed-scaled).
+// HITS 0/1 or a missing sd fall back to the block chord (today's behavior)
+static void compEnqueue(uint8_t c, const uint8_t *note, const uint8_t *vel,
+                        uint8_t n, uint32_t sd) {
+  uint8_t hits = compHits[c];
+  if (n > CHORD_MAX) n = CHORD_MAX;
+  if (hits < 2 || sd == 0) {            // one stab = the block chord
+    for (uint8_t i = 0; i < n; i++) {
+      seqNotes[c][i] = note[i];
+      seqOutOn(c, note[i], vel[i]);
+    }
+    seqLen[c] = n;
+    return;
+  }
+  if (hits > 8) hits = 8;
+  Bjorklund<uint16_t, 10> eu;
+  uint16_t bits = eu.compute(8, (int8_t)hits);
+  uint32_t t0 = millis();
+  uint8_t hi = 0;
+  for (uint8_t s = 0; s < 8 && hi < 8; s++) {
+    if ((bits >> s) & 1)
+      compQ[c].at[hi++] = t0 + (uint32_t)(sd * (uint32_t)s) / 8;
+  }
+  for (uint8_t i = 0; i < n; i++) {
+    compQ[c].note[i] = note[i];
+    compQ[c].vel[i] = vel[i];
+  }
+  compQ[c].nn = n;
+  compQ[c].idx = 0;
+  compQ[c].hi = hi;
+  compQ[c].on = true;
+}
+
+// drain due stabs (called from the loop, next to seqStrumPoll): cut the
+// sounding stab, re-strike the chord.  The last stab stays in seqNotes so
+// the step-boundary release cuts it, and the HARM live follow reads it
+void compPoll() {
+  uint32_t now = millis();
+  for (uint8_t c = 0; c < SEQ_CH_COUNT; c++) {
+    if (!compQ[c].on || compQ[c].idx >= compQ[c].hi) continue;
+    if ((int32_t)(now - compQ[c].at[compQ[c].idx]) < 0) continue;
+    for (uint8_t i = 0; i < seqLen[c]; i++)
+      seqOutOff(c, seqNotes[c][i]);
+    seqLen[c] = 0;
+    for (uint8_t i = 0; i < compQ[c].nn; i++) {
+      seqNotes[c][seqLen[c]] = compQ[c].note[i];
+      seqOutOn(c, compQ[c].note[i], compQ[c].vel[i]);
+      seqLen[c]++;
+    }
+    compQ[c].idx++;
+    if (compQ[c].idx >= compQ[c].hi) compQ[c].on = false;
+  }
+}
+
 // release one sequence's sounding notes and cancel its gate timer
 static void releaseCh(uint8_t c) {
   for (uint8_t i = 0; i < seqLen[c]; i++)
@@ -2021,6 +2159,7 @@ static void releaseCh(uint8_t c) {
   seqLen[c] = 0;
   gateOffAt[c] = 0;
   strumCancel(c);
+  compCancel(c);            // a rest / length change drops the stab tail
   handRing[c] = 0;
 }
 
@@ -2097,10 +2236,11 @@ void handRingCut(uint8_t c) {
   handBufN[c] = 0;
 }
 
-// playback note = stored note + 12 * the sequence's octave shift, kept in
-// 0..127 (seqOctClamp keeps the shift inside the -2..8 convention anyway)
-static uint8_t shNote(uint8_t n, int8_t sh) {
-  int v = (int)n + 12 * (int)sh;
+// playback note = stored note + 12 * the sequence's octave shift + its
+// semitone TRANS offset, kept in 0..127 (seqOctClamp keeps the octave
+// inside the -2..8 convention, TRANS clamps at the knob)
+static uint8_t shNote(uint8_t n, int8_t sh, int8_t tr = 0) {
+  int v = (int)n + 12 * (int)sh + (int)tr;
   if (v < 0) v = 0;
   if (v > 127) v = 127;
   return (uint8_t)v;
@@ -2206,7 +2346,7 @@ static uint8_t mapBassNote(uint8_t c, uint8_t stp, const uint8_t *ch,
   uint8_t tn = 0;
   for (uint8_t i = 0; i < len && i < CHORD_MAX; i++)
     t[tn++] = ch[i];
-  if (!tn) return shNote(n, sh);         // degenerate: keep the own pitch
+  if (!tn) return shNote(n, sh, seqTransOf(c));   // degenerate: own pitch
   for (uint8_t i = 1; i < tn; i++) {
     uint8_t v = t[i];
     uint8_t j = i;
@@ -2286,7 +2426,31 @@ static uint8_t mapBassNote(uint8_t c, uint8_t stp, const uint8_t *ch,
   // (octave-shaped to the base), gated by the step's modifier probability
   uint8_t brw = stepBrwM[c][stp];
   if (modOn && brw) base = winOct(t[(brw - 1) % tn], (int)base, lo, hi);
-  return shNote(base, sh);               // listener's octave shifts LAST
+  return shNote(base, sh, seqTransOf(c)); // listener's shifts apply LAST
+}
+
+// SKANK playback: resolve this step's locks (raw 0 = inherit the page
+// knob; a locked TES owns the whole hit - MOT parks centered so the walk
+// stays where the lock put it) and derive the voicing from the source
+// chord the caller resolved (feeder while FOLLOW runs, own stored step
+// otherwise).  Locks read the PLAYBACK channel, page knobs its defaults
+static void skankDerive(uint8_t c, uint8_t stp, const Chord &src,
+                        Chord &out) {
+  uint8_t p[8];
+  bool tesLocked = false;
+  for (uint8_t i = 0; i < 7; i++) {
+    uint8_t raw = stepSkankM[c][stp][i];
+    if (raw) {
+      p[i] = (uint8_t)(raw - 1);
+      if (i == 0) tesLocked = true;
+    } else {
+      p[i] = skankPrmM[c][i];
+    }
+  }
+  p[7] = skankPrmM[c][7];         // NOT% stays page-level (no lock slot)
+  if (tesLocked) p[1] = 50;              // the lock sets the inversion alone
+  deriveSkankChord(src, out, stp, p[0], p[1], p[2], p[3], p[4], p[5], p[6],
+                   p[7]);
 }
 
 // one sub-step of the transport: every track whose speed gate fired this
@@ -2379,14 +2543,33 @@ static void seqAdvanceOnce(bool start, const bool *go,
   for (uint8_t c = 0; c < SEQ_CH_COUNT; c++)
     if (go[c]) histAt(c, chStep[c]);
   // two passes over the note-on section: every track first, then the POLY
-  // +HARM followers (FOLLOW on, input != self) - so a follower always
-  // reads the feeder's note for THIS tick regardless of channel order
+  // +HARM followers (FOLLOW on, input != self), every SKANK track (a
+  // following skank reads the feeder's chord for THIS tick; a plain one
+  // just derives later in its own pass) AND the MONO/POLY followers whose
+  // feeder is a SKANK track (the walk lives only in the feeder's sounding
+  // notes, so they read those instead of its stored steps) - so a
+  // follower always reads the feeder's note for THIS tick regardless of
+  // channel order
   for (uint8_t pass = 0; pass < 2; pass++)
   for (uint8_t c = 0; c < SEQ_CH_COUNT; c++) {
     bool harmFol = seqTrackOf(c) == SEQ_TRACK_POLY &&
                    seqPolyTypeOf(c) == SEQ_POLY_HARM && seqFollowOf(c) &&
                    seqInCh[c] != (uint8_t)(c + 1);
-    if (harmFol != (pass == 1)) continue;
+    bool skankTrack = seqTrackOf(c) == SEQ_TRACK_POLY &&
+                      seqPolyTypeOf(c) == SEQ_POLY_SKANK;
+    // follower of a SKANK feeder (MONO arp/bass/lead/strum or POLY
+    // STEP/STRUM/HAND): the walked voicing exists only at the feeder's
+    // send time, so stored-step follow would be indistinguishable from
+    // the mirrored raw chords - read the feeder's SOUNDING notes instead
+    // (scoped to POLY+SKANK feeders; other feeders keep the stored-step
+    // convention; HARM listeners keep their own bass-line inference)
+    uint8_t fxf = (uint8_t)(seqInCh[c] - 1);
+    bool skankFol = !harmFol && !skankTrack &&
+                    seqTrackOf(c) != SEQ_TRACK_DRUM && seqFollowOf(c) &&
+                    seqInCh[c] != (uint8_t)(c + 1) &&
+                    seqTrackOf(fxf) == SEQ_TRACK_POLY &&
+                    seqPolyTypeOf(fxf) == SEQ_POLY_SKANK;
+    if ((harmFol || skankTrack || skankFol) != (pass == 1)) continue;
     if (!go[c]) continue;                 // did not advance this sub-tick
     if (!inRng[c]) continue;              // parked outside its window
     if (tied[c]) continue;              // merged note keeps sounding
@@ -2501,6 +2684,42 @@ static void seqAdvanceOnce(bool start, const bool *go,
       if (ln) { ch = live; len = ln; }
       // ln == 0 (cold start): the stored baked chord plays as-is
     }
+    // live SKANK source: with FOLLOW on the chord is re-read from the
+    // feeder's SOUNDING notes this tick (post-probability, its ringing
+    // pad bar - the same freshness the HARM live path gets) instead of
+    // the stored feeder step the follow block above resolved; a quiet
+    // feeder keeps that stored chord (cold start / arp rests), FOLLOW off
+    // = the track's own stored step.  A follower of a SKANK feeder
+    // (skankFol, MONO or POLY) reads the same way - it gets the feeder's
+    // WALKED voicing - and falls back to the stored-step chord the follow
+    // block resolved while the feeder is quiet.  `live` is free here:
+    // harmFol, skankTrack and skankFol never overlap
+    if ((skankTrack || skankFol) && follow) {
+      uint8_t fx2 = (uint8_t)(seqInCh[c] - 1);
+      if (seqLen[fx2] > 0) {
+        uint8_t ln = seqLen[fx2] > CHORD_MAX ? CHORD_MAX : seqLen[fx2];
+        for (uint8_t i = 0; i < ln; i++) live[i] = seqNotes[fx2][i];
+        ch = live;
+        len = ln;
+      }
+    }
+    // SKANK derive: shape the voicing about to play from the source chord
+    // (the feeder above, or the track's own stored step) - this step's
+    // locks override the page knobs inside skankDerive, and everything
+    // downstream (step FX, FScale, OCT/TRANS, gate, COMP) treats the
+    // result as the step's chord.  The stored steps are never rewritten
+    uint8_t skankOut[CHORD_MAX];
+    if (skankTrack) {
+      Chord f, o;
+      f.count = (len > CHORD_MAX) ? CHORD_MAX : len;
+      for (uint8_t i = 0; i < f.count; i++) f.notes[i] = ch[i];
+      skankDerive(c, stp, f, o);
+      if (o.count) {
+        for (uint8_t i = 0; i < o.count; i++) skankOut[i] = o.notes[i];
+        ch = skankOut;
+        len = o.count;
+      }
+    }
     // step FX (POLY embellishments): SUS/ext reshape the chord and COLOR
     // appends its raw approach note BEFORE the FScale snap below, so the
     // ghost stays chromatic while the core follows the scale.  MONO picks
@@ -2546,14 +2765,18 @@ static void seqAdvanceOnce(bool start, const bool *go,
       if (m) { len = m; ch = mapped; }
       if (fxm) nCore = coreOut;        // compaction may have shrunk the core
     }
-    // GNR8 per-step OCT on POLY (the step-hold row's ENC1 / GNR8 F2 page):
-    // transpose the PLAYBACK copy - the stored step chord never changes,
-    // the MONO track keeps its probability-gated roll below
-    if (!mono && !drumTrack && stepOctM[c][stp]) {
+    // GNR8 per-step OCT on POLY (the step-hold row's ENC1 / GNR8 F2 page)
+    // and per-step TRANS (step-hold row, -12..+12 st): transpose the
+    // PLAYBACK copy - the stored step chord never changes, the MONO track
+    // keeps its probability-gated OCT roll below (TRANS is a plain offset,
+    // never rolled)
+    if (!mono && !drumTrack &&
+        (stepOctM[c][stp] || stepTrM[c][stp])) {
       if (ch != mapped)
         for (uint8_t i = 0; i < len; i++) mapped[i] = ch[i];
       for (uint8_t i = 0; i < len; i++) {
-        int v = (int)mapped[i] + 12 * (int)stepOctM[c][stp];
+        int v = (int)mapped[i] + 12 * (int)stepOctM[c][stp] +
+                (int)stepTrM[c][stp];
         if (v < 0) v = 0;
         if (v > 127) v = 127;
         mapped[i] = (uint8_t)v;
@@ -2567,6 +2790,7 @@ static void seqAdvanceOnce(bool start, const bool *go,
     if (handStep) handBufStore(c, ch, len);
     if (handStep && !handTimed) continue;
     int8_t sh = seqOct[c];
+    int8_t tr = seqTransOf(c);       // per-track semitone TRANS (0 on DRUM)
     if (mono) {
       uint8_t vel = (att & SEQ_ATT_ACCENT) ? seqAccVel[c] : seqVel[c];
       // gate timer: TIE/GLIDE hold to the boundary by definition
@@ -2589,7 +2813,7 @@ static void seqAdvanceOnce(bool start, const bool *go,
           order[j] = v;
         }
         for (uint8_t i = 0; i < n; i++) {
-          order[i] = shNote(order[i], sh);
+          order[i] = shNote(order[i], sh, tr);
           ovel[i] = vel;
         }
         uint32_t e = n ? (sd / ((uint32_t)n * 2)) : sd;
@@ -2636,10 +2860,16 @@ static void seqAdvanceOnce(bool start, const bool *go,
             if (whi > 127) whi = 127;
             note = foldWin((int)note, wlo, whi);
           }
-          note = shNote(note, sh);
+          note = shNote(note, sh, tr);
         }
         if (modOn && stepOctM[c][stp]) {  // OCT: octave shift 0..127 clamp
           int v = (int)note + 12 * (int)stepOctM[c][stp];
+          if (v < 0) v = 0;
+          if (v > 127) v = 127;
+          note = (uint8_t)v;
+        }
+        if (stepTrM[c][stp]) {            // TRANS: plain offset, never rolled
+          int v = (int)note + (int)stepTrM[c][stp];
           if (v < 0) v = 0;
           if (v > 127) v = 127;
           note = (uint8_t)v;
@@ -2665,6 +2895,14 @@ static void seqAdvanceOnce(bool start, const bool *go,
       // the gesture with its recorded onsets - or the even spread when the
       // chord was block-written (all dts zero)
       bool doStrum = strumStep || handStep;
+      // COMP: a plain POLY STEP (or SKANK - the stab pattern rides the
+      // derived voicing, HITS set while the track was STEP) with per-track
+      // HITS >= 2 stages the chord into the stab queue instead of one
+      // block send (DRUM keeps its per-voice path even though its et is
+      // always STEP)
+      bool compOn = !drumTrack && !doStrum &&
+                    (et == SEQ_POLY_STEP || et == SEQ_POLY_SKANK) &&
+                    compHits[c] >= 2;
       uint8_t snote[CHORD_MAX], svel[CHORD_MAX];
       uint16_t sdts[CHORD_MAX];
       uint8_t sn = 0;
@@ -2692,7 +2930,7 @@ static void seqAdvanceOnce(bool start, const bool *go,
           }
           if ((drumAccent[c][stp] >> v) & 1) dvel = seqAccVel[c];
         }
-        uint8_t note = shNote(raw, sh);
+        uint8_t note = shNote(raw, sh, tr);
         if (doStrum) {                  // stage the rake (STRUM / HAND)
           if (sn < CHORD_MAX) {
             snote[sn] = note;
@@ -2700,6 +2938,12 @@ static void seqAdvanceOnce(bool start, const bool *go,
             // timed HAND: the stored onset for this STORED index (untimed
             // steps carry all zeros -> handled by the spread below)
             sdts[sn] = handTimed ? stepStrumDt[c][stp][i] : 0;
+            sn++;
+          }
+        } else if (compOn) {         // stage the stab pattern
+          if (sn < CHORD_MAX) {
+            snote[sn] = note;
+            svel[sn] = dvel;
             sn++;
           }
         } else {
@@ -2734,6 +2978,8 @@ static void seqAdvanceOnce(bool start, const bool *go,
           strumEnqueue(c, snote, svel, sn, (uint16_t)e, false, false, 0);
         }
         if (handStep) handRing[c] |= HAND_RING_GEST;   // rings until next content
+      } else if (compOn && sn) {
+        compEnqueue(c, snote, svel, sn, sd);   // stabs at the Euclid slots
       }
     }
   }
@@ -2913,6 +3159,8 @@ void seqSetEditChannel(uint8_t ch) {
   gateSRes = 0;
   velSRes = 0;
   probSRes = 0;
+  compSRes = 0;
+  for (uint8_t i = 0; i < 8; i++) skankRes[i] = 0;  // SKANK page dials too
 }
 
 uint8_t seqInputChannel() { return seqInCh[seqEditCh]; }
@@ -2987,6 +3235,85 @@ void seqProbAdjust(int16_t counts) {
 }
 
 int seqProbPct() { return seqProb[seqEditCh]; }
+
+// COMP page ENC1: stabs per POLY STEP step, 4 counts = 1, clamped 0..8
+// (0/1 = one block chord, like before; live - the playhead re-reads
+// compHits on every advance, so a turn is audible on the next step)
+void seqCompHitsAdjust(int16_t counts) {
+  compSRes += counts;
+  int16_t st = 0;
+  while (compSRes >= 4) { compSRes -= 4; st++; }
+  while (compSRes <= -4) { compSRes += 4; st--; }
+  if (!st) return;
+  int v = (int)compHits[seqEditCh] + st;
+  if (v < 0) v = 0;
+  if (v > 8) v = 8;
+  compHits[seqEditCh] = (uint8_t)v;
+}
+
+int seqCompHits() { return compHits[seqEditCh]; }
+
+uint8_t seqCompHitsOf(uint8_t i) { return i < SEQ_CH_COUNT ? compHits[i] : 0; }
+
+void seqCompHitsSet(uint8_t i, uint8_t v) {
+  if (i < SEQ_CH_COUNT) compHits[i] = (v > 8) ? 0 : v;
+}
+
+// --- SKANK page params (M2 on a POLY+SKANK track) --------------------------
+// 0 TES, 1 MOT, 2 SHP, 3 THN, 4 EXT, 5 SUB, 6 TES%, 7 NOT% - all 0..100,
+// 4 counts = 1 unit, clamped, no wrap (one residual per dial, like the
+// GNR8 option knobs; a focus switch drops the partial turn like every
+// other dial)
+static uint8_t skankPrmDef(uint8_t idx) { return idx == 1 ? 50 : 0; }
+
+void skankPrmAdjust(uint8_t idx, int16_t counts) {
+  if (idx >= 8) return;
+  skankRes[idx] += counts;
+  int16_t st = 0;
+  while (skankRes[idx] >= 4)  { skankRes[idx] -= 4; st++; }
+  while (skankRes[idx] <= -4) { skankRes[idx] += 4; st--; }
+  if (!st) return;
+  int v = (int)skankPrmM[seqEditCh][idx] + (int)st;
+  if (v < 0) v = 0;
+  if (v > 100) v = 100;
+  skankPrmM[seqEditCh][idx] = (uint8_t)v;
+}
+
+uint8_t skankPrm(uint8_t idx) {
+  return (idx < 8) ? skankPrmM[seqEditCh][idx] : 0;
+}
+
+uint8_t skankPrmOf(uint8_t ch, uint8_t idx) {
+  return (ch < SEQ_CH_COUNT && idx < 8) ? skankPrmM[ch][idx] : 0;
+}
+
+void skankPrmSet(uint8_t ch, uint8_t idx, uint8_t v) {
+  if (ch >= SEQ_CH_COUNT || idx >= 8) return;
+  if (v > 100) v = skankPrmDef(idx);     // corrupt byte: back to the default
+  skankPrmM[ch][idx] = v;
+}
+
+// PREV-held shift row ENC2: semitone transpose of the edit sequence's
+// playback, 1 count = 1 st, clamped -12..+12, no wrap (non-destructive -
+// the stored steps never change; DRUM tracks ignore it at playback)
+void seqTransAdjust(int16_t counts) {
+  if (seqTrackOf(seqEditCh) == SEQ_TRACK_DRUM) return;
+  int v = (int)seqTransM[seqEditCh] + counts;
+  if (v < -12) v = -12;
+  if (v > 12) v = 12;
+  seqTransM[seqEditCh] = (int8_t)v;
+}
+int seqTrans() { return seqTransM[seqEditCh]; }
+int8_t seqTransOf(uint8_t i) {
+  if (i >= SEQ_CH_COUNT || seqTrackOf(i) == SEQ_TRACK_DRUM) return 0;
+  return seqTransM[i];
+}
+void seqTransSet(uint8_t i, int8_t v) {
+  if (i >= SEQ_CH_COUNT) return;
+  if (v < -12) v = -12;
+  if (v > 12) v = 12;
+  seqTransM[i] = v;
+}
 
 // F3 held in SEQMODE: ENC6 edits the edit sequence's ACCENT velocity
 // instead of its default one, 4 counts = 1, clamped 1..127 (boot 101)
@@ -3122,6 +3449,7 @@ static void seqEraseNotes(uint8_t s) {
   seqLen[s] = 0;
   arpIdx[s] = 0;
   strumCancel(s);              // an erase also drops the un-sent rake tail
+  compCancel(s);               // ...and the pending comp stabs
   handRing[s] = 0;
   handBufN[s] = 0;             // and the buffered string map (pattern gone)
 }
@@ -3150,13 +3478,22 @@ void seqEraseAll() {
 // | speed[16] | acc[16] | span[16] | arpMode[16] | inst[16] | skip[16] |
 // prob[16] | patLen[16] | follow[16] | genFill[16] | genAcc[16] |
 // genGlide[16] | genTie[16] | genTones[16] | genLow[16] | genRange[16] |
-// genAlgo[16] | checksum = 388 bytes; blank or corrupt keeps the defaults.
-// A block written by an older build (260 bytes, checksum at 259) still
-// loads: the core fields are at the same offsets and the GNR8 params keep
-// their defaults - saved config survives the upgrade
+// genAlgo[16] | leadContour[16] | compHits[16] | trans[16] | skankPrmM[128] |
+// checksum = 564 bytes; blank or corrupt keeps the defaults.  A block
+// written by an older build (532/436/420/404/388/260 bytes) still loads: the
+// core fields are at the same offsets and the newer params keep their
+// defaults - saved config survives the upgrade
 static const uint8_t  SEQ_EE_MAGIC = 0x53;
 static const uint16_t SEQ_EE_ADDR = 160;
-static const uint16_t SEQ_EE_LEN = 404;       // + LEAD contour[16] (b[387..402])
+static const uint16_t SEQ_EE_LEN = 564;       // + SKANK knobs[128] (b[435..562])
+static const uint16_t SEQ_EE_LEN_SKANK = 532; // previous: SKANK knobs[96]
+                                              // TES..SUB stride-6 (b[435..530])
+static const uint16_t SEQ_EE_LEN_TRANS = 436; // previous: TRANS[16]
+                                              // (b[419..434])
+static const uint16_t SEQ_EE_LEN_COMP = 420;  // previous: COMP hits[16]
+                                              // (b[403..418])
+static const uint16_t SEQ_EE_LEN_LEAD = 404;  // previous: LEAD contour[16]
+                                              // (b[387..402])
 static const uint16_t SEQ_EE_LEN_GNR8 = 388;  // previous: GNR8 params (b[259..386])
 static const uint16_t SEQ_EE_LEN_OLD = 260;   // legacy: before GNR8
 
@@ -3192,6 +3529,10 @@ void seqCfgSave() {
     b[355 + i] = seqGenRangeOf(i);            // GNR8 range 1..5 octaves
     b[371 + i] = seqGenAlgoOf(i);             // GNR8 classic/euclid
     b[387 + i] = seqLeadContourOf(i);         // LEAD contour 0..2 (ARCH/DESC/WALK)
+    b[403 + i] = seqCompHitsOf(i);            // COMP stabs per POLY STEP (0..8)
+    b[419 + i] = (uint8_t)seqTransM[i];      // TRANS offset -12..+12 (int8)
+    for (uint8_t p = 0; p < 8; p++)
+      b[435 + i * 8 + p] = skankPrmOf(i, p); // SKANK knobs TES..NOT% (0..100)
   }
   uint8_t sum = 0;
   for (uint16_t i = 0; i < SEQ_EE_LEN - 1; i++) sum += b[i];
@@ -3203,19 +3544,29 @@ void seqCfgLoad() {
   uint8_t b[SEQ_EE_LEN];
   EEPROM.get(SEQ_EE_ADDR, b);
   // pick the NEWEST block length whose magic + checksum validate, so an
-  // older save (388 = GNR8, 260 = legacy) still restores its fields and
-  // the newer ones keep their defaults
+  // older save (532 = first SKANK block, 436 = TRANS, 404 = LEAD,
+  // 388 = GNR8, 260 = legacy) still restores its fields and the newer ones
+  // keep their defaults
   uint16_t len = 0;
-  for (uint16_t L = SEQ_EE_LEN;; L = (L == SEQ_EE_LEN) ? SEQ_EE_LEN_GNR8
-                                                        : SEQ_EE_LEN_OLD) {
+  for (uint16_t L = SEQ_EE_LEN;;) {
     uint8_t sum = 0;
     for (uint16_t i = 0; i < L - 1; i++) sum += b[i];
     if (b[0] == SEQ_EE_MAGIC && sum == b[L - 1]) { len = L; break; }
-    if (L == SEQ_EE_LEN_OLD) break;
+    if (L == SEQ_EE_LEN) L = SEQ_EE_LEN_SKANK;
+    else if (L == SEQ_EE_LEN_SKANK) L = SEQ_EE_LEN_TRANS;
+    else if (L == SEQ_EE_LEN_TRANS) L = SEQ_EE_LEN_COMP;
+    else if (L == SEQ_EE_LEN_COMP) L = SEQ_EE_LEN_LEAD;
+    else if (L == SEQ_EE_LEN_LEAD) L = SEQ_EE_LEN_GNR8;
+    else if (L == SEQ_EE_LEN_GNR8) L = SEQ_EE_LEN_OLD;
+    else break;
   }
   if (!len) return;
   bool extG = (len >= SEQ_EE_LEN_GNR8);   // GNR8 params present
-  bool extL = (len >= SEQ_EE_LEN);        // LEAD contour present
+  bool extL = (len >= SEQ_EE_LEN_LEAD);   // LEAD contour present
+  bool extC = (len >= SEQ_EE_LEN_COMP);   // COMP hits present
+  bool extT = (len >= SEQ_EE_LEN_TRANS);  // TRANS offset present
+  bool extS = (len >= SEQ_EE_LEN_SKANK);  // first 6 SKANK knobs (stride-6)
+  bool extS2 = (len >= SEQ_EE_LEN);       // + TES%/NOT% (stride-8 layout)
   for (uint8_t i = 0; i < SEQ_CH_COUNT; i++) {
     int v = (int8_t)b[3 + i];            // octave: keep the cast signed
     if (v < -60) v = -60;
@@ -3267,6 +3618,26 @@ void seqCfgLoad() {
   if (extL) {                            // LEAD contour (newest block only)
     for (uint8_t i = 0; i < SEQ_CH_COUNT; i++)
       seqLeadContourSet(i, b[387 + i]);  // clamped inside (bad -> ARCH)
+  }
+  if (extC) {                            // COMP stabs (newer block only)
+    for (uint8_t i = 0; i < SEQ_CH_COUNT; i++)
+      seqCompHitsSet(i, b[403 + i]);     // clamped inside (bad -> 0)
+  }
+  if (extT) {                            // TRANS offset (newest block only)
+    for (uint8_t i = 0; i < SEQ_CH_COUNT; i++) {
+      int v = (int8_t)b[419 + i];        // signed semitones
+      if (v < -12 || v > 12) v = 0;
+      seqTransSet(i, (int8_t)v);
+    }
+  }
+  if (extS2) {                           // SKANK page knobs, newest layout
+    for (uint8_t i = 0; i < SEQ_CH_COUNT; i++)
+      for (uint8_t p = 0; p < 8; p++)
+        skankPrmSet(i, p, b[435 + i * 8 + p]);  // clamped inside (bad -> def)
+  } else if (extS) {                     // first 6 knobs, old stride-6 layout
+    for (uint8_t i = 0; i < SEQ_CH_COUNT; i++)
+      for (uint8_t p = 0; p < 6; p++)
+        skankPrmSet(i, p, b[435 + i * 6 + p]);  // TES%/NOT% keep their defaults
   }
 }
 

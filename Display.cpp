@@ -8,6 +8,7 @@
 #include "Chords.h"
 #include "Gen.h"         // GNR8 page values (fill/acc/glide/tie)
 #include "Key4.h"       // KEYMODE4 genre/knob values + control legend
+#include "Skank.h"      // SKANK page: shape name (LIN/PP/RND)
 #include <Wire.h>
 
 U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, U8X8_PIN_NONE);
@@ -165,16 +166,31 @@ void refreshMainScreen() {
   // the other four keep their knobs (ENC1 octave, 5/6/8 gate/vel/prob)
   bool leadP = leadPageActive();
   uint8_t leadSeq = (uint8_t)(seqEditChannel() - 1);
-  // SEQMODE + M2 HARM page (POLY TYPE=HARM): ENC1/2/3 take genre/src/hold,
-  // the other five keep their knobs
+  // SEQMODE + M2 HARM page (POLY TYPE=HARM): ENC1..4 take genre/fill/src/
+  // hold, the other four keep their knobs
   bool harmP = harmPageActive();
-  // ...and with PREV held on that page the rotate row takes the encoders
-  bool genOv = (b.enc == ENC_SEQ_GNR8_OV);
+  // SEQMODE + M2 COMP page (POLY TYPE=STEP): ENC1 = HITS, the rest idle
+  bool compP = compPageActive();
+  // SEQMODE + M2 SKANK page (POLY TYPE=SKANK): ENC1..4 take TES/MOT/SHP/
+  // THN, ENC5..8 take EXT/SUB/LEN/SPEED (the whole row is the page)
+  bool skankP = skankPageActive();
+  // ...or a held step on a POLY+SKANK track arms the per-step lock row
+  // (encoders 1..6 override that step's knob, 8 = TRANS)
+  bool skankStepOv = (b.enc == ENC_SEQ_SKANK_STEP);
+  // ...and with PREV held the SHIFT/TRANS row takes the encoders (ENC1 =
+  // rotate, ENC2 = semitone transpose).  The GNR8 page reuses this same
+  // overlay, so the rotate value below still applies there
+  bool genOv = (b.enc == ENC_SEQ_ROT_OV);
+  // ...or a held step in SEQMODE (non-DRUM) arms the per-step TRANS overlay
+  bool seqTrOv = (b.enc == ENC_SEQ_STEPOV);
+  // either SEQ-page overlay wins: suppress the M2-page label overrides so
+  // SHIFT/TRANS (or the held-step TRANS / SKANK locks) keeps the row
+  bool seqOv = genOv || seqTrOv || skankStepOv;
   // ...or with an F radio armed the whole row is the option sub-page
   // (F1 = the full page: TONES/RNG/LOW/ALGO on ENC1-4; F2 = OCT on
   // ENC2 + MAP on ENC3, F3 = BRW on ENC3, F4 = PROB on ENC4 - the rest
   // idle; the rotate row still wins whenever PREV is held)
-  uint8_t gSub = (genP && !genOv) ? genOptionSel() : 0xFF;
+  uint8_t gSub = (genP && !seqOv) ? genOptionSel() : 0xFF;
   // SEQMODE + DRUM/POLY + radio on: only ENC8 (track probability) is bound
   bool seqDrumGe = (modeBase == MODE_SEQ && modeVariant != 3 &&
                     seqTrack() != SEQ_TRACK_MONO && stepEditIsOn());
@@ -192,21 +208,29 @@ void refreshMainScreen() {
   for (uint8_t c = 0; c < 4; c++) {
     uint8_t x = c * 32 + 1;
     const char *l1 = encLabel(b.enc, c);
-    if (arpP && c >= 1 && c <= 3) {
+    if (arpP && !seqOv && c >= 1 && c <= 3) {
       static const char *al[4] = { "OCT", "SPAN", "SKIP", "MODE" };
       l1 = al[c];
     }
-    if (genP && !genOv && c >= 1 && c <= 3) {
+    if (genP && !seqOv && c >= 1 && c <= 3) {
       static const char *gl[4] = { "OCT", "FILL", "ACC", "GLIDE" };
       l1 = gl[c];
     }
-    if (leadP && c >= 1 && c <= 3) {
+    if (leadP && !seqOv && c >= 1 && c <= 3) {
       static const char *ll[4] = { "OCT", "CONTOUR", "LOW", "RANGE" };
       l1 = ll[c];
     }
-    if (harmP) {
+    if (harmP && !seqOv) {
       static const char *hl[4] = { "GENRE", "FILL", "SRC", "HOLD" };
       l1 = hl[c];
+    }
+    if (compP && !seqOv) {
+      static const char *cl[4] = { "HITS", "---", "---", "---" };
+      l1 = cl[c];
+    }
+    if (skankP && !seqOv) {
+      static const char *kl[4] = { "TES", "MOT", "SHP", "THN" };
+      l1 = kl[c];
     }
     if (key4Emb) {
       static const char *el[4] = { "EMB", "PLACE", "---", "---" };
@@ -223,9 +247,27 @@ void refreshMainScreen() {
     }
     u8g2.drawStr(x, 22, l1);
     if (genOv) {
-      // rotate row: ENC1 = the rotation position, the rest stay idle
+      // SHIFT/TRANS row: ENC1 = the rotation position, ENC2 = the track's
+      // semitone transpose, the rest stay idle
       if (c == 0) snprintf(val, sizeof(val), "%u", seqGenShiftPos() + 1);
-      else snprintf(val, sizeof(val), "");
+      else if (c == 1) {
+        int tv = seqTrans();
+        if (tv == 0) snprintf(val, sizeof(val), "0");
+        else snprintf(val, sizeof(val), "%+d", tv);
+      } else snprintf(val, sizeof(val), "");
+    } else if (seqTrOv) {
+      // held-step TRANS row: ENC1 = that step's offset (0 = "0")
+      if (c == 0) {
+        int8_t tv = stepTrAt((uint8_t)seqTrStepSelGet());
+        if (tv == 0) snprintf(val, sizeof(val), "0");
+        else snprintf(val, sizeof(val), "%+d", tv);
+      } else snprintf(val, sizeof(val), "");
+    } else if (skankStepOv) {
+      // SKANK lock row: that step's override, "inherit" = the page knob
+      int8_t ss = seqTrStepSelGet();
+      int16_t lk = (ss >= 0) ? stepSkankLockAt((uint8_t)ss, (uint8_t)c) : -1;
+      if (lk < 0) snprintf(val, sizeof(val), "inherit");
+      else snprintf(val, sizeof(val), "%d", lk);
     } else if (gSub == 0) {
       // F1 full options page: ENC1 TONES, ENC2 RANGE, ENC3 LOW, ENC4 ALGO
       if (c == 0) {
@@ -268,6 +310,15 @@ void refreshMainScreen() {
           else snprintf(val, sizeof(val), "%u%%", stepModPAt((uint8_t)ss));
         } else snprintf(val, sizeof(val), "");
       }
+    } else if (skankP && c == 0) {
+      snprintf(val, sizeof(val), "%u", skankPrm(0));         // ENC1 = TES
+    } else if (skankP && c == 1) {
+      snprintf(val, sizeof(val), "%u", skankPrm(1));         // ENC2 = MOT
+    } else if (skankP && c == 2) {
+      snprintf(val, sizeof(val), "%s",
+               skankShpName(skankPrm(2)));                   // ENC3 = SHP
+    } else if (skankP && c == 3) {
+      snprintf(val, sizeof(val), "%u", skankPrm(3));         // ENC4 = THN
     } else if (modeBase == MODE_SEQ && c == 0) {
       snprintf(val, sizeof(val), "%d", seqOctaveShift()); // ENC1 = octave shift
     } else if (genP && c == 1) {
@@ -303,6 +354,10 @@ void refreshMainScreen() {
       snprintf(val, sizeof(val), "%s", k4HarmInputName());    // ENC3 = src
     } else if (harmP && c == 3) {
       snprintf(val, sizeof(val), "%s", k4HarmHoldName());     // ENC4 = hold
+    } else if (compP && c == 0) {
+      int h = seqCompHits();                                  // ENC1 = hits
+      if (h <= 1) snprintf(val, sizeof(val), "off");
+      else snprintf(val, sizeof(val), "%d", h);
     } else if (seq3 && c == 1) {
       snprintf(val, sizeof(val), "%d", seqPatLen());      // ENC2 = steps
     } else if (seq3 && c == 2) {
@@ -403,7 +458,8 @@ void refreshMainScreen() {
     if (arpP && 4 + c == 6) l2 = "INST";          // arp page: ENC7 = insert
     if (genP && 4 + c == 6) l2 = "TIE";           // gen page: ENC7 = tie %
     if (leadP && 4 + c == 6) l2 = "DENS";         // lead page: ENC7 = density
-    if (genOv) l2 = "---";                        // rotate row: all idle
+    if (genOv) l2 = "---";                        // SHIFT/TRANS row: idle
+    if (seqTrOv) l2 = "---";                      // held-step TRANS: idle
     if (seqDrumGe && 4 + c == 6 && stepEditSel() == 5)
       l2 = "FX";                                  // POLY edit: ENC7 = FX type
     if (seqDrumGe && 4 + c == 6 && stepEditSel() == 6)
@@ -411,9 +467,34 @@ void refreshMainScreen() {
     if (seqDrumGe && 4 + c <= 5 && stepEditSel() == 7)
       l2 = (c == 0) ? "SUB" : (c == 1) ? "INV" : (c == 2) ? "PAS" : "COL"; // POLY edit: ENC5-8 = EMB params
     if (gSub != 0xFF) l2 = "---";            // option sub-page: row 2 idle
+    if (skankStepOv) {          // lock row: EXT/SUB, TES% lock, TRANS (wins
+      static const char *s2[4] = { "EXT", "SUB", "TES%", "TRANS" }; // over radio)
+      l2 = s2[c];
+    }
+    if (skankP && !seqOv) {     // SKANK page: the whole second row follows
+      static const char *s2[4] = { "EXT", "SUB", "TES%", "NOT%" };
+      l2 = s2[c];
+    }
     u8g2.drawStr(x, 38, l2);
     if (genOv) {
-      snprintf(val, sizeof(val), "");              // rotate row idle
+      snprintf(val, sizeof(val), "");              // SHIFT/TRANS row idle
+    } else if (seqTrOv) {
+      snprintf(val, sizeof(val), "");              // held-step TRANS idle
+    } else if (skankStepOv) {
+      // lock row: EXT / SUB / TES% override, ENC8 = the step's TRANS
+      int8_t ss = seqTrStepSelGet();
+      if (c <= 2) {
+        int16_t lk = (ss >= 0)
+                         ? stepSkankLockAt((uint8_t)ss, (uint8_t)(c + 4))
+                         : -1;
+        if (lk < 0) snprintf(val, sizeof(val), "inherit");
+        else if (c == 2) snprintf(val, sizeof(val), "%d%%", lk);
+        else snprintf(val, sizeof(val), "%d", lk);
+      } else if (c == 3) {
+        int8_t tv = (ss >= 0) ? stepTrAt((uint8_t)ss) : 0;
+        if (tv == 0) snprintf(val, sizeof(val), "0");
+        else snprintf(val, sizeof(val), "%+d", tv);
+      } else snprintf(val, sizeof(val), "");
     } else if (gSub != 0xFF) {
       snprintf(val, sizeof(val), "");        // option sub-page: idle
     } else if (c == 1 && f3AccentActive()) {
@@ -425,6 +506,14 @@ void refreshMainScreen() {
       snprintf(val, sizeof(val), "%u%%", seqGenTieOf(genSeq));  // ENC7 tie
     } else if (leadP && 4 + c == 6) {
       snprintf(val, sizeof(val), "%u%%", seqGenFillOf(leadSeq)); // ENC7 dens
+    } else if (skankP && 4 + c == 4) {
+      snprintf(val, sizeof(val), "%u%%", skankPrm(4));      // ENC5 = EXT
+    } else if (skankP && 4 + c == 5) {
+      snprintf(val, sizeof(val), "%u%%", skankPrm(5));      // ENC6 = SUB
+    } else if (skankP && 4 + c == 6) {
+      snprintf(val, sizeof(val), "%u%%", skankPrm(6));      // ENC7 = TES%
+    } else if (skankP && 4 + c == 7) {
+      snprintf(val, sizeof(val), "%u%%", skankPrm(7));      // ENC8 = NOT%
     } else if (seq3 && 4 + c == 4) {
       snprintf(val, sizeof(val), "%u", seqInputChannel()); // ENC5 = input ch
     } else if (seq3 && 4 + c == 5) {

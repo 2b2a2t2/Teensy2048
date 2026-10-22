@@ -168,6 +168,7 @@ void pollSeqClock() {
   keyMonoPoll();               // live MONO-track keyboard voice (TRACK/TYPE)
   seqGatePoll();               // track gate note-offs (MONO step-edit)
   seqStrumPoll();              // staggered strum note-ons (FX / TYPE=STRUM)
+  compPoll();                  // COMP stab re-strikes (POLY STEP, HITS 2..8)
 
   // redraw when the displayed position moved or the mode changed.  The
   // trigger must include the DOT's own source (edit track head): playStep
@@ -275,13 +276,17 @@ void seqMonoTypeAdjust(int16_t counts) {
   while (monoRes >= 4)  { monoRes -= 4;  step++; }
   while (monoRes <= -4) { monoRes += 4;  step--; }
   if (!step) return;
-  int16_t t = (int16_t)monoType[seqEditChannel() - 1] + step;
+  // a stale POLY SKANK value (5, the shared byte) starts from ROOT
+  int16_t t = (int16_t)seqMonoType() + step;
   if (t < SEQ_MONO_ROOT)  t = SEQ_MONO_ROOT;
   if (t > SEQ_MONO_LEAD)  t = SEQ_MONO_LEAD;
   monoType[seqEditChannel() - 1] = (uint8_t)t;
 }
 
-uint8_t seqMonoType() { return monoType[seqEditChannel() - 1]; }
+uint8_t seqMonoType() {
+  uint8_t t = monoType[seqEditChannel() - 1];
+  return (t <= SEQ_MONO_LEAD) ? t : SEQ_MONO_ROOT;  // 5 = stale POLY SKANK
+}
 
 const char* seqMonoTypeName() {
   static const char* names[5] = { "ROOT", "BASS", "ARP", "STRUM", "LEAD" };
@@ -294,20 +299,25 @@ uint8_t seqMonoTypeOf(uint8_t idx) {
 
 void seqSetMonoType(uint8_t idx, uint8_t m) {
   if (idx >= 16) return;
-  if (m > SEQ_MONO_LEAD) m = SEQ_MONO_LEAD;
+  // the byte is shared with the POLY types: SEQ_POLY_SKANK (5) rides
+  // through on load, everything else clamps into the MONO range
+  if (m > SEQ_MONO_LEAD && m != SEQ_POLY_SKANK) m = SEQ_MONO_LEAD;
   monoType[idx] = m;
 }
 
 // SEQMODE3 TYPE (ENC7) on a POLY track: the track's default step playback
-// type, stored in the same byte as the MONO transform (0..3 is a valid
-// POLY value; a stale 4 from a MONO/LEAD edit reads as STEP and the first
-// adjust snaps back into range).  STEP = chords play as blocks (as before),
-// STRUM = every step is raked with the fixed tempo spread, HAND = the
-// keyboard performs: silent chord build, white keys strum, REC captures
-// the gesture for playback, HARM = the track is a harmonizer (M2 HARM page
-// bakes a progression from the FOLLOW feeder's bassline; plays like STEP).
-// A step can override the playback style per step (F2 TYPE: STEP/STRUM/
-// HAND only - HARM is a track mode, not a per-step style).
+// type, stored in the same byte as the MONO transform (0..3, 5 = SKANK,
+// are valid POLY values; a stale 4 from a MONO/LEAD edit reads as STEP and
+// the first adjust snaps back into range).  STEP = chords play as blocks
+// (as before), STRUM = every step is raked with the fixed tempo spread,
+// HAND = the keyboard performs: silent chord build, white keys strum, REC
+// captures the gesture for playback, HARM = the track is a harmonizer (M2
+// HARM page bakes a progression from the FOLLOW feeder's bassline; plays
+// like STEP), SKANK = the track derives every step's voicing live from the
+// feeder's chord (or its own stored chord when FOLLOW points at itself) -
+// the M2 SKANK page shapes the walk, played steps gate the rhythm.  A step
+// can override the playback style per step (F2 TYPE: STEP/STRUM/HAND only
+// - HARM and SKANK are track modes, not per-step styles).
 static int16_t polyRes = 0;               // leftover encoder counts (own)
 
 void seqPolyTypeAdjust(int16_t counts) {
@@ -323,25 +333,29 @@ void seqPolyTypeAdjust(int16_t counts) {
   bool wasHand = seqPolyTypeOf(ec) == SEQ_POLY_HAND;
   int16_t t = (int16_t)seqPolyType() + step;
   if (t < SEQ_POLY_STEP) t = SEQ_POLY_STEP;
-  if (t > SEQ_POLY_HARM) t = SEQ_POLY_HARM;
+  // 4 = the stale MONO/LEAD value never lands: step over it (CW from HARM
+  // arrives on SKANK, CCW from SKANK falls back to HARM)
+  if (t == 4) t = (step > 0) ? SEQ_POLY_SKANK : SEQ_POLY_HARM;
+  if (t > SEQ_POLY_SKANK) t = SEQ_POLY_SKANK;
   monoType[ec] = (uint8_t)t;
   if (wasHand != (seqPolyTypeOf(ec) == SEQ_POLY_HAND)) handRingCut(ec);
 }
 
 uint8_t seqPolyType() {
   uint8_t t = monoType[seqEditChannel() - 1];
-  return (t > SEQ_POLY_HARM) ? SEQ_POLY_STEP : t;
+  return (t == 4 || t > SEQ_POLY_SKANK) ? SEQ_POLY_STEP : t;
 }
 
 const char* seqPolyTypeName() {
-  static const char* names[4] = { "STEP", "STRUM", "HAND", "HARM" };
+  static const char* names[6] = { "STEP", "STRUM", "HAND", "HARM",
+                                  "?", "SKANK" };   // 4 never surfaces
   return names[seqPolyType()];
 }
 
 uint8_t seqPolyTypeOf(uint8_t idx) {
   if (idx >= 16) return SEQ_POLY_STEP;
   uint8_t t = monoType[idx];
-  return (t > SEQ_POLY_HARM) ? SEQ_POLY_STEP : t;
+  return (t == 4 || t > SEQ_POLY_SKANK) ? SEQ_POLY_STEP : t;
 }
 
 // --- ARP options (SEQMODE M2 page), per track -----------------------------

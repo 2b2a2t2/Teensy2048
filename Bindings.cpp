@@ -45,7 +45,9 @@ static const char* encLabels[ENC_SET_COUNT][8] = {
   /* ENC_KEY3         */ { "OCT", "SCALE", "--", "--", "--", "--", "--", "--" },
   /* ENC_KEY4         */ { "GENRE", "MOOD", "TENS", "MOTION", "CAD", "CPX", "ERA", "SURP" },
   /* ENC_SEQ_STEP_HELD*/ { "--", "--", "--", "--", "--", "--", "--", "--" },  // set not wired yet
-  /* ENC_SEQ_GNR8_OV  */ { "ROT", "--", "--", "--", "--", "--", "--", "--" },
+  /* ENC_SEQ_ROT_OV   */ { "SHIFT", "TRANS", "--", "--", "--", "--", "--", "--" },
+  /* ENC_SEQ_STEPOV   */ { "TRANS", "--", "--", "--", "--", "--", "--", "--" },
+  /* ENC_SEQ_SKANK_STEP*/ { "TES", "MOT", "SHP", "THN", "EXT", "SUB", "TES%", "TRANS" },
   /* ENC_KEY2_PREV    */ { "OCT", "SCALE", "KEY", "LATCH", "KLOCK", "PERF", "--", "--" },
   /* ENC_KEY4_PREV    */ { "OCT", "SCALE", "KEY", "FSCALE", "SUB", "INV", "PAS", "COL" },
   /* ENC_KEY4_EMB     */ { "EMB", "PLACE", "--", "--", "--", "--", "--", "--" },
@@ -56,7 +58,8 @@ static const char* encSetNames[ENC_SET_COUNT] = {
   "SEQENC", "SEQENC2", "SEQENC3", "SEQENC4",
   "ENCENC", "ENCENC2", "ENCENC3", "ENCENC4",
   "KEYENC", "KEYENC2", "KEYENC3", "KEYENC4",
-  "SEQENC_STEP_HELD", "SEQENC_GNR8_OV", "KEYENC2_PREV", "KEYENC4_PREV",
+  "SEQENC_STEP_HELD", "SEQENC_ROT_OV", "SEQENC_STEPOV", "SEQENC_SKANK_STEP",
+  "KEYENC2_PREV", "KEYENC4_PREV",
   "KEYENC4_EMB", "KEYENC4_STEP"
 };
 static const char* ctrlSetNames[CTRL_SET_COUNT] = {

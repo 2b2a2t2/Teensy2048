@@ -192,6 +192,25 @@ void seqSetAccentVelocity(uint8_t seq, uint8_t v); // EEPROM load, clamped
 void seqGatePoll();                   // fire gate note-offs (loop context)
 void seqStrumPoll();                  // drain staggered strum note-ons
                                       // (loop context, beside seqGatePoll)
+void compPoll();                      // drain COMP stab queue (loop context,
+                                      // beside seqStrumPoll)
+void seqCompHitsAdjust(int16_t counts); // COMP page ENC1: 4 counts = 1 stab
+int  seqCompHits();                   // edit track's comp stabs (0..8)
+uint8_t seqCompHitsOf(uint8_t i);     // raw per-track (EEPROM save)
+void seqCompHitsSet(uint8_t i, uint8_t v); // EEPROM load (bad -> 0)
+// SKANK page params of the edit track (M2, POLY TYPE=SKANK):
+// 0 = TES (tessitura anchor), 1 = MOT (motion, boot 50 = centered),
+// 2 = SHP (shape LIN/PP/RND), 3 = THN (thinning), 4 = EXT (extension %),
+// 5 = SUB (substitution %) - all 0..100, 4 counts = 1 unit, no wrap
+void    skankPrmAdjust(uint8_t idx, int16_t counts);
+uint8_t skankPrm(uint8_t idx);            // edit track (page display)
+uint8_t skankPrmOf(uint8_t ch, uint8_t idx);   // raw per-track (EEPROM save)
+void    skankPrmSet(uint8_t ch, uint8_t idx, uint8_t v); // load (bad -> default)
+void seqTransAdjust(int16_t counts);  // PREV-shift row ENC2: 1 count = 1 st,
+                                      // -12..+12, DRUM tracks refuse
+int  seqTrans();                      // edit track's semitone TRANS
+int8_t seqTransOf(uint8_t i);         // raw per-track (playback/EEPROM), 0 on DRUM
+void seqTransSet(uint8_t i, int8_t v); // EEPROM load (clamped -12..+12)
 uint8_t seqFMask();                   // attributes the playhead reads this step
                                       // (F-row blink mask, edit channel)
 
@@ -259,6 +278,14 @@ uint8_t  stepBrwAt(uint8_t step);
 void     stepBrwSet(uint8_t step, uint8_t v);
 uint8_t  stepModPAt(uint8_t step);
 void     stepModPSet(uint8_t step, uint8_t v);
+int8_t   stepTrAt(uint8_t step);     // per-step TRANS: playback-only semitone
+void     stepTrSet(uint8_t step, int8_t v);  // offset, clamped -12..+12
+// per-step SKANK locks (hold a step on a POLY+SKANK track = the lock row,
+// encoders 1..6): value 0..100 or -1 = inherit the track's page knob.
+// Stored with the step content (stepAttClear wipes them), RAM only like
+// every step field
+int16_t  stepSkankLockAt(uint8_t step, uint8_t idx);
+void     stepSkankLockSet(uint8_t step, uint8_t idx, int16_t v);
 
 // KEYMODE4 step-hold row (ENC2/3/4): rewrite the held step's STORED chord
 // in place, each returning true when a note actually moved.  DEG shifts
