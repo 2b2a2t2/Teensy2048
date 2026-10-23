@@ -29,6 +29,26 @@ static uint8_t genRange[16] = { 2, 2, 2, 2, 2, 2, 2, 2,
 static uint8_t leadContour[16] = { 0 };          // SEQ_LEAD_ARCH
 static int16_t genLeadRes;                       // contour residual (4 = 1)
 
+// LEAD page CT/GD knobs: the chord-tone blend (per-note chance to keep
+// the skeleton's scale-degree identity instead of snapping to the feeder
+// chord) and the guide-tone set depth (which extensions gd may use).  The
+// knobs live on the LEAD page ENC5/6 and only bite when the global MAP
+// mode is ct / gd respectively
+static uint8_t leadCtBlend[16] = { 0 };          // 0..100%, 0 = pure ct
+static uint8_t leadGdDepth[16] = { 0 };          // 0..3 = 3/7, +9, +13, EXT
+static int16_t genLeadCtRes, genLeadGdRes;       // residuals (4 = 1)
+
+// live contour flip cache (RAM, session only): per track and per contour
+// the last pattern that contour produced, so turning CONTOUR on the M2
+// LEAD page swaps the stored sequence between the ARCH/DESC/WALK versions
+// in place - the version being left is kept, the target's last version is
+// restored (or generated fresh the first time) and every contour stays
+// revisitable.  0xFF marks a rest.
+#define LEAD_CACHE_REST 0xFF
+static uint8_t leadCache[16][3][SEQ_GEN_STEPS];
+static uint8_t leadCacheLen[16][3];      // length at cache time (0 = none)
+static unsigned long leadContourLast;    // burst gap for the undo snapshot
+
 // encoder residuals: 4 counts = 1 unit, kept between channels like the
 // other SEQ knobs (a stray count lands on the next turn of the same knob)
 static int16_t genFillRes, genAccRes, genGlideRes, genTieRes;
@@ -142,6 +162,31 @@ uint8_t seqLeadContourOf(uint8_t i) {
 const char* seqLeadContourName(uint8_t v) {
   static const char* n[3] = { "ARCH", "DESC", "WALK" };
   return n[v <= SEQ_LEAD_WALK ? v : SEQ_LEAD_ARCH];
+}
+
+// LEAD page CT knob: chord-tone vs scale blend, 0..100% (4 counts = 1)
+void seqLeadCtAdjust(int16_t c) {
+  genAdjust(&leadCtBlend[genIdx()], &genLeadCtRes, c, 0, 100);
+}
+void seqLeadCtSet(uint8_t i, uint8_t v) {
+  if (i < 16) leadCtBlend[i] = v <= 100 ? v : 0;
+}
+uint8_t seqLeadCtOf(uint8_t i) {
+  return i < 16 ? leadCtBlend[i] : 0;
+}
+// LEAD page GD knob: guide-tone set depth, 0..3 (4 counts = 1 step)
+void seqLeadGdAdjust(int16_t c) {
+  genAdjust(&leadGdDepth[genIdx()], &genLeadGdRes, c, 0, 3);
+}
+void seqLeadGdSet(uint8_t i, uint8_t v) {
+  if (i < 16) leadGdDepth[i] = v <= 3 ? v : 0;
+}
+uint8_t seqLeadGdOf(uint8_t i) {
+  return i < 16 ? leadGdDepth[i] : 0;
+}
+const char* seqLeadGdName(uint8_t v) {
+  static const char* n[4] = { "3/7", "+9", "+13", "EXT" };
+  return n[v <= 3 ? v : 0];
 }
 
 // ---------------------------------------------------------------------------
@@ -272,12 +317,11 @@ int seqGenProduce() {
 // KEY + SCALE.  Stored like GNR8 (one note per step, undo snapshot first).
 // At playback LEAD + FOLLOW + MAP (ct/gd) re-resolves these skeleton notes
 // onto the feeder track's chord - see mapBassNote() in Keyboard.cpp.
-int seqLeadProduce() {
-  uint8_t ch = seqEditChannel() - 1;
-  uint16_t n = seqPatLenOf(ch);
-  if (n == 0 || n > SEQ_GEN_STEPS) return -1;
+// shared LEAD write path: roll the fill rests and walk the contour over
+// the in-scale ladder, one note per active step (the undo snapshot is the
+// caller's job).  Used by M3 GEN and by the live CONTOUR flip
+static int leadEmit(uint8_t idx, uint16_t n, uint8_t contour) {
   genSeedOnce();
-  uint8_t idx = genIdx();
   uint8_t fill = seqGenFillOf(idx);
   uint8_t low = (uint8_t)(24 + 12 * seqGenLowOf(idx));      // 24 / 36 / 48
   uint8_t octs = seqGenRangeOf(idx);                        // 1..5
@@ -285,7 +329,6 @@ int seqLeadProduce() {
   int hi = (int)low + 12 * (int)octs - 1;
   if (hi > 127) hi = 127;
   genBuildAllowed();
-  uint8_t contour = seqLeadContourOf(idx);
 
   // in-scale ladder inside the window: the contour walks these degrees
   uint8_t ladder[48];
@@ -304,7 +347,6 @@ int seqLeadProduce() {
     bits = eu.compute((int8_t)n, (int8_t)pulses);
   }
 
-  stepSnapshotTake();                 // M3 hold = undo back to here
   bool on[SEQ_GEN_STEPS];
   int written = 0;
   uint16_t half = (n > 1) ? (uint16_t)((n - 1) / 2) : 0;   // ARCH peak
@@ -343,6 +385,130 @@ int seqLeadProduce() {
     if (stepGenWrite((uint8_t)i, note, 0) >= 0) written++;
   }
   return written;
+}
+
+// keep the pattern just written (or restored) as THIS contour's version
+static void leadCacheStore(uint8_t idx, uint8_t contour, uint16_t n) {
+  if (idx >= 16 || contour > SEQ_LEAD_WALK) return;
+  if (n > SEQ_GEN_STEPS) n = SEQ_GEN_STEPS;
+  for (uint16_t i = 0; i < n; i++) {
+    uint8_t len = 0;
+    const uint8_t *c = stepChordAtCh(idx + 1, (uint8_t)i, &len);
+    leadCache[idx][contour][i] = (len > 0) ? c[0] : LEAD_CACHE_REST;
+  }
+  leadCacheLen[idx][contour] = (uint8_t)n;
+}
+
+// stamp a cached version back into the edit sequence (n = live pattern
+// length; a shorter cache clears the tail, a longer one is truncated)
+static void leadCacheRestore(uint8_t idx, uint8_t contour, uint16_t n) {
+  if (idx >= 16 || contour > SEQ_LEAD_WALK) return;
+  uint16_t cn = leadCacheLen[idx][contour];
+  if (cn > n) cn = n;
+  for (uint16_t i = 0; i < n; i++) {
+    uint8_t v = (i < cn) ? leadCache[idx][contour][i] : LEAD_CACHE_REST;
+    if (v == LEAD_CACHE_REST) stepGenClear((uint8_t)i);
+    else                      stepSkeletonWrite((uint8_t)i, v);
+  }
+}
+
+int seqLeadProduce() {
+  uint8_t idx = genIdx();
+  uint16_t n = seqPatLenOf(idx);
+  if (n == 0 || n > SEQ_GEN_STEPS) return -1;
+  stepSnapshotTake();                 // M3 hold = undo back to here
+  int w = leadEmit(idx, n, seqLeadContourOf(idx));
+  leadCacheStore(idx, seqLeadContourOf(idx), n);  // flip away and back = this
+  return w;
+}
+
+// deterministic first-visit reshaping: reorder the pattern's existing
+// notes along the new contour (same pitch material, new order - no
+// randomness, rests kept).  Returns false when there is nothing to
+// reshape (empty pattern -> caller falls back to a fresh generation)
+static bool leadReshape(uint8_t idx, uint16_t n, uint8_t contour) {
+  uint8_t pool[SEQ_GEN_STEPS];
+  uint8_t act[SEQ_GEN_STEPS];
+  uint8_t pn = 0;
+  for (uint16_t i = 0; i < n; i++) {
+    uint8_t len = 0;
+    const uint8_t *c = stepChordAtCh(idx + 1, (uint8_t)i, &len);
+    if (len > 0) { pool[pn] = c[0]; act[pn] = (uint8_t)i; pn++; }
+  }
+  if (pn == 0) return false;
+  // sort the pitch material ascending (the active slots keep their order)
+  for (uint8_t i = 1; i < pn; i++) {
+    uint8_t v = pool[i];
+    uint8_t j = i;
+    while (j > 0 && pool[j - 1] > v) { pool[j] = pool[j - 1]; j--; }
+    pool[j] = v;
+  }
+  // walk the pool along the contour, assigning pool[src] to act[k]
+  int wpos = pn / 2, wdir = 1, wamp = 1;
+  for (uint8_t k = 0; k < pn; k++) {
+    uint8_t src;
+    switch (contour) {
+      case SEQ_LEAD_DESC:            // highest first, descending
+        src = (uint8_t)(pn - 1 - k);
+        break;
+      case SEQ_LEAD_WALK: {          // +1 -1 +2 -2 ... deterministic walk
+        if (k > 0) {
+          wpos += wdir * wamp;
+          if (wpos <= 0 || wpos >= (int)pn - 1) {
+            if (wpos < 0) wpos = -wpos;
+            if (wpos > (int)pn - 1) wpos = 2 * ((int)pn - 1) - wpos;
+            wdir = -wdir;
+            wamp++;
+          }
+          if (wpos < 0) wpos = 0;
+          if (wpos > (int)pn - 1) wpos = (int)pn - 1;
+        }
+        src = (uint8_t)wpos;
+        break;
+      }
+      default: {                     // ARCH: mountain fold of the pool
+        uint8_t half = (uint8_t)((pn - 1) / 2);
+        src = (k <= half) ? (uint8_t)(2 * k)
+                          : (uint8_t)(2 * (pn - 1 - k) + 1);
+        break;
+      }
+    }
+    stepSkeletonWrite(act[k], pool[src]);
+  }
+  return true;
+}
+
+// M2 LEAD page ENC2: turning CONTOUR reshapes the stored sequence LIVE -
+// no GEN press.  Non-destructive: the version being left is cached under
+// its contour and the target's last version is restored (or reshaped
+// fresh the first time), so ARCH/DESC/WALK stay revisitable.  Undo (M3
+// hold) still returns to the pre-flip pattern; returns true when steps
+// changed
+bool seqLeadContourTurn(int16_t counts) {
+  uint8_t idx = genIdx();
+  uint8_t old = seqLeadContourOf(idx);
+  seqLeadContourAdjust(counts);
+  uint8_t now = seqLeadContourOf(idx);
+  if (now == old) return false;             // no step crossed
+  uint16_t n = seqPatLenOf(idx);
+  if (n == 0 || n > SEQ_GEN_STEPS) return false;
+
+  // one undo snapshot per burst: the first flip of a continuous turn
+  // saves the pre-flip pattern (M3 hold restores all of it)
+  if (millis() - leadContourLast > 600) stepSnapshotTake();
+  leadContourLast = millis();
+
+  leadCacheStore(idx, old, n);              // keep the version we leave
+  if (leadCacheLen[idx][now]) {
+    leadCacheRestore(idx, now, n);          // bring its last shape back
+  } else {
+    // first visit: reshape the existing notes onto the new contour
+    // (deterministic reorder, no randomness) - an empty pattern has
+    // nothing to reshape and falls back to a fresh generation
+    if (!leadReshape(idx, n, now)) leadEmit(idx, n, now);
+    leadCacheStore(idx, now, n);
+  }
+  return true;
 }
 
 // ---------------------------------------------------------------------------

@@ -581,16 +581,29 @@ bool seqBarLooped(uint8_t page) {
 // the feeding track (input channel's track) at the feeder's playhead - a
 // 16-step track then mirrors a 64-step feeder bar by bar; an empty feeder
 // step holds the feeder's last chord/note.  RAM only, boot OFF; meaningful
-// for MONO/POLY listeners pointing at another track
-static bool followOn[16] = {false};
+// for MONO/POLY listeners pointing at another track.  Three-state: 0 = OFF,
+// 1 = ON (live follow), 2 = FREEZE (keep the LAST incoming chord - the
+// follower keeps playing, but the chord it resolves is latched on the first
+// frozen step and held until FREEZE is left).  seqFollow()/seqFollowOf()
+// treat FREEZE as "following" (mode != 0) so every gate that checks them
+// still runs; only the chord resolution changes.
+static uint8_t followOn[16] = {0};
 
-bool seqFollow() { return followOn[seqEditChannel() - 1]; }
-bool seqFollowOf(uint8_t ch) { return ch < 16 && followOn[ch]; }
-void seqFollowSet(bool on) { followOn[seqEditChannel() - 1] = on; }
+bool seqFollow() { return followOn[seqEditChannel() - 1] != 0; }
+bool seqFollowOf(uint8_t ch) { return ch < 16 && followOn[ch] != 0; }
+uint8_t seqFollowMode() { return followOn[seqEditChannel() - 1]; }
+uint8_t seqFollowModeOf(uint8_t ch) {
+  return ch < 16 ? followOn[ch] : 0;
+}
+bool seqFollowFreezeOf(uint8_t ch) { return ch < 16 && followOn[ch] == 2; }
+void seqFollowModeSet(uint8_t m) {
+  if (m > 2) m = 2;
+  followOn[seqEditChannel() - 1] = m;
+}
 
-// restore path (seqCfgLoad)
-void seqFollowSetOf(uint8_t ch, bool on) {
-  if (ch < 16) followOn[ch] = on;
+// restore path (seqCfgLoad); a corrupt byte > 2 reads back as OFF
+void seqFollowModeSetOf(uint8_t ch, uint8_t m) {
+  if (ch < 16) followOn[ch] = (m > 2) ? 0 : m;
 }
 
 // GNR8 BASS mapping mode (see SeqClock.h): global, boot NEAR; the

@@ -104,6 +104,24 @@ void    seqLeadContourAdjust(int16_t counts);   // ARCH/DESC/WALK, 4 = 1 step
 void    seqLeadContourSet(uint8_t idx, uint8_t v);
 uint8_t seqLeadContourOf(uint8_t idx);
 const char* seqLeadContourName(uint8_t v);      // "ARCH" "DESC" "WALK"
+// LEAD page CT knob: chord-tone vs scale blend (per-note chance to keep
+// the skeleton's in-scale note instead of snapping to the feeder chord);
+// bites only when the global MAP mode is ct
+void    seqLeadCtAdjust(int16_t counts);        // 0..100%, 4 counts = 1
+void    seqLeadCtSet(uint8_t idx, uint8_t v);
+uint8_t seqLeadCtOf(uint8_t idx);
+// LEAD page GD knob: guide-tone set depth (which extensions gd may use);
+// bites only when the global MAP mode is gd
+void    seqLeadGdAdjust(int16_t counts);        // 0..3, 4 counts = 1 step
+void    seqLeadGdSet(uint8_t idx, uint8_t v);
+uint8_t seqLeadGdOf(uint8_t idx);
+const char* seqLeadGdName(uint8_t v);           // "3/7" "+9" "+13" "EXT"
+// live CONTOUR flip (M2 LEAD page ENC2): reshapes the stored sequence in
+// place without a GEN press - the pattern under the old contour is kept
+// in a per-track cache and the target contour's last version is restored
+// (or the existing notes deterministically reshaped on first visit), so
+// each contour stays revisitable.  Returns true when the steps changed
+bool    seqLeadContourTurn(int16_t counts);
 int  seqLeadProduce();
 
 // rotate: move the stored steps of the edit pattern one slot per 4 counts

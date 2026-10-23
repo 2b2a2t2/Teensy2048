@@ -1651,6 +1651,25 @@ void encPageRecall() {
   encM3PageSet(encM3Mem[encChannel() - 1]);
 }
 
+// EEPROM accessors (the SEQ block stores the per-channel page memory)
+uint8_t encBankMemOf(uint8_t ch) {
+  if (ch < 1 || ch > 16) return 0;
+  return (encBankMem[ch - 1] < 4) ? encBankMem[ch - 1] : 0;
+}
+
+void encBankMemSet(uint8_t ch, uint8_t v) {
+  if (ch < 1 || ch > 16) return;
+  encBankMem[ch - 1] = (v < 4) ? v : 0;
+}
+
+bool encM3MemOf(uint8_t ch) {
+  return ch >= 1 && ch <= 16 && encM3Mem[ch - 1];
+}
+
+void encM3MemSet(uint8_t ch, bool on) {
+  if (ch >= 1 && ch <= 16) encM3Mem[ch - 1] = on;
+}
+
 // CC number encoder ei (0..7) sends: ENC1..4 = CC17..20 (fixed), the
 // rest = the current bank's block of four in the active page group
 uint8_t encCcNum(uint8_t ei) {
@@ -2051,6 +2070,15 @@ void handleEncoderEvents() {
             Serial.print("  ");
             Serial.println(tb);
           }
+        } else if (ei == 2) {
+          // ENC3 = per-track scale-lock (Klock): snap the TRANS result back
+          // into the current scale so the semitone knob stays diatonic
+          seqKlockToggle();
+          headerShow(seqKlock() ? "klock ON" : "klock OFF");
+          if (logRoom(48)) {
+            Serial.print("  klock ");
+            Serial.println(seqKlock() ? "ON" : "OFF");
+          }
         }
         any = true;
       } else if (ed != 0 && currentBinding().enc == ENC_SEQ_STEPOV &&
@@ -2269,16 +2297,26 @@ void handleEncoderEvents() {
               Serial.println(seqArpInstName(seqArpInstOf(seq)));
             }
           }
-        // M2 LEAD page: ENC2 = contour (ARCH/DESC/WALK), ENC3 = LOW,
-        // ENC4 = RANGE (1..5 oct), ENC7 = density % (the shared FILL slot).
-        // These four are the page's own knobs; ENC1 (octave), ENC5/6
-        // (gate/vel) and ENC8 (prob) keep their bindings, and a TYPE/
-        // channel/mode change drops the page
+        // M2 LEAD page: ENC2 = contour (ARCH/DESC/WALK, live), ENC3 = LOW,
+        // ENC4 = RANGE (1..5 oct), ENC5 = CT (chord-tone vs scale blend),
+        // ENC6 = GD (guide-tone set depth), ENC7 = density % (the shared
+        // FILL slot).  ENC1 (octave) and ENC8 (prob) keep their bindings;
+        // GATE/VEL live in the M1 edit menu, and a TYPE/channel/mode change
+        // drops the page
         } else if (ed != 0 && leadPageActive() &&
-            (ei == 1 || ei == 2 || ei == 3 || ei == 6)) {
+            (ei == 1 || ei == 2 || ei == 3 || ei == 4 || ei == 5 ||
+             ei == 6)) {
           uint8_t seq = (uint8_t)(seqEditChannel() - 1);
           if (ei == 1) {
-            seqLeadContourAdjust(ed);
+            // CONTOUR is live: turning it reshapes the stored sequence in
+            // place (the old contour's version is cached, the target's
+            // last version restored - or reshaped fresh the first time),
+            // no GEN press needed
+            bool changed = seqLeadContourTurn(ed);
+            if (changed) {
+              refreshAllLeds();       // the step LEDs follow the melody
+              refreshMainScreen();
+            }
             if (logRoom(48)) {
               Serial.print("  contour ");
               Serial.println(seqLeadContourName(seqLeadContourOf(seq)));
@@ -2295,6 +2333,19 @@ void handleEncoderEvents() {
               Serial.print("  range ");
               Serial.print(seqGenRangeOf(seq));
               Serial.println(" oct");
+            }
+          } else if (ei == 4) {
+            seqLeadCtAdjust(ed);          // LEAD CT blend %
+            if (logRoom(48)) {
+              Serial.print("  ct blend ");
+              Serial.print(seqLeadCtOf(seq));
+              Serial.println("%");
+            }
+          } else if (ei == 5) {
+            seqLeadGdAdjust(ed);          // LEAD GD set depth
+            if (logRoom(48)) {
+              Serial.print("  gd set ");
+              Serial.println(seqLeadGdName(seqLeadGdOf(seq)));
             }
           } else {
             seqGenFillAdjust(ed);          // LEAD density % (shared FILL)
@@ -2448,15 +2499,23 @@ void handleEncoderEvents() {
         }
         any = true;
       } else if (ei == 2 && ed != 0) {
-        // SEQMODE3: ENC3 = FOLLOW, two-state (CW = ON, CCW = OFF): the
-        // track's active steps gate playback, the notes come live from
-        // the feeding track's current bar (own pattern length unchanged)
-        bool want = (ed > 0);
-        if (want != seqFollow()) {
-          seqFollowSet(want);
+        // SEQMODE3: ENC3 = FOLLOW, three-state (OFF / ON / FREEZE): OFF =
+        // own steps play the stored line, ON = notes re-resolve live from
+        // the feeder, FREEZE = hold the last incoming chord (4 counts = 1
+        // state, wraps)
+        static int16_t folRes = 0;
+        folRes += ed;
+        int8_t st = 0;
+        while (folRes >= 4) { folRes -= 4; st++; }
+        while (folRes <= -4) { folRes += 4; st--; }
+        if (st) {
+          static const char *folN[3] = { "OFF", "ON", "FREEZE" };
+          int m = (int)seqFollowMode() + st;
+          m = ((m % 3) + 3) % 3;
+          seqFollowModeSet((uint8_t)m);
           if (logRoom(48)) {
             Serial.print("  follow ");
-            Serial.println(want ? "ON" : "OFF");
+            Serial.println(folN[m]);
           }
         }
         any = true;

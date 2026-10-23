@@ -191,6 +191,11 @@ static uint8_t skankPrmM[SEQ_CH_COUNT][8] = {
 // shift at the send sites.  Persisted in the SEQ EEPROM block; 0 = off.
 // The DRUM track ignores it (its "notes" are drum-map ids, not pitches)
 static int8_t seqTransM[SEQ_CH_COUNT] = {0};
+// per-track scale-lock (Klock) for the TRANS offset: when ON the transposed
+// playback note is snapped back to the nearest in-scale pitch, so the -12..+12
+// semitone knob stays diatonic.  Non-destructive; DRUM tracks never lock
+// (their "notes" are drum-map ids, not pitches).  Persisted in the SEQ block.
+static bool seqKlockM[SEQ_CH_COUNT] = {false};
 // per-track velocity of an ACCENTED step (127 is the old hard-wire; 101 is
 // the boot default) - F3 held + ENC6 edits it
 static uint8_t seqAccVel[SEQ_CH_COUNT] = {101,101,101,101,101,101,101,101,
@@ -202,6 +207,16 @@ static uint8_t  harmLiveN[SEQ_CH_COUNT] = {0};   // LIVE HARM follow: chord
 static uint8_t  harmLive[SEQ_CH_COUNT][CHORD_MAX]; // carried from the last
                                  // pass (a silent feeder replays it - the
                                  // harmony holds through a prob miss)
+static uint8_t  skankLiveN[SEQ_CH_COUNT] = {0};  // LIVE SKANK source + SKANK
+static uint8_t  skankLive[SEQ_CH_COUNT][CHORD_MAX]; // followers: the feeder's
+                                 // last SOUNDING notes carried per reader -
+                                 // its gate may release between the reader's
+                                 // steps (cold start = stored step)
+static uint8_t  frzN[SEQ_CH_COUNT] = {0};        // FOLLOW FREEZE: held chord
+static uint8_t  frzCh[SEQ_CH_COUNT][CHORD_MAX];  // length + notes, latched on
+                                 // the first frozen step, replayed until
+                                 // FREEZE is left (cleared every non-frozen
+                                 // step so re-entering recaptures fresh)
 static uint8_t advPrev[SEQ_CH_COUNT] = {          // per-track step of the
   0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,  // previous advance
   0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}; // (TIE/GLIDE carry)
@@ -1194,6 +1209,20 @@ int stepGenClear(uint8_t step) {
   stepAttClear(seqEditCh, step);   // a rest carries no attribute over
   stepSyncFrom(seqEditCh);
   return 0;
+}
+
+// LEAD contour flip restore: stamp an already-stored skeleton note
+// straight into the edit sequence (no octave re-compensation - the live
+// flip cache round-trips the values the step table already holds, like
+// the undo snapshot does)
+int stepSkeletonWrite(uint8_t step, uint8_t stored) {
+  if (step >= STEP_MAX) return -1;
+  uint8_t ch = seqEditCh;
+  stepAttClear(ch, step);
+  stepChord[ch][step][0] = stored;
+  stepChordLen[ch][step] = 1;
+  stepSyncFrom(ch);
+  return 1;
 }
 
 // rotate one fixed-size row of the step table by a single slot (dir > 0 =
@@ -2247,6 +2276,29 @@ static uint8_t shNote(uint8_t n, int8_t sh, int8_t tr = 0) {
   return (uint8_t)v;
 }
 
+// Klock: snap a transposed playback note to the nearest in-scale pitch.
+// Identity when the scale is chromatic (keyScale()==0) or already in scale.
+static uint8_t klockSnap(uint8_t note) {
+  if (keyScale() == 0) return note;              // chromatic: no filter
+  if (keyIsInScale(note)) return note;
+  for (int d = 1; d <= 6; d++) {                 // nearest first, down then up
+    int dn = (int)note - d;
+    if (dn >= 0 && keyIsInScale((uint8_t)dn)) return (uint8_t)dn;
+    int up = (int)note + d;
+    if (up <= 127 && keyIsInScale((uint8_t)up)) return (uint8_t)up;
+  }
+  return note;
+}
+
+// shNote + the track's scale-lock (Klock): applies the octave + TRANS offset,
+// then (when the track's Klock is ON) snaps the result back into the scale so
+// the semitone knob stays diatonic.  DRUM tracks never lock.
+static uint8_t shNoteK(uint8_t c, uint8_t n, int8_t sh, int8_t tr) {
+  uint8_t v = shNote(n, sh, tr);
+  if (!seqKlockM[c] || seqTrackOf(c) == SEQ_TRACK_DRUM) return v;
+  return klockSnap(v);
+}
+
 // does the head at position p sound?  inside its pattern, plus (while a bar
 // loop is armed) inside the looped bar - the head may walk its pattern
 // toward a loop that starts later, and it may sit beyond the pattern
@@ -2325,6 +2377,19 @@ static uint8_t winOct(int t, int n, uint8_t lo, uint8_t hi) {
   while (v > (int)hi) v -= 12;
   return (uint8_t)v;
 }
+// nearest in-scale pitch to v (small search around v; the guide-tone winNear
+// uses its class, the octave folds into the window later)
+static uint8_t scaleSnap(int v) {
+  int best = v, bd = 0x7FFF;
+  for (int s = -6; s <= 6; s++) {
+    int cand = v + s;
+    if (cand < 0 || cand > 127) continue;
+    if (!keyIsInScale((uint8_t)(cand % 12))) continue;
+    int d = (s < 0) ? -s : s;
+    if (d < bd) { bd = d; best = cand; }
+  }
+  return (uint8_t)best;
+}
 static uint8_t mapBassNote(uint8_t c, uint8_t stp, const uint8_t *ch,
                            uint8_t len, int8_t sh, bool modOn) {
   // live window (LOW..LOW+RANGE-1); the own pitch folds into it, so the
@@ -2347,7 +2412,7 @@ static uint8_t mapBassNote(uint8_t c, uint8_t stp, const uint8_t *ch,
   uint8_t tn = 0;
   for (uint8_t i = 0; i < len && i < CHORD_MAX; i++)
     t[tn++] = ch[i];
-  if (!tn) return shNote(n, sh, seqTransOf(c));   // degenerate: own pitch
+  if (!tn) return shNoteK(c, n, sh, seqTransOf(c)); // degenerate: own pitch
   for (uint8_t i = 1; i < tn; i++) {
     uint8_t v = t[i];
     uint8_t j = i;
@@ -2389,14 +2454,33 @@ static uint8_t mapBassNote(uint8_t c, uint8_t stp, const uint8_t *ch,
         int d = (int)(cand > n ? cand - n : n - cand);
         if (d < bd) { bd = d; best = cand; }
       }
+      // LEAD CT blend: per-note chance to keep the skeleton's own in-scale
+      // pitch (its scale-degree identity) instead of snapping to the chord
+      // tone - 0% = pure ct (flattens to the triad), 100% = pure skeleton
+      // (FOLLOW-OFF pitch).  Mid values interleave scale color with the
+      // chord so the line stops locking to the feeder's tones
+      if (seqMonoTypeOf(c) == SEQ_MONO_LEAD) {
+        uint8_t bl = seqLeadCtOf(c);
+        if (bl && (uint8_t)random(100) < bl) best = (uint8_t)n;
+      }
       base = best;
       break;
     }
-    case SEQ_MAP_GD: {                   // GUIDE tones: the chord's 3rd and
-      uint8_t gt[2];                     // 7th (2nd and 4th tone) only
-      uint8_t gn = 0;
+    case SEQ_MAP_GD: {                   // GUIDE tones: the3rd and 7th,
+      uint8_t gt[5];                     // the depth knob adds 9th/13th
+      uint8_t gn = 0;                    // (and the 5th at EXT)
       if (tn > 1) gt[gn++] = t[1];       // 3rd
       if (tn > 3) gt[gn++] = t[3];       // 7th
+      // LEAD GD depth: a plain triad feeder has no 7th, so gd collapses
+      // to the single 3rd - the depth knob adds scale-snapped extensions
+      // derived from the chord root (9th = root+14, 13th = root+21) so the
+      // guide pool keeps enough notes to stay melodic
+      if (seqMonoTypeOf(c) == SEQ_MONO_LEAD) {
+        uint8_t depth = seqLeadGdOf(c);
+        if (depth >= 1 && tn > 0) gt[gn++] = scaleSnap((int)t[0] + 14);
+        if (depth >= 2 && tn > 0) gt[gn++] = scaleSnap((int)t[0] + 21);
+        if (depth >= 3 && tn > 2) gt[gn++] = t[2];   // + the 5th at EXT
+      }
       if (gn == 0) {                     // single tone: behave like NEAR
         base = winNear(t[0], lo, hi, n);
         break;
@@ -2427,7 +2511,7 @@ static uint8_t mapBassNote(uint8_t c, uint8_t stp, const uint8_t *ch,
   // (octave-shaped to the base), gated by the step's modifier probability
   uint8_t brw = stepBrwM[c][stp];
   if (modOn && brw) base = winOct(t[(brw - 1) % tn], (int)base, lo, hi);
-  return shNote(base, sh, seqTransOf(c)); // listener's shifts apply LAST
+  return shNoteK(c, base, sh, seqTransOf(c)); // listener's shifts apply LAST
 }
 
 // SKANK playback: resolve this step's locks (raw 0 = inherit the page
@@ -2543,15 +2627,15 @@ static void seqAdvanceOnce(bool start, const bool *go,
   // though it was fed while the playhead sat on step 1
   for (uint8_t c = 0; c < SEQ_CH_COUNT; c++)
     if (go[c]) histAt(c, chStep[c]);
-  // two passes over the note-on section: every track first, then the POLY
-  // +HARM followers (FOLLOW on, input != self), every SKANK track (a
-  // following skank reads the feeder's chord for THIS tick; a plain one
-  // just derives later in its own pass) AND the MONO/POLY followers whose
-  // feeder is a SKANK track (the walk lives only in the feeder's sounding
-  // notes, so they read those instead of its stored steps) - so a
-  // follower always reads the feeder's note for THIS tick regardless of
-  // channel order
-  for (uint8_t pass = 0; pass < 2; pass++)
+  // three passes over the note-on section: every track first, then the
+  // SKANK tracks (a following skank reads its feeder's fresh notes; a
+  // plain one just derives later in its own pass), then the LIVE
+  // followers - POLY+HARM listeners and MONO/POLY followers of a SKANK
+  // feeder (the walk lives only in the feeder's sounding notes, so they
+  // read those instead of its stored steps).  The split guarantees a
+  // follower of a skank reads the walk THIS tick regardless of channel
+  // order, and a skank following a HARM track likewise
+  for (uint8_t pass = 0; pass < 3; pass++)
   for (uint8_t c = 0; c < SEQ_CH_COUNT; c++) {
     bool harmFol = seqTrackOf(c) == SEQ_TRACK_POLY &&
                    seqPolyTypeOf(c) == SEQ_POLY_HARM && seqFollowOf(c) &&
@@ -2570,7 +2654,8 @@ static void seqAdvanceOnce(bool start, const bool *go,
                     seqInCh[c] != (uint8_t)(c + 1) &&
                     seqTrackOf(fxf) == SEQ_TRACK_POLY &&
                     seqPolyTypeOf(fxf) == SEQ_POLY_SKANK;
-    if ((harmFol || skankTrack || skankFol) != (pass == 1)) continue;
+    uint8_t grp = skankTrack ? 1 : (harmFol || skankFol) ? 2 : 0;
+    if (grp != pass) continue;
     if (!go[c]) continue;                 // did not advance this sub-tick
     if (!inRng[c]) continue;              // parked outside its window
     if (tied[c]) continue;              // merged note keeps sounding
@@ -2595,6 +2680,7 @@ static void seqAdvanceOnce(bool start, const bool *go,
     bool follow = seqFollowOf(c) && seqTrackOf(c) != SEQ_TRACK_DRUM &&
                   seqInCh[c] != (uint8_t)(c + 1) && !harmTrack;
     uint8_t fstp = 0;                  // feeder's step while following
+    bool frz = seqFollowFreezeOf(c);    // FREEZE: hold the last incoming chord
     if (follow) {
       uint8_t fx = (uint8_t)(seqInCh[c] - 1);
       bool own = len > 0;              // activation stays the listener's
@@ -2604,31 +2690,71 @@ static void seqAdvanceOnce(bool start, const bool *go,
       bool handZone = !own && seqTrackOf(c) == SEQ_TRACK_POLY &&
                       effStepType(c, stp) == SEQ_POLY_HAND;
       len = 0;
-      if ((own || handZone) && inRng[fx]) {   // feeder must be inside its range
-        fstp = chStep[fx];
-        len = stepChordLen[fx][fstp];
-        if (len == 0) {
-          // empty feeder step: hold its LAST chord/note - scan backward,
-          // cyclic inside the domain the feeder is reading right now (its
-          // looped bar while engaged, its pattern while walking toward an
-          // armed loop), until content shows up
-          uint8_t slo, shi;
-          if (seqLoopOn(fx) && chStep[fx] >= lo[fx] && chStep[fx] < hi[fx]) {
-            slo = lo[fx]; shi = hi[fx];    // inside its looped bar
-          } else {
-            slo = 0; shi = seqPatLenOf(fx);   // walking its pattern
+      // activation (own/handZone) always gates; FREEZE only changes WHAT
+      // chord plays, not WHEN - a rest/miss listener step stays silent
+      if ((own || handZone)) {
+        if (frz) {
+          if (frzN[c] == 0 && inRng[fx]) {
+            // first frozen ACTIVE step: capture the feeder's current chord
+            // (same backward scan as live follow) into the cache
+            fstp = chStep[fx];
+            len = stepChordLen[fx][fstp];
+            if (len == 0) {
+              uint8_t slo, shi;
+              if (seqLoopOn(fx) && chStep[fx] >= lo[fx] && chStep[fx] < hi[fx]) {
+                slo = lo[fx]; shi = hi[fx];
+              } else {
+                slo = 0; shi = seqPatLenOf(fx);
+              }
+              uint8_t N = (uint8_t)(shi - slo);
+              uint8_t n = (uint8_t)(fstp - slo);
+              for (uint8_t k = 1; k < N && len == 0; k++) {
+                uint8_t j = (uint8_t)(slo + (n + N - k) % N);
+                if (stepChordLen[fx][j] > 0) {
+                  fstp = j;
+                  len = stepChordLen[fx][j];
+                }
+              }
+            }
+            if (len) {
+              frzN[c] = len > CHORD_MAX ? CHORD_MAX : len;
+              for (uint8_t i = 0; i < frzN[c]; i++)
+                frzCh[c][i] = stepChord[fx][fstp][i];
+            }
+          } else if (frzN[c]) {
+            // already latched: replay it regardless of the feeder's motion
+            len = frzN[c];
           }
-          uint8_t N = (uint8_t)(shi - slo);
-          uint8_t n = (uint8_t)(fstp - slo);
-          for (uint8_t k = 1; k < N && len == 0; k++) {
-            uint8_t j = (uint8_t)(slo + (n + N - k) % N);
-            if (stepChordLen[fx][j] > 0) {
-              fstp = j;
-              len = stepChordLen[fx][j];
+        } else if (inRng[fx]) {   // feeder must be inside its range
+          fstp = chStep[fx];
+          len = stepChordLen[fx][fstp];
+          if (len == 0) {
+            // empty feeder step: hold its LAST chord/note - scan backward,
+            // cyclic inside the domain the feeder is reading right now (its
+            // looped bar while engaged, its pattern while walking toward an
+            // armed loop), until content shows up
+            uint8_t slo, shi;
+            if (seqLoopOn(fx) && chStep[fx] >= lo[fx] && chStep[fx] < hi[fx]) {
+              slo = lo[fx]; shi = hi[fx];    // inside its looped bar
+            } else {
+              slo = 0; shi = seqPatLenOf(fx);   // walking its pattern
+            }
+            uint8_t N = (uint8_t)(shi - slo);
+            uint8_t n = (uint8_t)(fstp - slo);
+            for (uint8_t k = 1; k < N && len == 0; k++) {
+              uint8_t j = (uint8_t)(slo + (n + N - k) % N);
+              if (stepChordLen[fx][j] > 0) {
+                fstp = j;
+                len = stepChordLen[fx][j];
+              }
             }
           }
         }
       }
+    } else {
+      // not a follower this pass: drop any stale freeze cache so a later
+      // FREEZE re-enters cold
+      frzN[c] = 0;
     }
     bool mono = (seqTrackOf(c) == SEQ_TRACK_MONO);
     bool drumTrack = (seqTrackOf(c) == SEQ_TRACK_DRUM);
@@ -2654,8 +2780,11 @@ static void seqAdvanceOnce(bool start, const bool *go,
       if (!handRing[c]) releaseCh(c);       // also ends a glide
       continue;
     }
-    uint8_t *ch = follow ? stepChord[seqInCh[c] - 1][fstp]
-                         : stepChord[c][stp];
+    // FREEZE replays the latched cache - point at it instead of the feeder's
+    // live step
+    uint8_t *ch = (follow && frz && frzN[c]) ? frzCh[c]
+                 : follow ? stepChord[seqInCh[c] - 1][fstp]
+                          : stepChord[c][stp];
     // LIVE HARM follow: with FOLLOW on the chord is re-derived from the
     // feeder's SOUNDING note this tick (post-probability) instead of the
     // stored step chord - prob rolls and arp walks re-harmonize every
@@ -2689,20 +2818,29 @@ static void seqAdvanceOnce(bool start, const bool *go,
     // feeder's SOUNDING notes this tick (post-probability, its ringing
     // pad bar - the same freshness the HARM live path gets) instead of
     // the stored feeder step the follow block above resolved; a quiet
-    // feeder keeps that stored chord (cold start / arp rests), FOLLOW off
-    // = the track's own stored step.  A follower of a SKANK feeder
+    // feeder replays its LAST sounding notes (carried per reader, the
+    // same convention as HARM's harmLive - the feeder's gate may release
+    // between this track's steps; cold start = the stored step), FOLLOW
+    // off = the track's own stored step.  A follower of a SKANK feeder
     // (skankFol, MONO or POLY) reads the same way - it gets the feeder's
-    // WALKED voicing - and falls back to the stored-step chord the follow
-    // block resolved while the feeder is quiet.  `live` is free here:
-    // harmFol, skankTrack and skankFol never overlap
-    if ((skankTrack || skankFol) && follow) {
+    // WALKED voicing, carried through the feeder's quiet gaps.  `live` is
+    // free here: harmFol, skankTrack and skankFol never overlap.  FREEZE
+    // skips the refresh - the latched chord keeps playing.
+    if ((skankTrack || skankFol) && follow && !frz) {
       uint8_t fx2 = (uint8_t)(seqInCh[c] - 1);
-      if (seqLen[fx2] > 0) {
-        uint8_t ln = seqLen[fx2] > CHORD_MAX ? CHORD_MAX : seqLen[fx2];
-        for (uint8_t i = 0; i < ln; i++) live[i] = seqNotes[fx2][i];
-        ch = live;
-        len = ln;
+      uint8_t ln = 0;
+      if (seqLen[fx2] > 0) {             // sounding: this tick's notes
+        ln = seqLen[fx2] > CHORD_MAX ? CHORD_MAX : seqLen[fx2];
+        for (uint8_t i = 0; i < ln; i++) {
+          live[i] = seqNotes[fx2][i];
+          skankLive[c][i] = seqNotes[fx2][i];
+        }
+        skankLiveN[c] = ln;
+      } else if (skankLiveN[c]) {        // quiet pass: the feeder holds
+        ln = skankLiveN[c];
+        for (uint8_t i = 0; i < ln; i++) live[i] = skankLive[c][i];
       }
+      if (ln) { ch = live; len = ln; }
     }
     // SKANK derive: shape the voicing about to play from the source chord
     // (the feeder above, or the track's own stored step) - this step's
@@ -2814,7 +2952,7 @@ static void seqAdvanceOnce(bool start, const bool *go,
           order[j] = v;
         }
         for (uint8_t i = 0; i < n; i++) {
-          order[i] = shNote(order[i], sh, tr);
+          order[i] = shNoteK(c, order[i], sh, tr);
           ovel[i] = vel;
         }
         uint32_t e = n ? (sd / ((uint32_t)n * 2)) : sd;
@@ -2861,7 +2999,7 @@ static void seqAdvanceOnce(bool start, const bool *go,
             if (whi > 127) whi = 127;
             note = foldWin((int)note, wlo, whi);
           }
-          note = shNote(note, sh, tr);
+          note = shNoteK(c, note, sh, tr);
         }
         if (modOn && stepOctM[c][stp]) {  // OCT: octave shift 0..127 clamp
           int v = (int)note + 12 * (int)stepOctM[c][stp];
@@ -2931,7 +3069,7 @@ static void seqAdvanceOnce(bool start, const bool *go,
           }
           if ((drumAccent[c][stp] >> v) & 1) dvel = seqAccVel[c];
         }
-        uint8_t note = shNote(raw, sh, tr);
+        uint8_t note = shNoteK(c, raw, sh, tr);
         if (doStrum) {                  // stage the rake (STRUM / HAND)
           if (sn < CHORD_MAX) {
             snote[sn] = note;
@@ -3085,6 +3223,7 @@ void seqStepStop() {
   for (uint8_t c = 0; c < SEQ_CH_COUNT; c++) {
     advPrev[c] = 0xFF;               // no carry-over into the next run
     harmLiveN[c] = 0;                // LIVE HARM: no chord carried into a run
+    skankLiveN[c] = 0;               // LIVE SKANK: likewise
   }
   fBlinkMask = 0;
   if (recState == 2) recState = 1;   // interrupted pass re-arms for the next run
@@ -3326,6 +3465,24 @@ void seqTransSet(uint8_t i, int8_t v) {
   seqTransM[i] = v;
 }
 
+// PREV-held shift row ENC3: per-track scale-lock (Klock) for the TRANS
+// offset.  ON = the transposed playback note is snapped back to the nearest
+// in-scale pitch, so the -12..+12 semitone knob stays diatonic.  DRUM tracks
+// never lock.  Non-destructive; persisted in the SEQ EEPROM block.
+void seqKlockToggle() {
+  if (seqTrackOf(seqEditCh) == SEQ_TRACK_DRUM) return;
+  seqKlockM[seqEditCh] = !seqKlockM[seqEditCh];
+}
+bool seqKlock() { return seqKlockM[seqEditCh]; }
+bool seqKlockOf(uint8_t i) {
+  if (i >= SEQ_CH_COUNT || seqTrackOf(i) == SEQ_TRACK_DRUM) return false;
+  return seqKlockM[i];
+}
+void seqKlockSet(uint8_t i, bool v) {
+  if (i >= SEQ_CH_COUNT) return;
+  seqKlockM[i] = v;
+}
+
 // F3 held in SEQMODE: ENC6 edits the edit sequence's ACCENT velocity
 // instead of its default one, 4 counts = 1, clamped 1..127 (boot 101)
 void seqAccentVelocityAdjust(int16_t counts) {
@@ -3490,13 +3647,18 @@ void seqEraseAll() {
 // prob[16] | patLen[16] | follow[16] | genFill[16] | genAcc[16] |
 // genGlide[16] | genTie[16] | genTones[16] | genLow[16] | genRange[16] |
 // genAlgo[16] | leadContour[16] | compHits[16] | trans[16] | skankPrmM[128] |
-// encLink | keyLink | checksum = 567 bytes; blank or corrupt keeps the
-// defaults.  A block written by an older build (564/532/436/420/404/388/260
-// bytes) still loads: the core fields are at the same offsets and the newer
-// params keep their defaults - saved config survives the upgrade
+// encLink | keyLink | keyModeMem[16] | encBankMem[16] | encM3Mem[16] |
+// leadCtBlend[16] | leadGdDepth[16] | checksum = 649 bytes; blank or corrupt
+// keeps the defaults.  A block written by an older build (616/567/564/532/
+// 436/420/404/388/260 bytes) still loads: the core fields are at the same
+// offsets and the newer params keep their defaults - saved config survives
+// the upgrade
 static const uint8_t  SEQ_EE_MAGIC = 0x53;
 static const uint16_t SEQ_EE_ADDR = 160;
-static const uint16_t SEQ_EE_LEN = 567;       // + link flags (b[564..565])
+static const uint16_t SEQ_EE_LEN = 665;       // + per-track Klock
+static const uint16_t SEQ_EE_LEN_KLOCK = 649; // previous: LEAD CT/GD knobs
+static const uint16_t SEQ_EE_LEN_LEAD2 = 616; // previous: mode/page mem
+static const uint16_t SEQ_EE_LEN_MODE = 567;  // previous: link flags only
 static const uint16_t SEQ_EE_LEN_SKANK2 = 564; // previous: SKANK knobs[128]
                                               // TES..NOT% stride-8
 static const uint16_t SEQ_EE_LEN_SKANK = 532; // previous: SKANK knobs[96]
@@ -3532,7 +3694,7 @@ void seqCfgSave() {
     b[195 + i] = seqArpSkipOf(i) ? 1 : 0;     // arp skip rests
     b[211 + i] = seqProb[i];                  // playback probability %
     b[227 + i] = seqPatLenOf(i);              // pattern length 0..64
-    b[243 + i] = seqFollowOf(i) ? 1 : 0;      // FOLLOW (notes from feeder)
+    b[243 + i] = seqFollowModeOf(i);           // FOLLOW 0=OFF 1=ON 2=FREEZE
     b[259 + i] = seqGenFillOf(i);             // GNR8 fill %
     b[275 + i] = seqGenAccOf(i);              // GNR8 accent %
     b[291 + i] = seqGenGlideOf(i);            // GNR8 glide %
@@ -3549,6 +3711,17 @@ void seqCfgSave() {
   }
   b[564] = chanEncLocked() ? 1 : 0;  // KEYMODE3 ENCOD lock (0 = free)
   b[565] = chanKeyLocked() ? 1 : 0;  // KEYMODE3 KBOARD lock
+  for (uint8_t i = 0; i < 16; i++) { // per-channel KEYMODE + enc page
+    b[567 + i] = keyModeMemOf(i + 1);
+    b[583 + i] = encBankMemOf(i + 1);
+    b[599 + i] = encM3MemOf(i + 1) ? 1 : 0;
+  }
+  for (uint8_t i = 0; i < 16; i++) { // LEAD page CT/GD knobs
+    b[616 + i] = seqLeadCtOf(i);     // chord-tone vs scale blend %
+    b[632 + i] = seqLeadGdOf(i);     // guide-tone set depth 0..3
+  }
+  for (uint8_t i = 0; i < 16; i++)   // per-track Klock (scale-lock for TRANS)
+    b[648 + i] = seqKlockM[i] ? 1 : 0;
   uint8_t sum = 0;
   for (uint16_t i = 0; i < SEQ_EE_LEN - 1; i++) sum += b[i];
   b[SEQ_EE_LEN - 1] = sum;
@@ -3559,15 +3732,19 @@ void seqCfgLoad() {
   uint8_t b[SEQ_EE_LEN];
   EEPROM.get(SEQ_EE_ADDR, b);
   // pick the NEWEST block length whose magic + checksum validate, so an
-  // older save (564 = first link-less SKANK block, 532 = first SKANK
-  // block, 436 = TRANS, 404 = LEAD, 388 = GNR8, 260 = legacy) still
-  // restores its fields and the newer ones keep their defaults
+  // older save (616 = mode/page mem only, 567 = link flags, 564 = first
+  // link-less SKANK block, 532 = first SKANK block, 436 = TRANS, 404 =
+  // LEAD, 388 = GNR8, 260 = legacy) still restores its fields and the
+  // newer ones keep their defaults
   uint16_t len = 0;
   for (uint16_t L = SEQ_EE_LEN;;) {
     uint8_t sum = 0;
     for (uint16_t i = 0; i < L - 1; i++) sum += b[i];
     if (b[0] == SEQ_EE_MAGIC && sum == b[L - 1]) { len = L; break; }
-    if (L == SEQ_EE_LEN) L = SEQ_EE_LEN_SKANK2;
+    if (L == SEQ_EE_LEN) L = SEQ_EE_LEN_KLOCK;
+    else if (L == SEQ_EE_LEN_KLOCK) L = SEQ_EE_LEN_LEAD2;
+    else if (L == SEQ_EE_LEN_LEAD2) L = SEQ_EE_LEN_MODE;
+    else if (L == SEQ_EE_LEN_MODE) L = SEQ_EE_LEN_SKANK2;
     else if (L == SEQ_EE_LEN_SKANK2) L = SEQ_EE_LEN_SKANK;
     else if (L == SEQ_EE_LEN_SKANK) L = SEQ_EE_LEN_TRANS;
     else if (L == SEQ_EE_LEN_TRANS) L = SEQ_EE_LEN_COMP;
@@ -3583,7 +3760,10 @@ void seqCfgLoad() {
   bool extT = (len >= SEQ_EE_LEN_TRANS);  // TRANS offset present
   bool extS = (len >= SEQ_EE_LEN_SKANK);  // first 6 SKANK knobs (stride-6)
   bool extS2 = (len >= SEQ_EE_LEN_SKANK2); // + TES%/NOT% (stride-8 layout)
-  bool extK = (len >= SEQ_EE_LEN);        // KEYMODE3 channel-link flags
+  bool extK = (len >= SEQ_EE_LEN_MODE);  // KEYMODE3 channel-link flags (567)
+  bool extM = (len >= SEQ_EE_LEN_LEAD2); // per-channel mode/page memory (616)
+  bool extD = (len >= SEQ_EE_LEN_KLOCK); // LEAD CT/GD knobs (649)
+  bool extKL = (len >= SEQ_EE_LEN);      // per-track Klock (665)
   for (uint8_t i = 0; i < SEQ_CH_COUNT; i++) {
     int v = (int8_t)b[3 + i];            // octave: keep the cast signed
     if (v < -60) v = -60;
@@ -3615,7 +3795,7 @@ void seqCfgLoad() {
     if (v > 100) v = 100;
     seqProb[i] = (uint8_t)v;
     seqPatLenSetOf(i, b[227 + i]);            // clamped inside (bad -> 64)
-    seqFollowSetOf(i, b[243 + i] != 0);
+    seqFollowModeSetOf(i, b[243 + i]);        // 0=OFF 1=ON 2=FREEZE, clamped
     seqOctClamp(i);                      // content bounds (empty = convention)
   }
   seqSetEditChannel(b[1]);               // validates 1..16, keeps focus sane
@@ -3660,10 +3840,31 @@ void seqCfgLoad() {
       for (uint8_t p = 0; p < 6; p++)
         skankPrmSet(i, p, b[435 + i * 6 + p]);  // TES%/NOT% keep their defaults
   }
+  if (extM) {                           // per-channel KEYMODE + enc page
+    for (uint8_t i = 0; i < 16; i++) {
+      keyModeMemSet(i + 1, b[567 + i]);
+      encBankMemSet(i + 1, b[583 + i]);
+      encM3MemSet(i + 1, b[599 + i] != 0);
+    }
+  }
+  if (extD) {                           // LEAD page CT/GD knobs
+    for (uint8_t i = 0; i < 16; i++) {
+      seqLeadCtSet(i, b[616 + i]);      // clamped inside (bad -> 0)
+      seqLeadGdSet(i, b[632 + i]);      // clamped inside (bad -> 0)
+    }
+  }
+  if (extKL) {                          // per-track Klock (scale-lock TRANS)
+    for (uint8_t i = 0; i < 16; i++)
+      seqKlockSet(i, b[648 + i] != 0);
+  }
   // boot reconcile: a LOCKED family takes the hub channel (its own saved
-  // channel is stale by definition once the link is on)
+  // channel is stale by definition once the link is on); then the boot
+  // channel takes its own KEYMODE variant + encoder page (encCcLoad ran
+  // first with default memories, so re-apply now that they are loaded)
   if (chanEncLocked()) encSetChannel(seqEditChannel());
   if (chanKeyLocked()) keyChannelForce(seqEditChannel());
+  keyModeRecall();
+  encPageRecall();
 }
 
 // --- DRUM track: per-voice (part) sequencing -----------------------------

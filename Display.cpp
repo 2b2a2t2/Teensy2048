@@ -162,8 +162,9 @@ void refreshMainScreen() {
   // other four keep their knobs (ENC1 octave, 5/6/8 gate/vel/prob)
   bool genP = genPageActive();
   uint8_t genSeq = (uint8_t)(seqEditChannel() - 1);
-  // SEQMODE + M2 LEAD page: ENC2/3/4/7 take contour/low/range/density,
-  // the other four keep their knobs (ENC1 octave, 5/6/8 gate/vel/prob)
+  // SEQMODE + M2 LEAD page: ENC2/3/4 take contour/low/range, ENC5/6 take
+  // CT/GD, ENC7 takes density; ENC1 (octave) and ENC8 (prob) keep their
+  // knobs (GATE/VEL live in the M1 edit menu)
   bool leadP = leadPageActive();
   uint8_t leadSeq = (uint8_t)(seqEditChannel() - 1);
   // SEQMODE + M2 HARM page (POLY TYPE=HARM): ENC1..4 take genre/fill/src/
@@ -248,12 +249,15 @@ void refreshMainScreen() {
     u8g2.drawStr(x, 22, l1);
     if (genOv) {
       // SHIFT/TRANS row: ENC1 = the rotation position, ENC2 = the track's
-      // semitone transpose, the rest stay idle
+      // semitone transpose, ENC3 = per-track scale-lock (Klock), the rest
+      // stay idle
       if (c == 0) snprintf(val, sizeof(val), "%u", seqGenShiftPos() + 1);
       else if (c == 1) {
         int tv = seqTrans();
         if (tv == 0) snprintf(val, sizeof(val), "0");
         else snprintf(val, sizeof(val), "%+d", tv);
+      } else if (c == 2) {
+        snprintf(val, sizeof(val), "%s", seqKlock() ? "ON" : "OFF");
       } else snprintf(val, sizeof(val), "");
     } else if (seqTrOv) {
       // held-step TRANS row: ENC1 = that step's offset (0 = "0")
@@ -361,7 +365,8 @@ void refreshMainScreen() {
     } else if (seq3 && c == 1) {
       snprintf(val, sizeof(val), "%d", seqPatLen());      // ENC2 = steps
     } else if (seq3 && c == 2) {
-      snprintf(val, sizeof(val), "%s", seqFollow() ? "ON" : "OFF");
+      static const char *folN[3] = { "OFF", "ON", "FREEZE" };
+      snprintf(val, sizeof(val), "%s", folN[seqFollowMode()]);
     } else if (seq3 && c == 3) {
       snprintf(val, sizeof(val), "%s",
                seqSpeedName(seqSpeedIdxOf((uint8_t)(seqEditChannel() - 1))));
@@ -463,6 +468,8 @@ void refreshMainScreen() {
     if (c == 1 && f3AccentActive()) l2 = "ACC";   // F3 held: ENC6 = accent
     if (arpP && 4 + c == 6) l2 = "INST";          // arp page: ENC7 = insert
     if (genP && 4 + c == 6) l2 = "TIE";           // gen page: ENC7 = tie %
+    if (leadP && 4 + c == 4) l2 = "CT";           // lead page: ENC5 = ct blend
+    if (leadP && 4 + c == 5) l2 = "GD";           // lead page: ENC6 = gd set
     if (leadP && 4 + c == 6) l2 = "DENS";         // lead page: ENC7 = density
     if (genOv) l2 = "---";                        // SHIFT/TRANS row: idle
     if (seqTrOv) l2 = "---";                      // held-step TRANS: idle
@@ -510,6 +517,11 @@ void refreshMainScreen() {
                seqArpInstName(seqArpInstOf(arpSeq)));  // ENC7 = insert mode
     } else if (genP && 4 + c == 6) {
       snprintf(val, sizeof(val), "%u%%", seqGenTieOf(genSeq));  // ENC7 tie
+    } else if (leadP && 4 + c == 4) {
+      snprintf(val, sizeof(val), "%u%%", seqLeadCtOf(leadSeq));  // ENC5 ct
+    } else if (leadP && 4 + c == 5) {
+      snprintf(val, sizeof(val), "%s",
+               seqLeadGdName(seqLeadGdOf(leadSeq)));             // ENC6 gd
     } else if (leadP && 4 + c == 6) {
       snprintf(val, sizeof(val), "%u%%", seqGenFillOf(leadSeq)); // ENC7 dens
     } else if (skankP && 4 + c == 4) {

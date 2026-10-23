@@ -45,7 +45,7 @@ static const char* encLabels[ENC_SET_COUNT][8] = {
   /* ENC_KEY3         */ { "OCT", "SCALE", "ENCOD", "KBOARD", "--", "--", "--", "--" },
   /* ENC_KEY4         */ { "GENRE", "MOOD", "TENS", "MOTION", "CAD", "CPX", "ERA", "SURP" },
   /* ENC_SEQ_STEP_HELD*/ { "--", "--", "--", "--", "--", "--", "--", "--" },  // set not wired yet
-  /* ENC_SEQ_ROT_OV   */ { "SHIFT", "TRANS", "--", "--", "--", "--", "--", "--" },
+  /* ENC_SEQ_ROT_OV   */ { "SHIFT", "TRANS", "KLOCK", "--", "--", "--", "--", "--" },
   /* ENC_SEQ_STEPOV   */ { "TRANS", "--", "--", "--", "--", "--", "--", "--" },
   /* ENC_SEQ_SKANK_STEP*/ { "TES", "MOT", "SHP", "THN", "EXT", "SUB", "TES%", "TRANS" },
   /* ENC_KEY2_PREV    */ { "OCT", "SCALE", "KEY", "LATCH", "KLOCK", "PERF", "--", "--" },

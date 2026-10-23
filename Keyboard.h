@@ -223,6 +223,12 @@ void seqTransAdjust(int16_t counts);  // PREV-shift row ENC2: 1 count = 1 st,
 int  seqTrans();                      // edit track's semitone TRANS
 int8_t seqTransOf(uint8_t i);         // raw per-track (playback/EEPROM), 0 on DRUM
 void seqTransSet(uint8_t i, int8_t v); // EEPROM load (clamped -12..+12)
+void seqKlockToggle();                  // PREV-shift row ENC3: per-track
+                                        // scale-lock for TRANS (DRUM refuses)
+bool seqKlock();                        // edit track's Klock flag
+bool seqKlockOf(uint8_t i);             // raw per-track (playback/EEPROM),
+                                        // false on DRUM
+void seqKlockSet(uint8_t i, bool v);    // EEPROM load
 uint8_t seqFMask();                   // attributes the playhead reads this step
                                       // (F-row blink mask, edit channel)
 
@@ -278,6 +284,7 @@ void           harmRebakePoll();
 // how many steps were touched
 int      stepGenWrite(uint8_t step, uint8_t note, uint8_t att);
 int      stepGenClear(uint8_t step);
+int      stepSkeletonWrite(uint8_t step, uint8_t stored);  // LEAD flip restore
 void     stepShiftPattern(uint8_t n, int8_t dir);
 uint8_t  stepAttrChain(uint8_t from, uint8_t to, uint8_t att);
 

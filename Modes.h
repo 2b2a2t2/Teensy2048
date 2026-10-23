@@ -23,6 +23,8 @@ uint8_t keyBehaviorVariant();
 // variant last latched on it (RAM only).  keySetChannel() calls
 // keyModeRecall(); modeOnEvent() stores on every latched variant change
 void keyModeRecall();
+uint8_t keyModeMemOf(uint8_t ch);        // EEPROM accessors (1..16)
+void    keyModeMemSet(uint8_t ch, uint8_t v);
 
 // true while the keyboard sounds through the chord engine: KEYMODE2
 // (diatonic chords) and KEYMODE4 (genre proposals) share it for the sound,

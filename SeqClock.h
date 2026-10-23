@@ -131,9 +131,14 @@ void    seqStepViewFollow(uint8_t step); // move the edit window onto that step
 uint8_t seqStepPage(void);               // edit window 0..3
 bool seqBarLooped(uint8_t page);         // bar of the edit sequence looping
 bool seqFollow();                        // ENC3: edit track follows its feeder
-bool seqFollowOf(uint8_t ch);            // follow state of sequence ch 0..15
-void seqFollowSet(bool on);              // edit track (4 counts = state, CW=ON)
-void seqFollowSetOf(uint8_t ch, bool on);      // restore (seqCfgLoad)
+                                         //  (true for ON or FREEZE - both are
+                                         //  a form of following)
+bool seqFollowOf(uint8_t ch);            // follow active (ON or FREEZE) of ch
+uint8_t seqFollowMode();                 // edit track's mode 0=OFF 1=ON 2=FREEZE
+uint8_t seqFollowModeOf(uint8_t ch);     // per-track mode 0..2
+bool seqFollowFreezeOf(uint8_t ch);      // true when that track is FREEZE
+void seqFollowModeSet(uint8_t m);        // edit track (ENC3 cycles 0..2)
+void seqFollowModeSetOf(uint8_t ch, uint8_t m); // restore (seqCfgLoad), clamped
 // GNR8 BASS mapping (F2 ENC3) + LEAD melody resolution: how FOLLOW
 // re-resolves a generated step note onto the incoming chord - NEAR =
 // nearest chord tone inside the LOW..RANGE window, ROOT = the chord's

@@ -50,9 +50,11 @@ static void applyModeLeds();     // defined below; recall repaints too
 
 void keyModeRecall() {
   uint8_t v = keyModeMem[keyChannel() - 1];
-  if (v < 1 || v > 4) v = 1;
+  if (v < 1 || v > 4 || v == 3) v = 1;  // 3 = momentary, never a target
   familyMem[MODE_KEY] = v;    // next KEYMODE entry lands on it too
-  if (modeBase == MODE_KEY && modeVariant != v) {
+  // skip while the KEY3 hold is mid-gesture (variant 3): the release
+  // path applies the channel's variant then
+  if (modeBase == MODE_KEY && modeVariant != 3 && modeVariant != v) {
     // live switch while KEYMODE is showing (the keyboard moved to a
     // channel with a different remembered variant): same chord/K4
     // housekeeping modeOnEvent does on a variant change
@@ -64,6 +66,18 @@ void keyModeRecall() {
     headerSetLeft(modeName());
     refreshMainScreen();
   }
+}
+
+// EEPROM accessors (the SEQ block stores the per-channel memory)
+uint8_t keyModeMemOf(uint8_t ch) {
+  if (ch < 1 || ch > 16) return 1;
+  uint8_t v = keyModeMem[ch - 1];
+  return (v >= 1 && v <= 4 && v != 3) ? v : 1;
+}
+
+void keyModeMemSet(uint8_t ch, uint8_t v) {
+  if (ch < 1 || ch > 16) return;
+  keyModeMem[ch - 1] = (v >= 1 && v <= 4 && v != 3) ? v : 1;
 }
 
 // playback blink phase: set by pollModeLeds(), read by modeLedHook() -
@@ -917,8 +931,12 @@ void modeOnEvent(uint8_t pad, uint8_t ev) {
           modeBase = b;
           modeVariant = (heldPrevBase == b) ? heldPrevVariant : 1;
         } else {
-          modeBase = heldPrevBase;         // KEY3: back where we were
-          modeVariant = heldPrevVariant;
+          modeBase = heldPrevBase;         // KEY3: back to the previous
+          modeVariant = heldPrevVariant;   // family - but on the channel
+          if (modeBase == MODE_KEY) {      // the overlay left us on, that
+            modeVariant = keyModeMemOf(keyChannel());  // channel's own
+            familyMem[MODE_KEY] = modeVariant;         // variant wins
+          }
         }
         applyModeLeds();
         headerSetLeft(modeName());
@@ -951,13 +969,14 @@ void modeOnEvent(uint8_t pad, uint8_t ev) {
       modeVariant = familyMem[b] ? familyMem[b] : 1;
     }
     familyMem[b] = modeVariant;
-    // a latched KEY variant belongs to the keyboard channel it was set
-    // on (the channel recalls it next time - keyModeRecall); the
-    // momentary hold (3) is never stored
-    if (b == MODE_KEY && modeVariant >= 1 && modeVariant <= 4)
-      keyModeMem[keyChannel() - 1] = modeVariant;
   }
   modeBase = b;
+  // a latched KEY variant belongs to the keyboard channel it was set on
+  // (the channel recalls it next time - keyModeRecall).  Click AND
+  // double-click: KEYMODE4's entry must land in its channel's memory too;
+  // the momentary hold (3) is never stored
+  if (b == MODE_KEY && (ev == EV_CLICKED || ev == EV_DOUBLE))
+    keyModeMem[keyChannel() - 1] = modeVariant;
 
   // entering the ENCMODE family from outside takes the page (F bank +
   // group) the CURRENT encoder channel last used - the per-channel
