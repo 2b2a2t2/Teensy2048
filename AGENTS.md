@@ -20,27 +20,44 @@ ideas. It persists across sessions — never rely on chat memory for tasks.
 
 ## Build & flash
 
+**Work in the local checkout** (the folder GitHub Desktop syncs — on this machine
+`~/Desktop/Teensy2048`, branch `main`), not in a throwaway copy: the Teensy 4.1 is
+plugged into this machine, so edits can be compiled and flashed straight away with
+no sync-and-copy step. Never edit only a scratch copy — the user's own folder is
+the source of truth.
+
 1. Teensyduino (Arduino IDE or VS Code + PlatformIO), libraries: FastLED,
-   U8g2, Encoder, Adafruit_MPR121, uClock.
-2. Open `Teensy2048.ino`, select **Teensy 4.1**, **USB Type: MIDI**, compile & upload.
-3. **Preferred: arduino-cli** — the IDE's own tooling, non-interactive, works headless.
+   U8g2, Encoder, Adafruit_MPR121, uClock. Open `Teensy2048.ino`, select
+   **Teensy 4.1**, **USB Type: MIDI**.
+2. **Preferred: `tools/fw.sh`** — wraps arduino-cli (from the Arduino IDE bundle)
+   and does the bookkeeping the raw command needs:
+   ```sh
+   ./tools/fw.sh build     # compile only
+   ./tools/fw.sh upload    # compile, then flash the attached board
+   ```
+   It finds `arduino-cli` (`PATH` → Arduino IDE bundle → `$ARDUINO_CLI`), collects the
+   library roots that actually provide the five required libs (the sketchbook
+   `~/Documents/Arduino/libraries` plus any `$SKETCHBOOK/*/libraries` that holds
+   FastLED/Encoder — on this machine `~/Documents/Arduino/Arduino maison/libraries`),
+   builds into `${TMPDIR:-/tmp}/t2048build`, and resolves the **Teensy port**
+   (`usb:…` from `arduino-cli board list`) because USB Type MIDI exposes no serial tty.
+   Overrides: `ARDUINO_CLI`, `T2048_LIBS` (colon-separated), `T2048_BUILD`, `T2048_PORT`.
+3. Raw equivalent, if the script is unavailable:
    ```sh
    CLI="/Applications/Arduino IDE.app/Contents/Resources/app/lib/backend/resources/arduino-cli"
    "$CLI" compile --fqbn "teensy:avr:teensy41:usb=midi,speed=600" \
-     --libraries /var/folders/dy/bnnskbx953j3xwngcqkb1c040000gn/T/opencode/t2048libs \
-     --build-path /var/folders/dy/bnnskbx953j3xwngcqkb1c040000gn/T/opencode/t2048build \
-     Teensy2048.ino
+     --libraries "$HOME/Documents/Arduino/libraries,$HOME/Documents/Arduino/Arduino maison/libraries" \
+     --build-path /tmp/t2048build Teensy2048.ino
    "$CLI" upload --fqbn "teensy:avr:teensy41:usb=midi,speed=600" \
-     --input-dir /var/folders/dy/bnnskbx953j3xwngcqkb1c040000gn/T/opencode/t2048build \
-     --port /dev/ttyUSB0 Teensy2048.ino
+     --input-dir /tmp/t2048build \
+     --port "$("$CLI" board list | awk '$2=="teensy"{print $1;exit}')" Teensy2048.ino
    ```
-   The `<lib-symlink-dir>` holds **symlinks to FastLED + Encoder only** — the rest
-   (U8g2, uClock, Adafruit_MPR121) resolve from the sketchbook `~/Documents/Arduino/libraries`.
-   USB Type MIDI enumerates as "Teensy MIDI" (no serial tty); `--port /dev/ttyUSB0` is a
-   **placeholder** — the tool finds the board by USB VID/PID. The upload recipe expects
-   `Teensy2048.ino.hex` in `<build-dir>`, which is what compile produces.
+   Currently-running firmware that was built **without** MIDI-only USB still shows a
+   `/dev/cu.usbmodem*` serial tty; after flashing this sketch that tty disappears and the
+   board only appears under **Teensy Ports** — that is success, not a disconnect.
 4. There is no automated test suite — verification is compiling plus on-hardware
-   behavior. After edits, at minimum confirm the sketch still compiles.
+   behavior. After edits, at minimum confirm the sketch still compiles
+   (`./tools/fw.sh build`).
 
 ## Conventions
 

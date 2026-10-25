@@ -409,17 +409,23 @@ Paged I2C write (1 page per `displayUpdate()` call, ~4 ms @ 400 kHz) to avoid bl
 4. Select **Teensy 4.1**, **USB Type: MIDI**
 5. Compile & upload
 
-**arduino-cli** (USB Type MIDI enumerates as "Teensy MIDI", no serial tty — pass any placeholder port; the tool finds the board by USB VID/PID):
+**arduino-cli** — no IDE, no copy step, works on the checked-out tree:
 
 ```sh
-CLI="/Applications/Arduino IDE.app/Contents/Resources/app/lib/backend/resources/arduino-cli"
-"$CLI" compile --fqbn "teensy:avr:teensy41:usb=midi,speed=600" \
-  --libraries <lib-symlink-dir> --build-path <build-dir> Teensy2048.ino
-"$CLI" upload --fqbn "teensy:avr:teensy41:usb=midi,speed=600" \
-  --input-dir <build-dir> --port /dev/ttyUSB0 Teensy2048.ino
+./tools/fw.sh build     # compile only
+./tools/fw.sh upload    # compile, then flash the attached Teensy 4.1
 ```
 
-(Only FastLED + Encoder are symlinked in `<lib-symlink-dir>`; the rest — U8g2, uClock, Adafruit_MPR121 — must resolve from the sketchbook `~/Documents/Arduino/libraries`. The upload recipe expects `Teensy2048.ino.hex` in `<build-dir>`, which is what the compile step produces.)
+`tools/fw.sh` locates `arduino-cli` (PATH → Arduino IDE bundle → `$ARDUINO_CLI`),
+collects the library roots that hold the five required libraries (sketchbook
+`~/Documents/Arduino/libraries` plus any `$SKETCHBOOK/*/libraries` providing
+FastLED/Encoder), builds into `${TMPDIR:-/tmp}/t2048build`, and flashes via the
+**Teensy port** reported by `arduino-cli board list`. Overrides: `ARDUINO_CLI`,
+`T2048_LIBS` (colon-separated roots), `T2048_BUILD`, `T2048_PORT`.
+
+Because USB Type is MIDI the board has no serial tty: it appears only under
+"Teensy Ports" (`usb:…`), and a `/dev/cu.usbmodem*` port left over from an older
+non-MIDI build disappears after flashing — that is success, not a disconnect.
 
 ## Key Constants (Keyboard.cpp / Chords.h / TouchChips.h)
 
