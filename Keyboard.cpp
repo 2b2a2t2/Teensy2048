@@ -7,6 +7,7 @@
 #include "Key4.h"       // KEYMODE4 proposal gesture (press/release/commit)
 #include "Gen.h"        // GNR8 params (the SEQ EEPROM block stores them)
 #include "Skank.h"      // SKANK derive (POLY TYPE = SKANK playback)
+#include "Drum.h"       // DRUM page params (the SEQ EEPROM block stores them)
 #include "Encoders.h"   // encSetChannel - boot reconcile of a locked ENCOD
 #include "bjorklund.h"  // COMP: Euclid stab pattern (same primitive as GNR8)
 #include <EEPROM.h>
@@ -146,8 +147,10 @@ static uint16_t stepStrumDt[SEQ_CH_COUNT][STEP_MAX][CHORD_MAX];
 // DRUM tracks split accent/probability PER VOICE: mask bits say which of
 // the 16 parts (notes 36..51) is accented / probability-gated in a step.
 // Zero-init: no accents, no probability gates (mask bit = attribute present)
-static uint8_t drumAccent[SEQ_CH_COUNT][STEP_MAX];
-static uint8_t drumProbOn[SEQ_CH_COUNT][STEP_MAX];
+// (16-bit masks: one bit per voice, notes 36..51 - the drum page's HAT and
+// PERC lanes sit above bit 7, so a byte could never accent or gate them)
+static uint16_t drumAccent[SEQ_CH_COUNT][STEP_MAX];
+static uint16_t drumProbOn[SEQ_CH_COUNT][STEP_MAX];
 // GNR8 per-step pitch modifiers (F2/F3/F4 pages on the BASS track):
 // octave transposition -2..+2, borrowed chord tone (0 = off, n = n-th
 // tone of the incoming chord, ascending) and the probability % that the
@@ -1256,8 +1259,8 @@ void stepShiftPattern(uint8_t n, int8_t dir) {
     stepRotRow(stepAtt[ch], 1, n, d);
     stepRotRow(stepFx[ch], 1, n, d);
     stepRotRow(stepStrumDt[ch], CHORD_MAX * 2, n, d);
-    stepRotRow(drumAccent[ch], 1, n, d);
-    stepRotRow(drumProbOn[ch], 1, n, d);
+    stepRotRow(drumAccent[ch], sizeof(uint16_t), n, d);
+    stepRotRow(drumProbOn[ch], sizeof(uint16_t), n, d);
     stepRotRow(stepOctM[ch], 1, n, d);
     stepRotRow(stepBrwM[ch], 1, n, d);
     stepRotRow(stepModP[ch], 1, n, d);
@@ -1471,8 +1474,8 @@ static uint8_t snapLen[STEP_MAX];
 static uint8_t snapAttB[STEP_MAX];
 static uint8_t snapFxB[STEP_MAX];
 static uint8_t snapEmbB[STEP_MAX][4];  // embellishment overrides
-static uint8_t snapDrumA[STEP_MAX];
-static uint8_t snapDrumP[STEP_MAX];
+static uint16_t snapDrumA[STEP_MAX];
+static uint16_t snapDrumP[STEP_MAX];
 static uint16_t snapStrumB[STEP_MAX][CHORD_MAX];
 static int8_t  snapOctB[STEP_MAX];      // GNR8 per-step mods
 static uint8_t snapBrwB[STEP_MAX];
@@ -1555,7 +1558,7 @@ bool stepAttrToggle(uint8_t step, uint8_t att) {
   if (seqTrack() == SEQ_TRACK_DRUM) {
     uint8_t v = drumPart;              // 36..51 -> voice index 0..15
     if (v < 36 || v >= 52) return false;
-    uint8_t bit = (uint8_t)(1 << (v - 36));
+    uint16_t bit = (uint16_t)(1u << (v - 36));
     if (att & SEQ_ATT_ACCENT) {
       drumAccent[seqEditCh][step] ^= bit;
       return (drumAccent[seqEditCh][step] & bit) != 0;
@@ -1671,7 +1674,7 @@ uint8_t stepAttrs(uint8_t step) {
   if (seqTrack() == SEQ_TRACK_DRUM) {
     uint8_t v = drumPart;
     if (v < 36 || v >= 52) return 0;
-    uint8_t bit = (uint8_t)(1 << (v - 36));
+    uint16_t bit = (uint16_t)(1u << (v - 36));
     uint8_t m = 0;
     if (drumAccent[seqEditCh][step] & bit) m |= SEQ_ATT_ACCENT;
     if (drumProbOn[seqEditCh][step] & bit) m |= SEQ_ATT_PROB;
@@ -3655,13 +3658,17 @@ void seqEraseAll() {
 // genAlgo[16] | leadContour[16] | compHits[16] | trans[16] | skankPrmM[128] |
 // encLink | keyLink | keyModeMem[16] | encBankMem[16] | encM3Mem[16] |
 // leadCtBlend[16] | leadGdDepth[16] | klock[16] | speedLadderVersion |
-// checksum = 666 bytes; blank or corrupt keeps the defaults.  A block
-// written by an older build (665/649/616/567/564/532/436/420/404/388/260
-// bytes) still loads: the core fields are at the same offsets and the newer
-// params keep their defaults - saved config survives the upgrade
+// drumGenre[16] | drumVar[16] | drumLine[64] | drumFill[64] | drumMot[64] |
+// drumFillMaster[16] | drumMotMaster[16] | checksum = 923 bytes; blank or
+// corrupt keeps the defaults.  A block written by an older build
+// (666/665/649/616/567/564/532/436/420/404/388/260 bytes) still loads: the
+// core fields are at the same offsets and the newer params keep their
+// defaults - saved config survives the upgrade
 static const uint8_t  SEQ_EE_MAGIC = 0x53;
 static const uint16_t SEQ_EE_ADDR = 160;
-static const uint16_t SEQ_EE_LEN = 666;       // + speed-ladder version marker
+static const uint16_t SEQ_EE_LEN = 923;       // + DRUM page params
+static const uint16_t SEQ_EE_LEN_DRUM = 666;  // previous: before the DRUM page
+                                              // (speed-ladder marker ends it)
 static const uint16_t SEQ_EE_LEN_SPD = 665;   // previous: 7-rung speed ladder
                                               // (Klock ends the block)
 static const uint16_t SEQ_EE_LEN_KLOCK = 649; // previous: LEAD CT/GD knobs
@@ -3736,6 +3743,17 @@ void seqCfgSave() {
   for (uint8_t i = 0; i < 16; i++)   // per-track Klock (scale-lock for TRANS)
     b[648 + i] = seqKlockM[i] ? 1 : 0;
   b[664] = SEQ_SPD_MARK;             // speed ladder revision
+  for (uint8_t i = 0; i < 16; i++) { // DRUM page params (M2 on a DRUM track)
+    b[666 + i] = drumGenreOf(i);
+    b[682 + i] = drumVarOf(i);
+    for (uint8_t l = 0; l < 4; l++) {
+      b[698 + i * 4 + l] = drumLineOf(i, l);      // A / B / OFF
+      b[762 + i * 4 + l] = drumLaneFillOf(i, l);  // ghost density %
+      b[826 + i * 4 + l] = drumLaneMotOf(i, l);   // accent chance %
+    }
+    b[890 + i] = drumFillOf(i);      // master FILL (page display value)
+    b[906 + i] = drumMotOf(i);       // master MOT
+  }
   uint8_t sum = 0;
   for (uint16_t i = 0; i < SEQ_EE_LEN - 1; i++) sum += b[i];
   b[SEQ_EE_LEN - 1] = sum;
@@ -3757,11 +3775,12 @@ void seqCfgLoad() {
     // the newest length also needs its ladder marker, so an old block whose
     // trailing checksum happens to match the sum cannot pose as a new one
     if (b[0] == SEQ_EE_MAGIC && sum == b[L - 1] &&
-        (L < SEQ_EE_LEN || b[SEQ_EE_LEN - 2] == SEQ_SPD_MARK)) {
+        (L < SEQ_EE_LEN || b[664] == SEQ_SPD_MARK)) {
       len = L;
       break;
     }
-    if (L == SEQ_EE_LEN) L = SEQ_EE_LEN_SPD;
+    if (L == SEQ_EE_LEN) L = SEQ_EE_LEN_DRUM;
+    else if (L == SEQ_EE_LEN_DRUM) L = SEQ_EE_LEN_SPD;
     else if (L == SEQ_EE_LEN_SPD) L = SEQ_EE_LEN_KLOCK;
     else if (L == SEQ_EE_LEN_KLOCK) L = SEQ_EE_LEN_LEAD2;
     else if (L == SEQ_EE_LEN_LEAD2) L = SEQ_EE_LEN_MODE;
@@ -3785,7 +3804,8 @@ void seqCfgLoad() {
   bool extM = (len >= SEQ_EE_LEN_LEAD2); // per-channel mode/page memory (616)
   bool extD = (len >= SEQ_EE_LEN_KLOCK); // LEAD CT/GD knobs (649)
   bool extKL = (len >= SEQ_EE_LEN_SPD);  // per-track Klock (665)
-  bool extSp = (len >= SEQ_EE_LEN);      // 9-rung speed ladder (666)
+  bool extSp = (len >= SEQ_EE_LEN_DRUM); // 9-rung speed ladder (666)
+  bool extDR = (len >= SEQ_EE_LEN);      // DRUM page params (923)
   for (uint8_t i = 0; i < SEQ_CH_COUNT; i++) {
     int v = (int8_t)b[3 + i];            // octave: keep the cast signed
     if (v < -60) v = -60;
@@ -3884,6 +3904,19 @@ void seqCfgLoad() {
     for (uint8_t i = 0; i < 16; i++)
       seqKlockSet(i, b[648 + i] != 0);
   }
+  if (extDR) {                          // DRUM page params (newest block only)
+    for (uint8_t i = 0; i < 16; i++) {
+      drumGenreSet(i, b[666 + i]);      // clamped inside (bad -> HOUSE)
+      drumVarSet(i, b[682 + i]);        // (bad -> straight)
+      for (uint8_t l = 0; l < 4; l++) {
+        drumLineSet(i, l, b[698 + i * 4 + l]);     // (bad -> line A)
+        drumLaneFillSet(i, l, b[762 + i * 4 + l]); // (bad -> 60)
+        drumLaneMotSet(i, l, b[826 + i * 4 + l]);  // (bad -> 20)
+      }
+      drumFillSet(i, b[890 + i]);
+      drumMotSet(i, b[906 + i]);
+    }
+  }
   // boot reconcile: a LOCKED family takes the hub channel (its own saved
   // channel is stale by definition once the link is on); then the boot
   // channel takes its own KEYMODE variant + encoder page (encCcLoad ran
@@ -3954,6 +3987,31 @@ int stepDrumToggle(uint8_t step) {
   seqOctClamp(seqEditCh);
   stepSyncFrom(seqEditCh);
   return drumPart;
+}
+
+// DRUM generator write path (Drum.cpp): one step's whole part list + the
+// per-voice accent mask.  stepAttClear resets the attributes AND both drum
+// masks, so the write always lands on a clean step
+int stepDrumWrite(uint8_t step, const uint8_t *notes, uint8_t n,
+                  uint16_t accentMask) {
+  if (step >= STEP_MAX) return -1;
+  uint8_t ch = seqEditCh;
+  stepChordLen[ch][step] = 0;
+  stepAttClear(ch, step);
+  if (n > CHORD_MAX) n = CHORD_MAX;
+  for (uint8_t i = 0; i < n; i++) stepChord[ch][step][i] = notes[i];
+  stepChordLen[ch][step] = n;
+  // accent mask bits are only kept for the voices this step actually holds
+  uint16_t keep = 0;
+  for (uint8_t i = 0; i < n; i++) {
+    uint8_t note = notes[i];
+    if (note >= 36 && note <= 51) keep |= (uint16_t)1 << (note - 36);
+  }
+  drumAccent[ch][step] = (uint16_t)(accentMask & keep);
+  drumProbOn[ch][step] = 0;            // no probability gates from the page
+  seqOctClamp(ch);
+  stepSyncFrom(ch);
+  return n;
 }
 
 uint8_t keyChannel() { return keyCh; }

@@ -9,6 +9,7 @@
 #include "Gen.h"         // GNR8 page values (fill/acc/glide/tie)
 #include "Key4.h"       // KEYMODE4 genre/knob values + control legend
 #include "Skank.h"      // SKANK page: shape name (LIN/PP/RND)
+#include "Drum.h"       // DRUM page: genre/var/lane values
 #include <Wire.h>
 
 U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, U8X8_PIN_NONE);
@@ -175,6 +176,10 @@ void refreshMainScreen() {
   // SEQMODE + M2 SKANK page (POLY TYPE=SKANK): ENC1..4 take TES/MOT/SHP/
   // THN, ENC5..8 take EXT/SUB/LEN/SPEED (the whole row is the page)
   bool skankP = skankPageActive();
+  // SEQMODE + M2 DRUM page (DRUM track): the eight knobs of the pattern
+  // page, regrouped by the armed F set (0xFF = the base row)
+  bool drumP = drumPageActive();
+  uint8_t drumSet = drumSetSelGet();
   // ...or a held step on a POLY+SKANK track arms the per-step lock row
   // (encoders 1..6 override that step's knob, 8 = TRANS)
   bool skankStepOv = (b.enc == ENC_SEQ_SKANK_STEP);
@@ -224,6 +229,13 @@ void refreshMainScreen() {
     if (harmP && !seqOv) {
       static const char *hl[4] = { "GENRE", "FILL", "SRC", "HOLD" };
       l1 = hl[c];
+    }
+    if (drumP && !seqOv) {
+      // base row: GENRE / VAR / FILL / MOT, then the four lane selectors on
+      // row 2; the F sets swap the four lane selectors onto ENC1..4
+      static const char *const dl[4] = { "GENRE", "VAR", "FILL", "MOT" };
+      static const char *const dn[4] = { "KICK", "SNARE", "HAT", "PERC" };
+      l1 = (drumSet == 0xFF || drumSet == 0) ? dl[c] : dn[c];
     }
     if (compP && !seqOv) {
       static const char *cl[4] = { "HITS", "---", "---", "---" };
@@ -454,7 +466,12 @@ void refreshMainScreen() {
     // row-2 labels follow the step-edit bindings while the radio is on
     // (the idle default row would contradict the live values)
     const char* l2 = encLabel(b.enc, 4 + c);
-    if (seqGe) {
+    if (drumP && !seqOv) {
+      static const char *const dn[4] = { "KICK", "SNARE", "HAT", "PERC" };
+      static const char *const d2[4] = { "---", "---", "FILL", "MOT" };
+      if (drumSet == 0xFF) l2 = dn[c];
+      else l2 = d2[drumSet <= 3 ? drumSet : 0];
+    } else if (seqGe) {
       static const char* sl[4] = { "GATE", "VEL", "---", "PROB" };
       l2 = sl[c];
     } else if (seqDrumGe) {
@@ -489,7 +506,29 @@ void refreshMainScreen() {
       l2 = s2[c];
     }
     u8g2.drawStr(x, 38, l2);
-    if (genOv) {
+    if (drumP && !seqOv) {
+      // DRUM page values: the four page knobs on row 1, the lane selectors
+      // on row 2 of the base row (the F sets reuse row 1 for their lanes)
+      if (c < 4) {
+        if (drumSet == 0xFF || drumSet == 0) {
+          if (c == 0)      snprintf(val, sizeof(val), "%s", drumGenreName(drumGenre()));
+          else if (c == 1) snprintf(val, sizeof(val), "%s", drumVarName(drumVar()));
+          else if (c == 2) snprintf(val, sizeof(val), "%u%%", (unsigned)drumFill());
+          else             snprintf(val, sizeof(val), "%u%%", (unsigned)drumMot());
+        } else if (drumSet == 1) {
+          snprintf(val, sizeof(val), "%s", drumLineName(drumLine((uint8_t)c)));
+        } else if (drumSet == 2) {
+          snprintf(val, sizeof(val), "%u%%", (unsigned)drumLaneFill((uint8_t)c));
+        } else {
+          snprintf(val, sizeof(val), "%u%%", (unsigned)drumLaneMot((uint8_t)c));
+        }
+      } else if (drumSet == 0xFF) {
+        snprintf(val, sizeof(val), "%s",
+                 drumLineName(drumLine((uint8_t)(c - 4))));
+      } else {
+        snprintf(val, sizeof(val), "");
+      }
+    } else if (genOv) {
       snprintf(val, sizeof(val), "");              // SHIFT/TRANS row idle
     } else if (seqTrOv) {
       snprintf(val, sizeof(val), "");              // held-step TRANS idle
@@ -619,7 +658,9 @@ void drawHeaderText() {
   // on MONO, FX/TYPE/ACCENT/PROB on POLY); an open ARP page wins over both
   // so the rebind is always visible
   const char* left = headerLeft;
-  if (genPageActive()) {
+  if (drumPageActive()) {
+    left = "DRUMS";              // the drum pattern page owns the row
+  } else if (genPageActive()) {
     left = "GNR8";               // the generator page owns the encoder row
   } else if (arpPageActive()) {
     left = "ARP";

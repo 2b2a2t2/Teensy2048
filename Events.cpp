@@ -11,6 +11,7 @@
 #include "Key4.h"       // KEYMODE4 controls (focus/apply/undo/locks)
 #include "Gen.h"        // GNR8 generator params / produce / rotate
 #include "Skank.h"      // SKANK page: shape name for the header
+#include "Drum.h"       // DRUM page: genre/var/lane params + produce
 
 // skip a log line if the USB TX buffer is congested (never block the loop —
 // a blocked Serial.write stalls pollSeqClock and freezes the playhead)
@@ -259,6 +260,29 @@ void skankPageToggle() { skankPageOn = !skankPageOn; }
 void skankPageDismiss() { skankPageOn = false; }
 bool skankPageActive()  { return skankPageOn && skankTrackCtx(); }
 
+// --- SEQMODE M2 "DRUM" page (variants 1/2/4) --------------------------------
+// Clicking M2 on a DRUM edit track opens the pattern page (indigo pad): the
+// base row is eight knobs - ENC1 GENRE, ENC2 VAR, ENC3 FILL %, ENC4 MOT %,
+// ENC5..8 the KICK/SNARE/HAT/PERC line selectors - and the F row picks one
+// of four knob SETS that zoom the same four encoders: GROOVE (genre/var/
+// fill/mot), LINES, FILL% and MOT% per lane.  Clicking the armed set again
+// returns to the base row.  Every turn rebuilds the pattern live through
+// Drum.cpp; M3 re-rolls, M3 hold undoes.  Composite active check like the
+// other pages - a mid-turn channel / TRACK / mode switch drops it
+static bool drumPageOn = false;
+static uint8_t drumSetSel = 0xFF;      // 0..3 = armed F set, 0xFF = base row
+
+static bool drumTrackCtx() {
+  return modeBase == MODE_SEQ && modeVariant != 3 &&
+         seqTrack() == SEQ_TRACK_DRUM;
+}
+
+void drumPageToggle() { drumPageOn = !drumPageOn; drumSetSel = 0xFF; }
+void drumPageDismiss() { drumPageOn = false; drumSetSel = 0xFF; }
+bool drumPageActive()  { return drumPageOn && drumTrackCtx(); }
+uint8_t drumSetSelGet() { return drumPageActive() ? drumSetSel : 0xFF; }
+void drumSetSelSet(uint8_t s) { drumSetSel = (s <= 3) ? s : 0xFF; }
+
 // selected step for the mod dials (F2/F3/F4), or -1: nothing picked yet,
 // or the pattern shrank / the step lost its content under the selection
 int8_t genStepSelStep() {
@@ -389,6 +413,7 @@ static void seqEditChannelLand(uint8_t ch) {
   harmPageDismiss();      // nor a HARM track for the HARM page
   compPageDismiss();      // nor a POLY/STEP track for the COMP page
   skankPageDismiss();     // nor a POLY/SKANK track for the SKANK page
+  drumPageDismiss();      // nor a DRUM track for the drum pattern page
   stepChainDisarm();      // ...nor an armed chain span (old ch)
   refreshAllLeds();       // M1 + F-row follow the radio again
   refreshMainScreen();
@@ -825,6 +850,11 @@ void handleButtonEvents() {
             droppedPage = true;
             if (logRoom(48)) Serial.println("  skank page off (edit on)");
           }
+          if (drumPageActive()) {     // ...and the DRUM pattern page
+            drumPageDismiss();
+            droppedPage = true;
+            if (logRoom(48)) Serial.println("  drum page off (edit on)");
+          }
           stepEditSet(true, 0);
           headerShow("EDIT ON");
           if (logRoom(48)) Serial.println("  step edit on (steps)");
@@ -876,7 +906,7 @@ void handleButtonEvents() {
     // F3 while it is open (add9) and the GNR8 page while it is open (RANGE)
     // - the accent hold stays out of both their ways
     if (modeBase == MODE_SEQ && modeVariant != 3 && !strumFRowActive() &&
-        !genPageActive() &&
+        !genPageActive() && !drumPageActive() &&
         kl >= groupControls[5] && kl <= groupControls[8] &&
         (uint8_t)(kl - groupControls[5]) == 2) {
       if (ev == EV_PRESSED) {
@@ -950,6 +980,24 @@ void handleButtonEvents() {
       refreshAllLeds();
       refreshMainScreen();
     } else
+    // DRUM page (open via M2): F1..F4 pick the knob SET - GROOVE (genre /
+    // VAR / FILL / MOT on ENC1..4), LINES (the four lane selectors on
+    // ENC1..4), FILL% and MOT% (the per-lane values on ENC1..4).  Clicking
+    // the armed set again returns to the base eight-knob row
+    if (ev == EV_CLICKED && drumPageActive() &&
+        kl >= groupControls[5] && kl <= groupControls[8]) {
+      uint8_t idx = (uint8_t)(kl - groupControls[5]);      // 0..3
+      uint8_t want = (drumSetSelGet() == idx) ? 0xFF : idx;
+      drumSetSelSet(want);
+      static const char *const sn[4] = { "GROOVE", "LINES", "FILL%", "MOT%" };
+      headerShow(want == 0xFF ? "DRUMS" : sn[idx]);
+      if (logRoom(48)) {
+        Serial.print("  drum set ");
+        Serial.println(want == 0xFF ? "all" : sn[idx]);
+      }
+      refreshAllLeds();
+      refreshMainScreen();
+    } else
     // F1-F4 in SEQMODE (MONO): pick the edit target and switch the radio
     // on (TIE/GLIDE/ACCENT/PROB).  DRUM/POLY tracks only take ACCENT/PROB
     // from F3/F4 - clicking the selected one again closes the radio there;
@@ -990,6 +1038,11 @@ void handleButtonEvents() {
           skankPageDismiss();
           droppedArp = true;
           if (logRoom(48)) Serial.println("  skank page off (edit target)");
+        }
+        if (drumPageActive()) {     // ...and the DRUM pattern page
+          drumPageDismiss();
+          droppedArp = true;
+          if (logRoom(48)) Serial.println("  drum page off (edit target)");
         }
         stepEditSet(true, (uint8_t)(idx + 1));
         headerShow(tn[idx]);
@@ -1246,6 +1299,26 @@ void handleButtonEvents() {
         }
         refreshAllLeds();
         refreshMainScreen();
+      } else if (ev == EV_CLICKED && drumTrackCtx()) {
+        // SEQMODE 1/2/4 + DRUM: M2 clicks the DRUM pattern page on/off
+        // (indigo pad).  Opening it drops the M1 edit radio - the two keys
+        // are mutually exclusive (M1's toggle closes this page instead)
+        drumPageToggle();
+        if (drumPageActive()) {
+          if (stepEditIsOn()) {
+            stepEditSet(false, 0);
+            if (logRoom(48)) Serial.println("  edit off (drum open)");
+          }
+        } else {
+          stepChainDisarm();           // the F row leaves too
+        }
+        headerShow(drumPageActive() ? "DRUMS" : "DRUMS OFF");
+        if (logRoom(48)) {
+          Serial.print("  drum page ");
+          Serial.println(drumPageActive() ? "on" : "off");
+        }
+        refreshAllLeds();
+        refreshMainScreen();
       }
     }
 
@@ -1491,6 +1564,31 @@ void handleButtonEvents() {
           Serial.print("  ");
           Serial.println(hb);
         }
+      } else if (ev == EV_HOLD) {
+        int u = stepSnapshotRestore();
+        headerShow(u == 0 ? "undo" : "nothing to undo");
+        refreshAllLeds();
+        refreshMainScreen();
+        if (logRoom(48))
+          Serial.println(u == 0 ? "  undo" : "  nothing to undo");
+      }
+    }
+
+    // DRUM (SEQMODE 1/2/4 + DRUM track): M3 tap = re-roll the pattern from
+    // the page's genre / variation / lanes / FILL / MOT settings, M3 hold =
+    // undo - the shared one-level step snapshot, like GNR8/LEAD/HARM.  The
+    // knob turns already rebuild live; this is the "new roll" gesture (the
+    // FILL ghosts, the MOT accents and the bar-end fill are re-rolled)
+    if (modeBase == MODE_SEQ && modeVariant != 3 && drumTrackCtx() &&
+        k4ci == 4) {
+      if (ev == EV_CLICKED) {
+        int w = drumProduce();
+        char rb[24];
+        snprintf(rb, sizeof(rb), "drums %d steps", w > 0 ? w : 0);
+        headerShow(rb);
+        refreshAllLeds();       // the step LEDs follow the new pattern
+        refreshMainScreen();
+        if (logRoom(48)) { Serial.print("  "); Serial.println(rb); }
       } else if (ev == EV_HOLD) {
         int u = stepSnapshotRestore();
         headerShow(u == 0 ? "undo" : "nothing to undo");
@@ -2227,7 +2325,7 @@ void handleEncoderEvents() {
         }
         any = true;
       } else if (ei == 0 && ed != 0 && !harmPageActive() && !compPageActive() &&
-                 !skankPageActive()) {
+                 !skankPageActive() && !drumPageActive()) {
         seqOctaveShiftAdjust(ed);           // octave shift of the edit seq
         // (the open HARM page takes ENC1 for its GENRE, the COMP page for
         //  its HITS and the SKANK page for its TES - handled below)
@@ -2398,6 +2496,60 @@ void handleEncoderEvents() {
             headerShow(hh);
             if (logRoom(48)) { Serial.print("  "); Serial.println(hh); }
           }
+        } else if (ed != 0 && drumPageActive()) {
+          // DRUM page (M2 on a DRUM track): the armed F set picks which
+          // parameter each encoder drives - 0xFF = the base row (GENRE /
+          // VAR / FILL / MOT on ENC1..4, the four lane line selectors on
+          // ENC5..8), GROOVE = the first four, LINES / FILL% / MOT% = the
+          // same four encoders for the per-lane values.  Every turn
+          // rebuilds the pattern in place (Drum.cpp takes the undo snapshot
+          // once per burst), so a continuous turn undoes as one gesture
+          uint8_t set = drumSetSelGet();
+          int8_t prm = -1;
+          if (set == 0xFF) prm = (ei <= 3) ? (int8_t)ei : (int8_t)(10 + ei - 4);
+          else if (set == 0 && ei <= 3) prm = (int8_t)ei;
+          else if (set == 1 && ei <= 3) prm = (int8_t)(10 + ei);
+          else if (set == 2 && ei <= 3) prm = (int8_t)(20 + ei);
+          else if (set == 3 && ei <= 3) prm = (int8_t)(30 + ei);
+          static const char *const lane[4] = { "kick", "snare", "hat", "perc" };
+          char db[26];
+          db[0] = 0;
+          if (prm == 0) {
+            drumGenreAdjust(ed);
+            snprintf(db, sizeof(db), "drums %s", drumGenreName(drumGenre()));
+          } else if (prm == 1) {
+            drumVarAdjust(ed);
+            snprintf(db, sizeof(db), "var %s", drumVarName(drumVar()));
+          } else if (prm == 2) {
+            drumFillAdjust(ed);
+            snprintf(db, sizeof(db), "fill %u%%", (unsigned)drumFill());
+          } else if (prm == 3) {
+            drumMotAdjust(ed);
+            snprintf(db, sizeof(db), "mot %u%%", (unsigned)drumMot());
+          } else if (prm >= 10 && prm <= 13) {
+            uint8_t ln = (uint8_t)(prm - 10);
+            drumLineAdjust(ln, ed);
+            snprintf(db, sizeof(db), "%s %s", lane[ln],
+                     drumLineName(drumLine(ln)));
+          } else if (prm >= 20 && prm <= 23) {
+            uint8_t ln = (uint8_t)(prm - 20);
+            drumLaneFillAdjust(ln, ed);
+            snprintf(db, sizeof(db), "%s fill %u%%", lane[ln],
+                     (unsigned)drumLaneFill(ln));
+          } else if (prm >= 30 && prm <= 33) {
+            uint8_t ln = (uint8_t)(prm - 30);
+            drumLaneMotAdjust(ln, ed);
+            snprintf(db, sizeof(db), "%s mot %u%%", lane[ln],
+                     (unsigned)drumLaneMot(ln));
+          }
+          if (prm >= 0) {
+            drumProduce();            // live rebuild of the track's steps
+            headerShow(db);
+            refreshAllLeds();         // the step LEDs follow the pattern
+            refreshMainScreen();
+            if (logRoom(48)) { Serial.print("  "); Serial.println(db); }
+          }
+          any = true;
         } else if (ed != 0 && compPageActive() && ei == 0) {
           seqCompHitsAdjust(ed);            // ENC1 = HITS (stabs, 0..8,
                                             // 4 counts = 1)
@@ -2561,6 +2713,7 @@ void handleEncoderEvents() {
         harmPageDismiss();                 // ...the HARM page needs POLY+HARM
         compPageDismiss();                 // ...and COMP needs POLY+STEP
         skankPageDismiss();                // ...and SKANK needs POLY+SKANK
+        drumPageDismiss();                 // ...and the DRUM page needs a DRUM track
         stepChainDisarm();                 // ...and a chain arm outlives nothing
         refreshAllLeds();                  // the step-edit radio follows the track type
         if (logRoom(48)) {

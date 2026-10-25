@@ -84,6 +84,12 @@ uint8_t drumPartNote();
 const char* drumPartName();           // "C0" ... "D#1"
 int stepDrumToggle(uint8_t step);     // -2 = part removed, -1 = no room/invalid,
                                       // else = part note added
+// DRUM generator write path (Drum.cpp drives it): replace a step's parts
+// with these drum notes and stamp the per-voice accent mask (bit n = note
+// 36+n, the mask the playhead reads for accent velocity).  Clears the
+// step's attributes first - stepAttClear wipes the drum masks too
+int stepDrumWrite(uint8_t step, const uint8_t *notes, uint8_t n,
+                  uint16_t accentMask);   // notes written, -1 = bad step
 
 // ENCMODE + hold M1 = drum-voice mute: step pad N toggles the mute of
 // drum note 36+N (C1..D#2) across EVERY drum-track sequence (state

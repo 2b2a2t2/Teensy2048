@@ -150,6 +150,18 @@ void skankPageToggle();
 void skankPageDismiss();
 bool skankPageActive();
 
+// SEQMODE M2 (variants 1/2/4) on a DRUM edit track: a click toggles the DRUM
+// pattern page (indigo pad).  The row is eight knobs - GENRE, VAR, FILL %,
+// MOT %, then the KICK/SNARE/HAT/PERC line selectors - and the F row picks a
+// knob SET that zooms the same four encoders (GROOVE / LINES / FILL% / MOT%);
+// clicking the armed set again returns to the base row.  Every turn rebuilds
+// the pattern live (Drum.cpp), M3 re-rolls and M3 hold undoes
+void drumPageToggle();
+void drumPageDismiss();
+bool drumPageActive();
+uint8_t drumSetSelGet();          // 0..3 = armed F set, 0xFF = base row
+void drumSetSelSet(uint8_t s);
+
 // GNR8 TIE span fill (MONO+BASS, TIE target only): HOLD a step to arm the
 // span start, the next tap on another step stamps TIE across the span
 // (called on target / mode / channel / track switches so a stale arm can

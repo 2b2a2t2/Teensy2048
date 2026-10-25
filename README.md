@@ -186,6 +186,7 @@ Each mode/variant combination selects an `EncSet`, `CtrlSet`, `StepSet`, `KeySet
 - **ENC5**: Input channel (1–16) — notes arriving here feed pending chord; changing backfills from that track
 - **ENC6**: Track type — **DRUM** / **MONO** / **POLY**
   - Ch1 defaults DRUM, ch2–16 default POLY
+  - A **DRUM** track lights **M2 indigo** in SEQMODE 1/2/4 — click it for the [DRUM pattern page](#drum-pattern-page-seqmode-124-drum-track)
 - **ENC7**: MONO transform — **ROOT** (chord root), **BASS** (lowest note), **ARP** (ascending arpeggio), **STRUM** (the whole chord raked inside the step), **LEAD** (the generated melody line: its own steps gate the rhythm, the notes re-resolve onto the feeder chord via FOLLOW + MAP `ct`/`gd`)
   - Selecting **ARP** lights **M2 purple** in SEQMODE 1/2/4 — click it for the [ARP options](#arp-options-seqmode-124-mono-track-with-type--arp)
   - Selecting **BASS** lights **M2 purple** in SEQMODE 1/2/4 — click it for the [GNR8 generator](#gnr8-generative-page-seqmode-124-mono-track-with-type--bass)
@@ -355,6 +356,17 @@ While an **F radio is armed** the whole row belongs to its sub-page instead (**F
 - **Saved/restored with SEQMODE4+REC**: the eight page knobs of all 16 tracks persist in the extended (**567-byte**) SEQ EEPROM block — older (564/532/436/420/404/388/260-byte) saves load with their original six knobs and the randomizers at their defaults (MOT = 50, the rest 0). Stored patterns stay RAM only
 - **LEDs**: **M2 = orange** (dim while the page is closed, breathing while it is open; touch still lights it white); the held step breathes **violet** while its lock row is up (playhead colors still win)
 
+#### DRUM Pattern Page (SEQMODE 1/2/4, DRUM track)
+- **PRESET DRUM STYLES, independent of the progression**: a DRUM track's **M2** (indigo pad, breathing while the page is open) opens a pattern page that bakes one of **12 authored one-bar styles** into the track's steps — **HOUSE · TECHNO · BREAKS · HIPHOP · TRAP · JUNGLE · FUNK · ROCK · JAZZ · LATIN · AFRO · ELECTRO**. The drum style is its own list: it does **not** follow the KEYMODE4 progression genre, so a jazz progression can run over a trap beat
+- **Lane voicing** (this kit's map, see [DRUM Part Sequencing](#5-drum-part-sequencing)): **KICK** = C1 bass drum · **SNARE** = E1 snare / C#1 hand clap / C#2 claves · **HAT** = D1 closed hat / D#1 open hat / D2 maracas / D#2 cymbal · **PERC** = G1 hi conga / A#1 hi tom / A1 mid tom / F1 low conga / D#2 cymbal. The bar-end VAR fill adds E1 snares and an A#1→G#1 tom run
+- **Base row (page open, no F set armed)**: **ENC1 = GENRE**, **ENC2 = VAR** (`off` / `fill4` / `fill8` — a rolled snare+tom run over the last beat or the last half bar), **ENC3 = FILL %** (ghost-layer density — every line carries core hits plus rolled **ghost** hits, e.g. the hat lanes are an 8th-note backbone at FILL 0 that fill in to full 16ths at 100), **ENC4 = MOT %** (per-hit accent chance), **ENC5–8 = KICK / SNARE / HAT / PERC** line selectors (`A` · `B` · `OFF` — every lane carries two authored lines, so the four lanes recombine into one pattern)
+- **F row = four knob sets** (click to arm, click the armed one again for the base row): **F1 GROOVE** (genre / VAR / FILL / MOT on ENC1–4), **F2 LINES** (the four lane selectors on ENC1–4), **F3 FILL%** and **F4 MOT%** (the per-lane values on ENC1–4). The master FILL / MOT knobs write all four lanes at once, the per-lane knobs then trim them individually
+- **Live**: every knob turn rebuilds the pattern in place (4 counts = 1 detent, clamped, no wrap) — a genre or lane flip is audible on the next bar, no M3 press needed. **M3 tap = re-roll** (fresh FILL ghosts, MOT accents and bar-end fill from the same settings), **M3 hold = undo**. One undo snapshot per knob burst, so a continuous turn undoes as a single gesture
+- **MOT rides the accent mask**: the per-hit accent chance stamps the same **per-voice drum accent mask** the playhead reads (and the ACCENT step target edits — now **16-bit**, so hat/perc voices above note 43 accent too), so the track's accent velocity shapes the dynamics
+- Step content is written like the other generators: over the track's **own pattern length**, the authored 16-step bar repeating when the track is longer. Opening the page changes nothing — the first knob turn or M3 does
+- Saved/restored with SEQMODE4+REC: genre, VAR, the four lane lines and the per-lane FILL / MOT of all 16 tracks persist in the extended **(923-byte)** SEQ EEPROM block; a save from an older build (666 → 260 bytes) still loads and keeps the page defaults (HOUSE, line A, FILL 60, MOT 20). Patterns themselves stay RAM only
+- **LEDs**: **M2 = indigo** (dim while the page is closed, breathing while it is open; touch still lights it white); while the page is open the **F row lights indigo** — bright for the armed set, dim for the rest (base row = all four dim)
+
 #### Cross-Sequence Sync
 When a track's step chords are written, all MONO/POLY sequences **listening to that track's channel** re-derive their active steps from the source timeline (single-level, non-recursive). This enables "follow the leader" arrangements. A POLY track with **TYPE = HARM** never mirrors — it **re-bakes** instead (see the HARM Generative Page above).
 
@@ -374,10 +386,12 @@ When a track's step chords are written, all MONO/POLY sequences **listening to t
 - **SYNC=EXT**: Follows incoming USB-MIDI Clock/Start/Stop/Continue
 
 ### 5. DRUM Part Sequencing
-- 16 parts = MIDI notes 36 (C1) … 51 (D#2) — General MIDI drum map
+- 16 parts = MIDI notes 36 (C1) … 51 (D#2) — **this kit's map** (device note naming, MIDI 24 = C0):
+  **C1** bass drum · **C#1** hand clap · **D1** closed hat · **D#1** open hat · **E1** snare · **F1** low conga · **F#1** mid conga · **G1** hi conga · **G#1** low tom · **A1** mid tom · **A#1** hi tom · **B1** (unused) · **C2** cow bell · **C#2** claves · **D2** maracas · **D#2** cymbal
 - **Hold M1** (SEQMODE, not variant 3, DRUM track) → orange part-select overlay on steps
 - **Press step in overlay** → selects part
 - **Normal step view** → toggles selected part on/off at that step
+- **M2** on the same track opens the [DRUM pattern page](#drum-pattern-page-seqmode-124-drum-track) — 12 preset styles with live FILL/MOT and per-lane line selectors
 
 ### 6. MIDI I/O
 - **USB-MIDI Device**: Notes, CC, Clock, Start/Stop/Continue

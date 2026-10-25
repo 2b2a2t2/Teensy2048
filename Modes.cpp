@@ -388,6 +388,19 @@ static CRGB modeLedHook(uint8_t pad, bool isTouched, CRGB defaultColor) {
                        seqTrack() == SEQ_TRACK_POLY);
   bool seqDrumRadio = (modeBase == MODE_SEQ && modeVariant != 3 &&
                        seqTrack() == SEQ_TRACK_DRUM);
+  // SEQMODE + DRUM page open: the F row is the page's KNOB-SET radio
+  // (F1 GROOVE / F2 LINES / F3 FILL% / F4 MOT%), so it lights indigo -
+  // dim when idle, bright for the armed set (base row = all four dim)
+  if (modeBase == MODE_SEQ && modeVariant != 3 && drumPageActive() &&
+      led >= groupControls[5] && led <= groupControls[8]) {
+    if (isTouched) return CRGB::White;
+    uint8_t ssel = drumSetSelGet();
+    bool armed = (ssel != 0xFF &&
+                  ssel == (uint8_t)(led - groupControls[5]));
+    CRGB p = CRGB::Indigo;
+    p.nscale8(armed ? 176 : 48);
+    return p;
+  }
   if ((seqMonoRadio &&
        (led == groupControls[2] ||
         (led >= groupControls[5] && led <= groupControls[8]))) ||
@@ -447,7 +460,8 @@ static CRGB modeLedHook(uint8_t pad, bool isTouched, CRGB defaultColor) {
       else wantF = sel;
     }
     bool pageOwns = arpPageActive() || genPageActive() || leadPageActive() ||
-                    harmPageActive() || compPageActive() || skankPageActive();
+                    harmPageActive() || compPageActive() || skankPageActive() ||
+                    drumPageActive();
     if ((sel == 0 && !pageOwns && led == groupControls[2]) ||
         (wantF != 0 && led >= groupControls[5] &&
          wantF == (uint8_t)(led - groupControls[5] + 1))) {
@@ -586,9 +600,23 @@ static CRGB modeLedHook(uint8_t pad, bool isTouched, CRGB defaultColor) {
   if (modeBase == MODE_SEQ && modeVariant != 3 &&
       seqTrack() == SEQ_TRACK_POLY && seqPolyType() == SEQ_POLY_SKANK &&
       led == groupControls[3]) {
-    if (isTouched) return CRGB::White;
-    CRGB t = CRGB::Orange;
+    if (isTouched) return CRGB::White;      CRGB t = CRGB::Orange;
     if (skankPageActive()) {
+      uint8_t s = sin8((uint32_t)millis() * 256UL / PULSE_PERIOD_MS);
+      t.nscale8((uint8_t)(48 + scale8(s, 144)));  // 48..192 breathing
+    } else {
+      t.nscale8(48);
+    }
+    return t;
+  }
+  // SEQMODE M2 on a DRUM track: indigo = the pattern page lives behind that
+  // pad; it BREATHES while the page is open (same rhythm as the HARM/COMP/
+  // SKANK pulses), so the drum track's page is never a blind key
+  if (modeBase == MODE_SEQ && modeVariant != 3 &&
+      seqTrack() == SEQ_TRACK_DRUM && led == groupControls[3]) {
+    if (isTouched) return CRGB::White;
+    CRGB t = CRGB::Indigo;
+    if (drumPageActive()) {
       uint8_t s = sin8((uint32_t)millis() * 256UL / PULSE_PERIOD_MS);
       t.nscale8((uint8_t)(48 + scale8(s, 144)));  // 48..192 breathing
     } else {
@@ -850,6 +878,19 @@ void pollModeLeds() {
   }
   if (skankActive && (long)(millis() - skankFlip) >= 0) {
     skankFlip = millis() + 30;
+    refreshAllLeds();
+  }
+
+  // M2 DRUM-page pulse: breathing indigo while the pattern page is open
+  static bool drumActive = false;
+  static unsigned long drumFlip = 0;
+  bool drumNow = drumPageActive();
+  if (drumNow != drumActive) {
+    drumActive = drumNow;
+    refreshAllLeds();
+  }
+  if (drumActive && (long)(millis() - drumFlip) >= 0) {
+    drumFlip = millis() + 30;
     refreshAllLeds();
   }
 
