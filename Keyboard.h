@@ -223,8 +223,11 @@ void seqTransAdjust(int16_t counts);  // PREV-shift row ENC2: 1 count = 1 st,
 int  seqTrans();                      // edit track's semitone TRANS
 int8_t seqTransOf(uint8_t i);         // raw per-track (playback/EEPROM), 0 on DRUM
 void seqTransSet(uint8_t i, int8_t v); // EEPROM load (clamped -12..+12)
-void seqKlockToggle();                  // PREV-shift row ENC3: per-track
-                                        // scale-lock for TRANS (DRUM refuses)
+bool seqKlockSetDir(int16_t dir);        // PREV-shift row ENC3: per-track
+                                        // scale-lock for TRANS - two-state,
+                                        // NO wrap (CW = ON, CCW = OFF, like
+                                        // ENCOD/KBOARD; DRUM refuses); true
+                                        // when the flag changed
 bool seqKlock();                        // edit track's Klock flag
 bool seqKlockOf(uint8_t i);             // raw per-track (playback/EEPROM),
                                         // false on DRUM

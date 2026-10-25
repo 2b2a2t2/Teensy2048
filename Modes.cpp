@@ -1004,6 +1004,7 @@ void modeOnEvent(uint8_t pad, uint8_t ev) {
   encMuteHold(false);       // the M2 mute overlay never outlives the ENC mode
   drumMuteHold(false);      // nor the M1 drum-voice mute overlay
   arpPageDismiss();         // nor the M2 arp encoder page
+  f3AccentHold(false);      // nor the F3 accent-velocity rebind of ENC6
   strumFRowDismiss();       // nor the M2 strum ADDS row
   genPageDismiss();         // nor the M2 GNR8 encoder page
   stepChainDisarm();        // ...nor an armed attribute chain span

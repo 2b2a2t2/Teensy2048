@@ -3467,11 +3467,17 @@ void seqTransSet(uint8_t i, int8_t v) {
 
 // PREV-held shift row ENC3: per-track scale-lock (Klock) for the TRANS
 // offset.  ON = the transposed playback note is snapped back to the nearest
-// in-scale pitch, so the -12..+12 semitone knob stays diatonic.  DRUM tracks
-// never lock.  Non-destructive; persisted in the SEQ EEPROM block.
-void seqKlockToggle() {
-  if (seqTrackOf(seqEditCh) == SEQ_TRACK_DRUM) return;
-  seqKlockM[seqEditCh] = !seqKlockM[seqEditCh];
+// in-scale pitch, so the -12..+12 semitone knob stays diatonic.  Two-state
+// and NO wrap, like the KEYMODE3 ENCOD/KBOARD switches: CW = ON, CCW = OFF,
+// so a continuous turn saturates at the end instead of flipping back and
+// forth on every count.  DRUM tracks never lock.  Non-destructive;
+// persisted in the SEQ EEPROM block.  Returns true when the flag changed.
+bool seqKlockSetDir(int16_t dir) {
+  if (seqTrackOf(seqEditCh) == SEQ_TRACK_DRUM) return false;
+  uint8_t want = (dir > 0) ? 1 : 0;
+  if (seqKlockM[seqEditCh] == want) return false;
+  seqKlockM[seqEditCh] = want;
+  return true;
 }
 bool seqKlock() { return seqKlockM[seqEditCh]; }
 bool seqKlockOf(uint8_t i) {

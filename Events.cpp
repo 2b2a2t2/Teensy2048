@@ -367,9 +367,13 @@ static bool f3AccentSel = false;
 void f3AccentHold(bool on) { f3AccentSel = on; }
 
 // composite: the flag can outlive a mid-hold mode switch - the rebind
-// only applies while the panel is still in SEQMODE variants 1/2/4
+// only applies while the panel is still in SEQMODE variants 1/2/4 (=
+// everywhere the hold is offered).  SEQMODE3 owns ENC6 = TRACK, so the
+// rebind must NOT reach it - hence "!= 3", not "== 3": with "== 3" the
+// hold did nothing in 1/2/4 (no ACC label, no value, dead knob) and a
+// stale flag then painted ACC over SEQMODE3's TRACK row.
 bool f3AccentActive() {
-  return f3AccentSel && modeBase == MODE_SEQ && modeVariant == 3;
+  return f3AccentSel && modeBase == MODE_SEQ && modeVariant != 3;
 }
 
 // a SEQ channel switch always lands back in step edit on the new channel:
@@ -883,7 +887,7 @@ void handleButtonEvents() {
           Serial.print("  accent vel ");
           Serial.println(seqAccentVelocity());
         }
-      } else if (ev == EV_RELEASED && f3AccentActive()) {
+      } else if (ev == EV_RELEASED && f3AccentSel) {
         f3AccentHold(false);
         refreshMainScreen();
         if (logRoom(48)) {
@@ -2072,12 +2076,16 @@ void handleEncoderEvents() {
           }
         } else if (ei == 2) {
           // ENC3 = per-track scale-lock (Klock): snap the TRANS result back
-          // into the current scale so the semitone knob stays diatonic
-          seqKlockToggle();
-          headerShow(seqKlock() ? "klock ON" : "klock OFF");
-          if (logRoom(48)) {
-            Serial.print("  klock ");
-            Serial.println(seqKlock() ? "ON" : "OFF");
+          // into the current scale so the semitone knob stays diatonic.
+          // Two-state, NO wrap (like ENCOD/KBOARD): CW = ON, CCW = OFF - a
+          // continuous turn saturates at the end instead of toggling on
+          // every count; only a change repaints/echoes
+          if (seqKlockSetDir(ed)) {
+            headerShow(seqKlock() ? "klock ON" : "klock OFF");
+            if (logRoom(48)) {
+              Serial.print("  klock ");
+              Serial.println(seqKlock() ? "ON" : "OFF");
+            }
           }
         }
         any = true;
