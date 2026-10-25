@@ -3648,15 +3648,22 @@ void seqEraseAll() {
 // genGlide[16] | genTie[16] | genTones[16] | genLow[16] | genRange[16] |
 // genAlgo[16] | leadContour[16] | compHits[16] | trans[16] | skankPrmM[128] |
 // encLink | keyLink | keyModeMem[16] | encBankMem[16] | encM3Mem[16] |
-// leadCtBlend[16] | leadGdDepth[16] | checksum = 649 bytes; blank or corrupt
-// keeps the defaults.  A block written by an older build (616/567/564/532/
-// 436/420/404/388/260 bytes) still loads: the core fields are at the same
-// offsets and the newer params keep their defaults - saved config survives
-// the upgrade
+// leadCtBlend[16] | leadGdDepth[16] | klock[16] | speedLadderVersion |
+// checksum = 666 bytes; blank or corrupt keeps the defaults.  A block
+// written by an older build (665/649/616/567/564/532/436/420/404/388/260
+// bytes) still loads: the core fields are at the same offsets and the newer
+// params keep their defaults - saved config survives the upgrade
 static const uint8_t  SEQ_EE_MAGIC = 0x53;
 static const uint16_t SEQ_EE_ADDR = 160;
-static const uint16_t SEQ_EE_LEN = 665;       // + per-track Klock
+static const uint16_t SEQ_EE_LEN = 666;       // + speed-ladder version marker
+static const uint16_t SEQ_EE_LEN_SPD = 665;   // previous: 7-rung speed ladder
+                                              // (Klock ends the block)
 static const uint16_t SEQ_EE_LEN_KLOCK = 649; // previous: LEAD CT/GD knobs
+// speed ladder revision: 2 = 9 rungs, 1/64 .. 4 (index 6 = normal).  The
+// block LENGTH tells the loader whether b[115..130] still hold pre-extension
+// (7-rung) values; this byte is validated with it so an old block cannot
+// pose as the new layout on a lucky checksum
+static const uint8_t  SEQ_SPD_MARK = 2;
 static const uint16_t SEQ_EE_LEN_LEAD2 = 616; // previous: mode/page mem
 static const uint16_t SEQ_EE_LEN_MODE = 567;  // previous: link flags only
 static const uint16_t SEQ_EE_LEN_SKANK2 = 564; // previous: SKANK knobs[128]
@@ -3722,6 +3729,7 @@ void seqCfgSave() {
   }
   for (uint8_t i = 0; i < 16; i++)   // per-track Klock (scale-lock for TRANS)
     b[648 + i] = seqKlockM[i] ? 1 : 0;
+  b[664] = SEQ_SPD_MARK;             // speed ladder revision
   uint8_t sum = 0;
   for (uint16_t i = 0; i < SEQ_EE_LEN - 1; i++) sum += b[i];
   b[SEQ_EE_LEN - 1] = sum;
@@ -3732,16 +3740,23 @@ void seqCfgLoad() {
   uint8_t b[SEQ_EE_LEN];
   EEPROM.get(SEQ_EE_ADDR, b);
   // pick the NEWEST block length whose magic + checksum validate, so an
-  // older save (616 = mode/page mem only, 567 = link flags, 564 = first
-  // link-less SKANK block, 532 = first SKANK block, 436 = TRANS, 404 =
-  // LEAD, 388 = GNR8, 260 = legacy) still restores its fields and the
-  // newer ones keep their defaults
+  // older save (665 = 7-rung speed ladder, 616 = mode/page mem only, 567 =
+  // link flags, 564 = first link-less SKANK block, 532 = first SKANK block,
+  // 436 = TRANS, 404 = LEAD, 388 = GNR8, 260 = legacy) still restores its
+  // fields and the newer ones keep their defaults
   uint16_t len = 0;
   for (uint16_t L = SEQ_EE_LEN;;) {
     uint8_t sum = 0;
     for (uint16_t i = 0; i < L - 1; i++) sum += b[i];
-    if (b[0] == SEQ_EE_MAGIC && sum == b[L - 1]) { len = L; break; }
-    if (L == SEQ_EE_LEN) L = SEQ_EE_LEN_KLOCK;
+    // the newest length also needs its ladder marker, so an old block whose
+    // trailing checksum happens to match the sum cannot pose as a new one
+    if (b[0] == SEQ_EE_MAGIC && sum == b[L - 1] &&
+        (L < SEQ_EE_LEN || b[SEQ_EE_LEN - 2] == SEQ_SPD_MARK)) {
+      len = L;
+      break;
+    }
+    if (L == SEQ_EE_LEN) L = SEQ_EE_LEN_SPD;
+    else if (L == SEQ_EE_LEN_SPD) L = SEQ_EE_LEN_KLOCK;
     else if (L == SEQ_EE_LEN_KLOCK) L = SEQ_EE_LEN_LEAD2;
     else if (L == SEQ_EE_LEN_LEAD2) L = SEQ_EE_LEN_MODE;
     else if (L == SEQ_EE_LEN_MODE) L = SEQ_EE_LEN_SKANK2;
@@ -3763,7 +3778,8 @@ void seqCfgLoad() {
   bool extK = (len >= SEQ_EE_LEN_MODE);  // KEYMODE3 channel-link flags (567)
   bool extM = (len >= SEQ_EE_LEN_LEAD2); // per-channel mode/page memory (616)
   bool extD = (len >= SEQ_EE_LEN_KLOCK); // LEAD CT/GD knobs (649)
-  bool extKL = (len >= SEQ_EE_LEN);      // per-track Klock (665)
+  bool extKL = (len >= SEQ_EE_LEN_SPD);  // per-track Klock (665)
+  bool extSp = (len >= SEQ_EE_LEN);      // 9-rung speed ladder (666)
   for (uint8_t i = 0; i < SEQ_CH_COUNT; i++) {
     int v = (int8_t)b[3 + i];            // octave: keep the cast signed
     if (v < -60) v = -60;
@@ -3784,7 +3800,12 @@ void seqCfgLoad() {
     seqMute[i] = (b[67 + i] != 0);
     seqSetTrackType(i, b[83 + i]);
     seqSetMonoType(i, b[99 + i]);
-    seqSpeedSetOf(i, b[115 + i]);         // clamped inside (bad -> 4)
+    // pattern speed: the ladder grew from 7 to 9 rungs (1/64, 1/32 added
+    // at the slow end), so an older block's value sits two rungs low - lift
+    // it (old 4 = normal -> new 6) instead of replaying it at its rate
+    v = b[115 + i];
+    if (!extSp) v = (v > 6) ? 6 : v + 2;
+    seqSpeedSetOf(i, (uint8_t)v);         // clamped inside (bad -> normal)
     seqSetAccentVelocity(i, b[131 + i]);  // clamped inside (0 -> 1)
     seqArpSpanSet(i, b[147 + i]);         // clamped inside (bad -> 1)
     seqArpModeSet(i, b[163 + i]);         // clamped inside (bad -> UP)

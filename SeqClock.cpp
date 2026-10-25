@@ -496,14 +496,17 @@ void seqPatLenSetOf(uint8_t ch, uint8_t len) {
   patLen[ch] = len;
 }
 
-// SEQMODE3 ENC4: per-track pattern speed, clamped 0..6 (no wrap).  The
-// ladder doubles each way around the default 4 = normal (one step per
-// 16th note): 1/16, 1/8, 1/4, 1/2, 1, 2, 4 - num/den describe how many
-// sub-steps a track takes inside one master tick
-static const uint8_t spdNum[7] = { 1, 1, 1, 1, 1, 2, 4 };
-static const uint8_t spdDen[7] = { 16, 8, 4, 2, 1, 1, 1 };
-static uint8_t patSpeed[16] = { 4, 4, 4, 4, 4, 4, 4, 4,
-                                4, 4, 4, 4, 4, 4, 4, 4 };
+// SEQMODE3 ENC4: per-track pattern speed, clamped 0..8 (no wrap).  The
+// ladder doubles each way around the default 6 = normal (one step per
+// 16th note): 1/64, 1/32, 1/16, 1/8, 1/4, 1/2, 1, 2, 4 - num/den describe
+// how many sub-steps a track takes inside one master tick.  The two
+// slowest rungs (1/64, 1/32) were added under the original 7-rung ladder,
+// which shifted every older rung up by two - the EEPROM loader translates
+// saved values from before the extension (see seqCfgLoad)
+static const uint8_t spdNum[9] = { 1, 1, 1, 1, 1, 1, 1, 2, 4 };
+static const uint8_t spdDen[9] = { 64, 32, 16, 8, 4, 2, 1, 1, 1 };
+static uint8_t patSpeed[16] = { 6, 6, 6, 6, 6, 6, 6, 6,
+                                6, 6, 6, 6, 6, 6, 6, 6 };
 static int16_t spdRes = 0;               // leftover encoder counts (ENC4)
 
 void seqSpeedAdjust(int16_t counts) {
@@ -514,21 +517,21 @@ void seqSpeedAdjust(int16_t counts) {
   if (!step) return;
   int v = (int)patSpeed[seqEditChannel() - 1] + step;
   if (v < 0) v = 0;
-  if (v > 6) v = 6;
+  if (v > 8) v = 8;
   patSpeed[seqEditChannel() - 1] = (uint8_t)v;
 }
 
-uint8_t seqSpeedIdxOf(uint8_t ch) { return (ch < 16) ? patSpeed[ch] : 4; }
+uint8_t seqSpeedIdxOf(uint8_t ch) { return (ch < 16) ? patSpeed[ch] : 6; }
 
 void seqSpeedSetOf(uint8_t ch, uint8_t idx) {
   if (ch >= 16) return;
-  patSpeed[ch] = (idx > 6) ? 4 : idx;
+  patSpeed[ch] = (idx > 8) ? 6 : idx;
 }
 
 const char *seqSpeedName(uint8_t idx) {
-  static const char *const nm[7] = { "1/16", "1/8", "1/4", "1/2",
-                                     "1", "2", "4" };
-  return nm[(idx > 6) ? 4 : idx];
+  static const char *const nm[9] = { "1/64", "1/32", "1/16", "1/8",
+                                     "1/4", "1/2", "1", "2", "4" };
+  return nm[(idx > 8) ? 6 : idx];
 }
 
 uint8_t seqSpeedNumOf(uint8_t ch) { return spdNum[seqSpeedIdxOf(ch)]; }

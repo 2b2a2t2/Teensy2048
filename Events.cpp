@@ -2038,7 +2038,7 @@ void handleEncoderEvents() {
     }
 
     // SEQMODE: ENC1 = octave shift of the selected sequence (all variants)
-    // SEQMODE3: ENC4 = pattern SPEED of the edit sequence (7 rungs, 4 =
+    // SEQMODE3: ENC4 = pattern SPEED of the edit sequence (9 rungs, 6 =
     //           normal; sync moved to ENCMODE3+PLAY)
     //           ENC5 = input channel of the edit sequence, 1..16
     //           ENC6 = TRACK DRUM/MONO/POLY (three-state, no wrap)
@@ -2530,7 +2530,7 @@ void handleEncoderEvents() {
         }
         any = true;
       } else if (ei == 3 && ed != 0) {
-        seqSpeedAdjust(ed);               // SPEED: 1/16 .. 1 .. 4 (no wrap)
+        seqSpeedAdjust(ed);               // SPEED: 1/64 .. 1 .. 4 (no wrap)
         if (logRoom(48)) {
           Serial.print("  speed ");
           Serial.println(seqSpeedName(seqSpeedIdxOf(

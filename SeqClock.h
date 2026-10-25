@@ -114,12 +114,12 @@ int  seqPatLen(void);                    // length of the edit sequence
 uint8_t seqPatLenOf(uint8_t ch);         // length of sequence ch 0..15
 void    seqPatLenSetOf(uint8_t ch, uint8_t len);  // restore (seqCfgLoad)
 // SEQMODE3 ENC4: per-track pattern SPEED - that sequence's step rate
-// relative to the master clock.  Ladder of 7, index 4 = normal (one step
-// per 16th note, the boot default): 1/16, 1/8, 1/4, 1/2, 1, 2, 4
+// relative to the master clock.  Ladder of 9, index 6 = normal (one step
+// per 16th note, the boot default): 1/64, 1/32, 1/16, 1/8, 1/4, 1/2, 1, 2, 4
 void        seqSpeedAdjust(int16_t counts);  // edit channel; 4 counts = 1 step
-uint8_t     seqSpeedIdxOf(uint8_t ch);       // index 0..6 of sequence ch
+uint8_t     seqSpeedIdxOf(uint8_t ch);       // index 0..8 of sequence ch
 void        seqSpeedSetOf(uint8_t ch, uint8_t idx);   // restore (seqCfgLoad)
-const char *seqSpeedName(uint8_t idx);       // "1/16" ... "4" for the OLED
+const char *seqSpeedName(uint8_t idx);       // "1/64" ... "4" for the OLED
 uint8_t     seqSpeedNumOf(uint8_t ch);       // sub-steps per master tick
 uint8_t     seqSpeedDenOf(uint8_t ch);       // master ticks per sub-step
 void seqPlayRange(uint8_t ch, uint8_t *lo, uint8_t *hi);  // playback window
