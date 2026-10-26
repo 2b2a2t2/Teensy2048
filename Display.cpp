@@ -150,9 +150,66 @@ static const char* ctrlLegend(uint8_t i) {
   return "PREV";
 }
 
+// ENCMODE main screen: one CC knob.  A 270-degree ring, open at 6 o'clock
+// (0 sits at the lower-left end, 127 at the lower-right one), a pointer at
+// the current value and the number itself in the middle: the ring is read
+// at a glance, the digits stay the truth.  Radius 8; the pointer reaches
+// one pixel OUTSIDE the rim, so the whole dial is 19 px tall
+static void drawCcDial(uint8_t cx, uint8_t cy, uint8_t val) {
+  // the ring: u8g2's Andres arc.  Its angles are 0..255 with 0 at 3 o'clock
+  // (64 = 12, 128 = 9, 192 = 6), so the bottom quarter is 160..224 and
+  // 224..160 draws the complement - the 270 degrees wanted here.  A
+  // canonical 1 px circle paints 37 px of ink where the 5-degree polyline
+  // it replaced painted 49, and that extra weight showed on the panel
+  u8g2.drawArc(cx, cy, 8, 224, 160);
+  // the pointer: 4 px, two inside the rim and one OUTSIDE it, so where the
+  // knob sits reads even while the value sits in the middle of the ring
+  const float d2r = 0.0174533f;
+  float av = (225.0f + 270.0f * (float)val / 127.0f) * d2r;
+  int xo = (int)cx + (int)lroundf(sinf(av) * 9.0f);
+  int yo = (int)cy - (int)lroundf(cosf(av) * 9.0f);
+  int xi = (int)cx + (int)lroundf(sinf(av) * 6.0f);
+  int yi = (int)cy - (int)lroundf(cosf(av) * 6.0f);
+  u8g2.drawLine(xi, yi, xo, yo);
+  // the value, centred on the ring's middle (the font's box, descent
+  // included, is what gets split in half)
+  char v[4];
+  snprintf(v, sizeof(v), "%u", (unsigned)val);
+  int w = (int)u8g2.getStrWidth(v);
+  int half = (int)(u8g2.getAscent() - u8g2.getDescent()) / 2;
+  u8g2.drawStr((int)cx - w / 2, (int)cy + half, v);
+}
+
 void refreshMainScreen() {
   clearMainScreen();
   u8g2.setFont(u8g2_font_4x6_tr);
+
+  // ENCMODE (every variant but the channel picker, which keeps its own
+  // screen): the label/value text rows and the control legend are replaced
+  // by a 4x4 grid - dial, CC number, dial, CC number.  The value lives
+  // INSIDE its dial, so the whole 48 px band carries eight CC knobs
+  if (modeBase == MODE_ENC && modeVariant != 3) {
+    for (uint8_t c = 0; c < 4; c++) {
+      uint8_t cx = (uint8_t)(c * 32 + 16);   // centre of the 32 px column
+      drawCcDial(cx, 25, encCcValue(c));
+      drawCcDial(cx, 49, encCcValue((uint8_t)(4 + c)));
+    }
+    // the CC numbers last, in the 3x3 caption font: the pointer needs the
+    // row above each ring, and a caption this small keeps the eye on the
+    // value inside the dial
+    u8g2.setFont(u8g2_font_3x3basic_tr);
+    char ccLab[8];
+    for (uint8_t c = 0; c < 4; c++) {
+      uint8_t cx = (uint8_t)(c * 32 + 16);
+      snprintf(ccLab, sizeof(ccLab), "CC%u", encCcNum(c));
+      u8g2.drawStr((int)cx - (int)u8g2.getStrWidth(ccLab) / 2, 39, ccLab);
+      snprintf(ccLab, sizeof(ccLab), "CC%u", encCcNum((uint8_t)(4 + c)));
+      u8g2.drawStr((int)cx - (int)u8g2.getStrWidth(ccLab) / 2, 63, ccLab);
+    }
+    u8g2.setFont(u8g2_font_4x6_tr);          // hand the screen back as found
+    displayDirty = true;
+    return;                                  // no control legend down here
+  }
 
   ModeBinding b = currentBinding();
   char val[12];

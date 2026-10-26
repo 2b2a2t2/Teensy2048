@@ -394,6 +394,7 @@ When a track's step chords are written, all MONO/POLY sequences **listening to t
 - **M3 (PAGE)** = page-group toggle: dim medium sea green = group 1 (CC 1–16), purple = group 2 (CC 21–36); off on first entry (also leaves the inherited KEYMODE2 chord-quality job)
 - Values persist across mode changes (0–127, clamped, no wrap); DAW feedback on CC 1–36 syncs the matching knobs
 - Knob positions are stored **per CC number × channel** (36×16): switching the encoder channel loads that channel's own values instead of inheriting the previous channel's (no jump)
+- **Screen (ENCMODE 1/2/4)**: the eight knobs are drawn as **270° dials** in a 4×4 grid — **dial, CC number, dial, CC number** — so the value sits *inside* its ring and the CC number underneath it. A dial is a **radius-8 ring drawn as a single-pixel arc** (`u8g2.drawArc`, 90° gap at 6 o'clock: 0 at the lower-left end, 127 at the lower-right) with a **4-px pointer that reaches one pixel outside the rim** at the current value, and the 0–127 value in the middle. The CC number under each dial is set in the **3×3 caption font** — small enough to stay secondary to the value, and short enough (3 px) to leave the row above each ring free for the pointer. The second row's CC numbers follow the **F bank + M3 page group** (`CC1`–`CC16` / `CC21`–`CC36`), which is what the old bottom legend used to hint at: **the control-button legend is gone in this mode** so the second dial row gets the room. **ENCMODE3 keeps the plain label/value screen** (its pads are the channel overlay, not the knobs)
 - **ENCMODE4 + REC** saves all 36×16 knob values + channel to EEPROM (an older save is ignored, defaults stay)
 
 ### 4. Transport
@@ -421,8 +422,8 @@ When a track's step chords are written, all MONO/POLY sequences **listening to t
 
 **Header** (y 0–15): the mode in whole words on the left (`ENCODER 1`, `SEQUENCER 3`, `KEYBOARD 2`; variant 3 reads `CHANNEL SELECT` while its pad overlay is up) and one **temporary message** on the right (2.5 s). Every message names the parameter that just moved and its value in full words — `Pattern Length 16`, `Accent Velocity 90`, `Kit Map GM` — never the 4-character main-screen code (`LEN`, `ACC`, `PROB`). A **scale change** announces only its mood (`Scale Happy`, `Scale Sad`), because the knob's own value line already shows which scale is selected. An open page takes the left slot (`ARP ORDER`, `GENERATOR`, `DRUM PATTERN`, `STRUM ADDS`, `PROBABILITY`). The band is 128 px (21 characters); a message too long for it is pinned to the left edge so its head stays readable instead of running off-screen. KEYMODE4 also keeps a **persistent left header** (the progression `V vi > I IV`) that transients overlay and then uncover again  
 **Main screen** (y 16–63):
-- Encoder grid 4×2: labels (top) + values (bottom)
-- Control button labels: row1 PREV NEXT M1 M2 M3, row2 M1 M2 M3 M4 (KEYMODE4 labels NEXT as **EMB** — the sticky EMB menu; ENCMODE labels row2 **F1–F4** — the CC-bank radio, and ENC5–8 values show the live CC numbers per bank)
+- Encoder grid 4×2: labels (top) + values (bottom) — **ENCMODE 1/2/4 replace both text rows** with the dial grid above (value inside the ring, CC number under it)
+- Control button labels: row1 PREV NEXT M1 M2 M3, row2 M1 M2 M3 M4 (KEYMODE4 labels NEXT as **EMB** — the sticky EMB menu; ENCMODE3 labels row2 **F1–F4** — the CC-bank radio, and ENC5–8 values show the live CC numbers per bank). **ENCMODE 1/2/4 draw no legend at all** — the dials take the whole band
 
 Paged I2C write (1 page per `displayUpdate()` call, ~4 ms @ 400 kHz) to avoid blocking MIDI pump.
 
