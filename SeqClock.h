@@ -104,6 +104,54 @@ void        seqArpSkipToggle(int16_t counts);  // CW = ON, CCW = OFF
 bool        seqArpSkipOf(uint8_t idx);
 void        seqArpSkipSet(uint8_t idx, bool on);
 
+// --- ARP F sub-pages -------------------------------------------------------
+// F1..F4 on the ARP page each own the whole encoder row.  Every knob they
+// serve reads the same per-track block through these ids, so the dispatch,
+// the label row and the value column can never drift apart.  ORDER 0 means
+// "follow MODE" and INSERT 0 "follow INST", so the plain page keeps
+// working exactly as before while the sub-pages add the new shapes.
+enum SeqArpParam : uint8_t {
+  ARP_P_ORDER = 0,   // 0 = MODE, else the extended walk order
+  ARP_P_STEP,        // skip pattern 1/1 .. 4/2 over that walk
+  ARP_P_PIVOT,       // converge/diverge/weight target
+  ARP_P_WEIGHT,      // 0..100% pull toward PIVOT
+  ARP_P_MUTATE,      // 0..100% chance a step becomes another chord tone
+  ARP_P_INSERT,      // 0 = INST, else OFF/HI/LOW/3F1B/4F2B/RAND
+  ARP_P_CYCLE,       // 1/2/4/8/16 bars between RANDOM2 reshuffles
+  ARP_P_MORPH,       // 0..100% of steps played in the plain walk
+  ARP_P_ENGINE,      // OFF / MARKOV / WALK
+  ARP_P_RATE,        // how often the engine re-rolls (0..100)
+  ARP_P_DEPTH,       // how far the engine may wander (0..100)
+  ARP_P_MEM,         // repeat / history bias (0..100)
+  ARP_P_SEED,        // 0..63, re-roll by turning
+  ARP_P_BIAS,        // NONE/HIGH/LOW/ROOT/PIVOT/SPARSE/DENSE
+  ARP_P_TARGET,      // ORDER / PITCH / BOTH
+  ARP_P_CLOCK,       // STEP / PASS / BAR / PHRASE
+  ARP_P_OPT1, ARP_P_OPT2, ARP_P_OPT3, ARP_P_OPT4,   // engine-specific
+  ARP_P_COUNT
+};
+enum SeqArpEngine : uint8_t {
+  SEQ_ARP_ENG_OFF = 0, SEQ_ARP_ENG_MARKOV, SEQ_ARP_ENG_WALK
+};
+enum SeqArpTarget : uint8_t {
+  SEQ_ARP_TGT_ORDER = 0, SEQ_ARP_TGT_PITCH, SEQ_ARP_TGT_BOTH
+};
+enum SeqArpClock : uint8_t {
+  SEQ_ARP_CLK_STEP = 0, SEQ_ARP_CLK_PASS, SEQ_ARP_CLK_BAR, SEQ_ARP_CLK_PHRASE
+};
+enum SeqArpBias : uint8_t {
+  SEQ_ARP_BIAS_NONE = 0, SEQ_ARP_BIAS_HIGH, SEQ_ARP_BIAS_LOW,
+  SEQ_ARP_BIAS_ROOT, SEQ_ARP_BIAS_PIVOT, SEQ_ARP_BIAS_SPARSE,
+  SEQ_ARP_BIAS_DENSE
+};
+
+void        seqArpPAdjust(uint8_t p, int16_t counts);  // edit channel, 4 = 1
+uint8_t     seqArpPOf(uint8_t idx, uint8_t p);
+void        seqArpPSet(uint8_t idx, uint8_t p, uint8_t v);
+uint8_t     seqArpPMax(uint8_t p);
+const char *seqArpPName(uint8_t p);            // "ORDER", "PIVOT", ... (OLED)
+const char *seqArpPValue(uint8_t p, uint8_t v); // short value text (OLED)
+
 // SEQMODE3 pattern setup: ENC2 = pattern length of the edit sequence
 // (0..64 steps, boot default 16, independent per track); the C D E F
 // keyboard bars pick the 16-step edit window (shown/edited by the step

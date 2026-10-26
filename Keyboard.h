@@ -268,6 +268,13 @@ const uint8_t* stepChordAt(uint8_t step, uint8_t *len);    // stored chord (edit
 // reader so the harmonizer can read another track's stored notes
 uint8_t        seqFeederChannel();
 const uint8_t* stepChordAtCh(uint8_t ch, uint8_t step, uint8_t *len);
+// FOLLOW FREEZE: latch the chord/note the feeder is sounding at this instant
+// (SeqClock calls these from seqFollowModeSet - entering FREEZE captures, any
+// other mode drops the latch so the next entry recaptures fresh).  The
+// capture returns false when the feeder has nothing right now, and the
+// playback path then captures on the follower's first frozen step
+bool           seqFollowFreezeCapture(uint8_t ch);
+void           seqFollowFreezeClear(uint8_t ch);
 void           stepSnapshotTake();     // snapshot the edit sequence for undo
 int            stepSnapshotRestore();  // 0 = restored (switches back the ch), -1 = none
 // true when the step already holds exactly these notes as stepChordWrite

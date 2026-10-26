@@ -3,6 +3,7 @@
 #include "Buttons.h"
 #include "Keyboard.h"
 #include "Events.h"     // encCcIncoming - DAW CC feedback syncs ENCMODE knobs
+#include "Encoders.h"   // encDrain - accelerated 0-100% knobs
 #include <uClock.h>
 
 #define STEPS_COUNT 16
@@ -458,6 +459,134 @@ void seqArpSkipSet(uint8_t idx, bool on) {
   if (idx < 16) arpSkip[idx] = on ? 1 : 0;
 }
 
+// --- ARP F sub-pages: one parameter block per track -----------------------
+// F1..F4 all write these slots, so a value set on the MOTION page is the
+// same value the GENERATIVE page reads.  Ranges are per slot and every
+// slot stops at both ends: an enum that wrapped would drop a shape you just
+// dialled in (ORDER 8 -> 0) on one detent, so no sub-page knob wraps.
+static const uint8_t arpPMaxT[ARP_P_COUNT] = {
+  8, 5, 4, 100, 100, 6, 4, 100, 2, 100, 100, 100, 63, 6, 2, 3,
+  100, 100, 100, 100
+};
+static const uint8_t arpPDefT[ARP_P_COUNT] = {
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 50, 30, 50, 7, 0, 0, 1,
+  40, 50, 0, 0
+};
+static uint8_t arpP[16][ARP_P_COUNT];
+static bool arpPReady = false;
+
+static void arpPEnsure() {
+  if (arpPReady) return;
+  arpPReady = true;
+  for (uint8_t i = 0; i < 16; i++)
+    for (uint8_t p = 0; p < ARP_P_COUNT; p++) arpP[i][p] = arpPDefT[p];
+}
+
+uint8_t seqArpPMax(uint8_t p) { return (p < ARP_P_COUNT) ? arpPMaxT[p] : 0; }
+
+uint8_t seqArpPOf(uint8_t idx, uint8_t p) {
+  arpPEnsure();
+  if (idx >= 16 || p >= ARP_P_COUNT) return 0;
+  uint8_t v = arpP[idx][p];
+  return (v > arpPMaxT[p]) ? arpPMaxT[p] : v;
+}
+
+void seqArpPSet(uint8_t idx, uint8_t p, uint8_t v) {
+  arpPEnsure();
+  if (idx >= 16 || p >= ARP_P_COUNT) return;
+  arpP[idx][p] = (v > arpPMaxT[p]) ? arpPMaxT[p] : v;
+}
+
+void seqArpPAdjust(uint8_t p, int16_t counts) {
+  arpPEnsure();
+  if (p >= ARP_P_COUNT) return;
+  static int16_t res[ARP_P_COUNT];        // leftover encoder counts
+  int16_t step;
+  if (arpPMaxT[p] > 8) {                  // a percentage: accelerated
+    step = encDrain(counts, &res[p]);
+  } else {                                // small enum: one per detent
+    res[p] += counts;
+    step = 0;
+    while (res[p] >= 4)  { res[p] -= 4;  step++; }
+    while (res[p] <= -4) { res[p] += 4;  step--; }
+  }
+  if (!step) return;
+  int16_t v = (int16_t)arpP[arpEdit()][p] + step;
+  uint8_t mx = arpPMaxT[p];
+  if (v < 0) v = 0;                       // clamped at both ends, no wrap
+  if (v > mx) v = mx;
+  arpP[arpEdit()][p] = (uint8_t)v;
+}
+
+const char *seqArpPName(uint8_t p) {
+  static const char *const n[ARP_P_COUNT] = {
+    "ORDER", "STEP", "PIVOT", "WEIGHT", "MUTATE", "INSERT", "CYCLE",
+    "MORPH", "ENGINE", "RATE", "DEPTH", "MEMORY", "SEED", "BIAS",
+    "TARGET", "CLOCK", "JUMP", "SMOOTH", "STAY", "REST"
+  };
+  if (p >= ARP_P_COUNT) return "---";
+  arpPEnsure();
+  // the four OPT knobs belong to the armed engine: MARKOV steers with
+  // jump/smooth/stay/rest, WALK with step/reflect/drift/rest
+  if (p >= ARP_P_OPT1) {
+    static const char *const w[4] = { "STEP", "REFLECT", "DRIFT", "REST" };
+    uint8_t eng = seqArpPOf(arpEdit(), ARP_P_ENGINE);
+    if (eng == SEQ_ARP_ENG_WALK) return w[p - ARP_P_OPT1];
+  }
+  return n[p];
+}
+
+const char *seqArpPValue(uint8_t p, uint8_t v) {
+  static char buf[8];
+  switch (p) {
+    case ARP_P_ORDER: {
+      static const char *const o[9] = { "MODE", "UP", "DOWN", "UPDN",
+                                        "OUTIN", "INOUT", "CONV", "DIV",
+                                        "PLAY" };
+      return o[v > 8 ? 0 : v];
+    }
+    case ARP_P_STEP: {
+      static const char *const s[6] = { "1/1", "2/1", "3/1", "2/2",
+                                        "3/2", "4/2" };
+      return s[v > 5 ? 0 : v];
+    }
+    case ARP_P_PIVOT: {
+      static const char *const q[5] = { "ROOT", "5TH", "TOP", "LOW", "CTR" };
+      return q[v > 4 ? 0 : v];
+    }
+    case ARP_P_INSERT: {
+      static const char *const s[7] = { "FOLLOW", "OFF", "HI", "LOW",
+                                        "3F1B", "4F2B", "RAND" };
+      return s[v > 6 ? 0 : v];
+    }
+    case ARP_P_CYCLE: {
+      static const char *const c[5] = { "1bar", "2bar", "4bar", "8bar",
+                                        "16bar" };
+      return c[v > 4 ? 0 : v];
+    }
+    case ARP_P_ENGINE: {
+      static const char *const e[3] = { "OFF", "MARKOV", "WALK" };
+      return e[v > 2 ? 0 : v];
+    }
+    case ARP_P_BIAS: {
+      static const char *const b[7] = { "NONE", "HIGH", "LOW", "ROOT",
+                                        "PIVOT", "SPARSE", "DENSE" };
+      return b[v > 6 ? 0 : v];
+    }
+    case ARP_P_TARGET: {
+      static const char *const t[3] = { "ORDER", "PITCH", "BOTH" };
+      return t[v > 2 ? 0 : v];
+    }
+    case ARP_P_CLOCK: {
+      static const char *const k[4] = { "STEP", "PASS", "BAR", "PHRASE" };
+      return k[v > 3 ? 0 : v];
+    }
+    default: break;
+  }
+  snprintf(buf, sizeof(buf), "%u", v);
+  return buf;
+}
+
 // SEQMODE3 pattern setup, per track: length (ENC2, 0..64 steps, boot 16),
 // the 16-step edit window picked by the C D E F bars, and which bar loops
 // playback on itself.  Independent per track - every playhead wraps at its
@@ -601,12 +730,23 @@ uint8_t seqFollowModeOf(uint8_t ch) {
 bool seqFollowFreezeOf(uint8_t ch) { return ch < 16 && followOn[ch] == 2; }
 void seqFollowModeSet(uint8_t m) {
   if (m > 2) m = 2;
-  followOn[seqEditChannel() - 1] = m;
+  uint8_t ch = (uint8_t)(seqEditChannel() - 1);
+  uint8_t prev = followOn[ch];
+  followOn[ch] = m;
+  // entering FREEZE latches the chord the feeder is sounding at THIS instant
+  // (not the one the follower's next active step would happen to catch) and
+  // leaving it drops the latch, so every entry recaptures fresh
+  if (m == 2 && prev != 2) seqFollowFreezeCapture(ch);
+  else if (m != 2)        seqFollowFreezeClear(ch);
 }
 
-// restore path (seqCfgLoad); a corrupt byte > 2 reads back as OFF
+// restore path (seqCfgLoad); a corrupt byte > 2 reads back as OFF.  Nothing
+// is latched at boot: a FREEZE track captures on its first frozen step
 void seqFollowModeSetOf(uint8_t ch, uint8_t m) {
-  if (ch < 16) followOn[ch] = (m > 2) ? 0 : m;
+  if (ch < 16) {
+    followOn[ch] = (m > 2) ? 0 : m;
+    seqFollowFreezeClear(ch);
+  }
 }
 
 // GNR8 BASS mapping mode (see SeqClock.h): global, boot NEAR; the

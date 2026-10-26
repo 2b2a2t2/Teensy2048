@@ -56,6 +56,13 @@ static const char* ctrlLegend(uint8_t i) {
       static const char* ad[4] = { "sus4", "add6", "add9", "off" };
       return ad[i - 5];
     }
+    // SEQMODE + ARP page (open with M2 on a MONO ARP track): F1..F4 arm
+    // that page's encoder sub-pages - order & shape / motion / generative /
+    // engine opts.  Each sub-page owns the whole 8-knob row
+    if (arpPageActive()) {
+      static const char* ar[4] = { "ORD", "MOT", "GEN", "OPT" };
+      return ar[i - 5];
+    }
     // SEQMODE + GNR8 page (open with M2 on a MONO BASS track): F1 = the
     // full OPTS page, F2 = per-step OCT + MAP, F3 = per-step BRW,
     // F4 = per-step MOD PROB - wins over the step-edit legend
@@ -214,9 +221,14 @@ void refreshMainScreen() {
   for (uint8_t c = 0; c < 4; c++) {
     uint8_t x = c * 32 + 1;
     const char *l1 = encLabel(b.enc, c);
-    if (arpP && !seqOv && c >= 1 && c <= 3) {
-      static const char *al[4] = { "OCT", "SPAN", "SKIP", "MODE" };
-      l1 = al[c];
+    if (arpP && !seqOv) {
+      // an armed F sub-page owns its slots; the rest keep the plain row
+      int8_t slot = arpSlotAt(arpOptionSel(), c);
+      if (slot >= 0) l1 = seqArpPName((uint8_t)slot);
+      else if (c >= 1 && c <= 3) {
+        static const char *al[4] = { "OCT", "SPAN", "SKIP", "MODE" };
+        l1 = al[c];
+      }
     }
     if (genP && !seqOv && c >= 1 && c <= 3) {
       static const char *gl[4] = { "OCT", "FILL", "ACC", "GLIDE" };
@@ -335,7 +347,32 @@ void refreshMainScreen() {
                skankShpName(skankPrm(2)));                   // ENC3 = SHP
     } else if (skankP && c == 3) {
       snprintf(val, sizeof(val), "%u", skankPrm(3));         // ENC4 = THN
-    } else if (modeBase == MODE_SEQ && c == 0) {
+    } else if (drumP && !seqOv) {
+      // DRUM page row 1 (ENC1..4): GENRE / VAR / FILL / MOT on the base row
+      // and on the F1 GROOVE set, the four lane values on F2 LINES, F3
+      // FILL% and F4 MOT% (the F sets move the lane knobs onto row 1, so
+      // every label/value pair stays in the same column)
+      if (drumSet == 0xFF || drumSet == 0) {
+        if (c == 0)      snprintf(val, sizeof(val), "%s",
+                                  drumGenreName(drumGenre()));
+        else if (c == 1) snprintf(val, sizeof(val), "%s",
+                                  drumVarName(drumVar()));
+        else if (c == 2) snprintf(val, sizeof(val), "%u%%",
+                                  (unsigned)drumFill());
+        else             snprintf(val, sizeof(val), "%u%%",
+                                  (unsigned)drumMot());
+      } else if (drumSet == 1) {
+        snprintf(val, sizeof(val), "%s",
+                 drumLineName(drumLine((uint8_t)c)));
+      } else if (drumSet == 2) {
+        snprintf(val, sizeof(val), "%u%%",
+                 (unsigned)drumLaneFill((uint8_t)c));
+      } else {
+        snprintf(val, sizeof(val), "%u%%",
+                 (unsigned)drumLaneMot((uint8_t)c));
+      }
+    } else if (modeBase == MODE_SEQ && c == 0 &&
+               !(arpP && arpSlotAt(arpOptionSel(), 0) >= 0)) {
       snprintf(val, sizeof(val), "%d", seqOctaveShift()); // ENC1 = octave shift
     } else if (genP && c == 1) {
       snprintf(val, sizeof(val), "%u%%", seqGenFillOf(genSeq));   // ENC2
@@ -343,6 +380,10 @@ void refreshMainScreen() {
       snprintf(val, sizeof(val), "%u%%", seqGenAccOf(genSeq));    // ENC3
     } else if (genP && c == 3) {
       snprintf(val, sizeof(val), "%u%%", seqGenGlideOf(genSeq));  // ENC4
+    } else if (arpP && arpSlotAt(arpOptionSel(), c) >= 0) {
+      uint8_t slot = (uint8_t)arpSlotAt(arpOptionSel(), c);
+      snprintf(val, sizeof(val), "%s",
+               seqArpPValue(slot, seqArpPOf(arpSeq, slot)));  // sub-page knob
     } else if (arpP && c == 1) {
       snprintf(val, sizeof(val), "%u",
                seqArpSpanOf(arpSeq));           // ENC2 = span (octaves)
@@ -467,10 +508,10 @@ void refreshMainScreen() {
     // (the idle default row would contradict the live values)
     const char* l2 = encLabel(b.enc, 4 + c);
     if (drumP && !seqOv) {
+      // row 2 only carries the four lane line selectors of the base row;
+      // every F set keeps its knobs on row 1, so row 2 stays idle
       static const char *const dn[4] = { "KICK", "SNARE", "HAT", "PERC" };
-      static const char *const d2[4] = { "---", "---", "FILL", "MOT" };
-      if (drumSet == 0xFF) l2 = dn[c];
-      else l2 = d2[drumSet <= 3 ? drumSet : 0];
+      l2 = (drumSet == 0xFF) ? dn[c] : "---";
     } else if (seqGe) {
       static const char* sl[4] = { "GATE", "VEL", "---", "PROB" };
       l2 = sl[c];
@@ -483,7 +524,14 @@ void refreshMainScreen() {
       l2 = ccL2;
     }
     if (c == 1 && f3AccentActive()) l2 = "ACC";   // F3 held: ENC6 = accent
-    if (arpP && 4 + c == 6) l2 = "INST";          // arp page: ENC7 = insert
+    if (!drumP && modeBase == MODE_SEQ && modeVariant != 3 &&
+        seqTrack() == SEQ_TRACK_DRUM && 4 + c == 4)
+      l2 = "MAP";                     // DRUM track: ENC5 = the kit mapping
+    if (arpP) {                                   // arp page: sub-page slots
+      int8_t slot = arpSlotAt(arpOptionSel(), (uint8_t)(4 + c));
+      if (slot >= 0) l2 = seqArpPName((uint8_t)slot);
+      else if (4 + c == 6) l2 = "INST";           // plain page: ENC7 = insert
+    }
     if (genP && 4 + c == 6) l2 = "TIE";           // gen page: ENC7 = tie %
     if (leadP && 4 + c == 4) l2 = "CT";           // lead page: ENC5 = ct blend
     if (leadP && 4 + c == 5) l2 = "GD";           // lead page: ENC6 = gd set
@@ -506,28 +554,16 @@ void refreshMainScreen() {
       l2 = s2[c];
     }
     u8g2.drawStr(x, 38, l2);
-    if (drumP && !seqOv) {
-      // DRUM page values: the four page knobs on row 1, the lane selectors
-      // on row 2 of the base row (the F sets reuse row 1 for their lanes)
-      if (c < 4) {
-        if (drumSet == 0xFF || drumSet == 0) {
-          if (c == 0)      snprintf(val, sizeof(val), "%s", drumGenreName(drumGenre()));
-          else if (c == 1) snprintf(val, sizeof(val), "%s", drumVarName(drumVar()));
-          else if (c == 2) snprintf(val, sizeof(val), "%u%%", (unsigned)drumFill());
-          else             snprintf(val, sizeof(val), "%u%%", (unsigned)drumMot());
-        } else if (drumSet == 1) {
-          snprintf(val, sizeof(val), "%s", drumLineName(drumLine((uint8_t)c)));
-        } else if (drumSet == 2) {
-          snprintf(val, sizeof(val), "%u%%", (unsigned)drumLaneFill((uint8_t)c));
-        } else {
-          snprintf(val, sizeof(val), "%u%%", (unsigned)drumLaneMot((uint8_t)c));
-        }
-      } else if (drumSet == 0xFF) {
+    if (!drumP && modeBase == MODE_SEQ && modeVariant != 3 &&
+        seqTrack() == SEQ_TRACK_DRUM && 4 + c == 4) {
+      snprintf(val, sizeof(val), "%s", drumMapName(drumMap())); // CUSTOM / GM
+    } else if (drumP && !seqOv) {
+      // DRUM page row 2 (ENC5..8): the base row's four lane selectors.
+      // The F sets own row 1, so this row is idle there
+      if (drumSet == 0xFF)
         snprintf(val, sizeof(val), "%s",
-                 drumLineName(drumLine((uint8_t)(c - 4))));
-      } else {
-        snprintf(val, sizeof(val), "");
-      }
+                 drumLineName(drumLine((uint8_t)c)));
+      else snprintf(val, sizeof(val), "");
     } else if (genOv) {
       snprintf(val, sizeof(val), "");              // SHIFT/TRANS row idle
     } else if (seqTrOv) {
@@ -551,6 +587,16 @@ void refreshMainScreen() {
       snprintf(val, sizeof(val), "");        // option sub-page: idle
     } else if (c == 1 && f3AccentActive()) {
       snprintf(val, sizeof(val), "%d", seqAccentVelocity()); // ENC6 = acc vel
+    } else if (arpP && arpSlotAt(arpOptionSel(), (uint8_t)(4 + c)) >= 0) {
+      uint8_t slot = (uint8_t)arpSlotAt(arpOptionSel(), (uint8_t)(4 + c));
+      snprintf(val, sizeof(val), "%s",
+               seqArpPValue(slot, seqArpPOf(arpSeq, slot)));  // sub-page knob
+    } else if (arpP && 4 + c == 4) {
+      snprintf(val, sizeof(val), "%d%%", seqGatePct());   // ENC5 = gate %
+    } else if (arpP && 4 + c == 5) {
+      snprintf(val, sizeof(val), "%d", seqVelocity());    // ENC6 = velocity
+    } else if (arpP && 4 + c == 7) {
+      snprintf(val, sizeof(val), "%d%%", seqProbPct());   // ENC8 = probability
     } else if (arpP && 4 + c == 6) {
       snprintf(val, sizeof(val), "%s",
                seqArpInstName(seqArpInstOf(arpSeq)));  // ENC7 = insert mode
@@ -663,7 +709,7 @@ void drawHeaderText() {
   } else if (genPageActive()) {
     left = "GNR8";               // the generator page owns the encoder row
   } else if (arpPageActive()) {
-    left = "ARP";
+    left = arpOptionName(arpOptionSel());   // ARP / ARP ORD..ARP OPT
   } else if (strumFRowActive()) {
     left = "EXT";               // strum ADDS row: the F row edits colors
   } else if (stepEditActive()) {

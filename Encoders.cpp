@@ -61,6 +61,25 @@ long encPosition(uint8_t idx) {
   return encoders[idx]->read();
 }
 
+// 0-100% dials: 1 COUNT = 1 unit, the same rate the ENCMODE CC knobs use,
+// so a full sweep is about one turn instead of four (the old 4-counts rate
+// was unreadable on the hardware - the polls come far faster than a detent,
+// so a speed heuristic never saw more than one count and could not help).
+// A spin still gets more: the library batches a fast turn into a bigger
+// delta, so the step grows with the counts this poll saw.  `res` is kept
+// only for the call sites' shape - there is nothing to carry below one
+// count any more.
+int16_t encDrain(int16_t counts, int16_t *res) {
+  (void)res;
+  if (counts > 64) counts = 64;            // a wild spin: no need to amplify
+  if (counts < -64) counts = -64;
+  int16_t a = (counts < 0) ? (int16_t)-counts : counts;
+  // thresholds are in counts and one detent is 4, so a normal single-detent
+  // turn never amplifies: 1 detent per poll = 1x, two = 2x, and so on
+  int16_t mul = (a <= 4) ? 1 : (a <= 8) ? 2 : (a <= 16) ? 3 : 4;
+  return (int16_t)(counts * mul);
+}
+
 // ENCMODE3: channel of the encoder CCs
 static uint8_t encCh = 1;
 

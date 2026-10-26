@@ -81,6 +81,21 @@ void arpPageToggle();
 void arpPageDismiss();
 bool arpPageActive();
 
+// ...and F1-F4 on that page arm one encoder SUB-PAGE each: F1 = order &
+// shape, F2 = motion, F3 = generative, F4 = engine options.  A sub-page
+// owns the whole 8-knob row - a slot is either one of the page's own
+// parameters or an inherited plain-ARP binding (OCT/SPAN/SKIP/MODE/GATE/
+// VEL/INST/PROB), so nothing becomes unreachable while it is armed.  The
+// armed page is UI state only: it dies with the page (toggle/dismiss clear
+// it), so a reopen always starts on the plain ARP row
+uint8_t arpOptionSel();                  // 0..3, 0xFF = plain row
+void    arpOptionSet(uint8_t sel);       // 0xFF = back to the plain row
+const char *arpOptionName(uint8_t sel);  // header: "ARP" / "ARP ORD" ...
+// The sub-page slot table: ARP_P_* for a knob that page owns, -1 for one
+// that keeps its plain ARP binding.  Shared by the encoder dispatch, the
+// label row and the value column (see Events.cpp)
+int8_t arpSlotAt(uint8_t page, uint8_t enc);
+
 // SEQMODE M2 (variants 1/2/4) on a POLY STRUM/HAND edit track: a click
 // toggles the strum ADDS row - F1 = sus4, F2 = add6, F3 = add9 (each a
 // toggle), F4 clears.  Same composite rule as the arp page: the row only

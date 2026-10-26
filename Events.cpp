@@ -120,15 +120,51 @@ const char* stepTypeArmName() {
 // arp.  Like the other overlays the active check is a composite, so a
 // mid-hold channel/TYPE/mode switch can never leave a stale page behind.
 static bool arpPageOn = false;
+// armed F sub-page (0..3, 0xFF = the plain 8-knob row).  Like the GNR8
+// page's genOptSel this is UI state and dies with the page (toggle and
+// dismiss both clear it), so a reopen always starts on the plain ARP row
+static uint8_t arpOptSel = 0xFF;
 
 static bool arpTrackCtx() {
   return modeBase == MODE_SEQ && modeVariant != 3 &&
          seqTrack() == SEQ_TRACK_MONO && seqMonoType() == SEQ_MONO_ARP;
 }
 
-void arpPageToggle() { arpPageOn = !arpPageOn; }
-void arpPageDismiss() { arpPageOn = false; }
+void arpPageToggle() { arpPageOn = !arpPageOn; arpOptSel = 0xFF; }
+void arpPageDismiss() { arpPageOn = false; arpOptSel = 0xFF; }
 bool arpPageActive()  { return arpPageOn && arpTrackCtx(); }
+// the composite check already gates the armed page: a mid-hold channel /
+// TRACK / TYPE / mode switch reads 0xFF here without needing a dismiss
+uint8_t arpOptionSel() { return arpPageActive() ? arpOptSel : 0xFF; }
+void arpOptionSet(uint8_t sel) { arpOptSel = (sel < 4) ? sel : 0xFF; }
+
+const char *arpOptionName(uint8_t sel) {
+  static const char *const n[4] = { "ARP ORD", "ARP MOT", "ARP GEN",
+                                    "ARP OPT" };
+  return (sel < 4) ? n[sel] : "ARP";
+}
+
+// Which ARP_P_* each sub-page puts on which encoder.  -1 keeps the plain
+// ARP binding, so the base row's knobs stay reachable from inside every
+// sub-page.  Encoder dispatch, the label row and the value column all
+// read this one table, so a knob can never show one thing and move another
+static const int8_t arpSlotT[4][8] = {
+  // F1 ORDER & SHAPE
+  { ARP_P_ORDER, ARP_P_STEP, ARP_P_PIVOT, ARP_P_WEIGHT, -1, -1, -1, -1 },
+  // F2 MOTION
+  { ARP_P_MUTATE, ARP_P_INSERT, ARP_P_CYCLE, ARP_P_MORPH, -1, -1, -1, -1 },
+  // F3 GENERATIVE (ENC1 octave / ENC8 prob stay the base knobs)
+  { -1, ARP_P_ENGINE, ARP_P_RATE, ARP_P_DEPTH, ARP_P_MEM, ARP_P_BIAS,
+    ARP_P_SEED, -1 },
+  // F4 ENGINE OPTS (the armed engine's own four, then target + clock)
+  { ARP_P_OPT1, ARP_P_OPT2, ARP_P_OPT3, ARP_P_OPT4, ARP_P_TARGET,
+    ARP_P_CLOCK, -1, -1 },
+};
+
+int8_t arpSlotAt(uint8_t page, uint8_t enc) {
+  if (page > 3 || enc > 7) return -1;
+  return arpSlotT[page][enc];
+}
 
 // --- SEQMODE M2 strum ADDS row (variants 1/2/4) ----------------------------
 // Clicking M2 on a POLY STRUM/HAND edit track swaps the F row to the Le
@@ -903,10 +939,11 @@ void handleButtonEvents() {
     // HOLD F3 in SEQMODE: ENC6 becomes the track's ACCENT velocity knob
     // (the quick tap below still picks the ACCENT target - a hold ends in
     // EV_RELEASED and never reaches EV_CLICKED).  The strum ADDS row owns
-    // F3 while it is open (add9) and the GNR8 page while it is open (RANGE)
-    // - the accent hold stays out of both their ways
+    // F3 while it is open (add9), the GNR8 page while it is open (RANGE)
+    // and the ARP page (F3 = the generative sub-page) - the accent hold
+    // stays out of all of their ways
     if (modeBase == MODE_SEQ && modeVariant != 3 && !strumFRowActive() &&
-        !genPageActive() && !drumPageActive() &&
+        !genPageActive() && !drumPageActive() && !arpPageActive() &&
         kl >= groupControls[5] && kl <= groupControls[8] &&
         (uint8_t)(kl - groupControls[5]) == 2) {
       if (ev == EV_PRESSED) {
@@ -949,6 +986,25 @@ void handleButtonEvents() {
         }
       }
       refreshAllLeds();
+    } else
+    // ARP page (open via M2 on a MONO/ARP track): F1..F4 arm the encoder
+    // SUB-PAGES (order & shape / motion / generative / engine options).
+    // Click the armed one again to fall back to the plain 8-knob row, click
+    // another to switch.  The claim sits BEFORE the step-edit target radio
+    // below - that radio would otherwise dismiss the page - so the open
+    // page owns the F row, exactly like the GNR8 page does
+    if (ev == EV_CLICKED && arpPageActive() &&
+        kl >= groupControls[5] && kl <= groupControls[8]) {
+      uint8_t idx = (uint8_t)(kl - groupControls[5]);      // 0..3
+      if (arpOptionSel() == idx) arpOptionSet(0xFF);       // tap again = plain row
+      else                       arpOptionSet(idx);
+      headerShow(arpOptionName(arpOptionSel()));
+      refreshAllLeds();
+      refreshMainScreen();
+      if (logRoom(48)) {
+        Serial.print("  arp sub-page ");
+        Serial.println(arpOptionSel() == 0xFF ? 0 : idx + 1);
+      }
     } else
     // GNR8 page (open via M2): F1..F4 are RADIO switches for the option
     // sub-pages (values live in the SEQ EEPROM block / the step table) -
@@ -2325,10 +2381,12 @@ void handleEncoderEvents() {
         }
         any = true;
       } else if (ei == 0 && ed != 0 && !harmPageActive() && !compPageActive() &&
-                 !skankPageActive() && !drumPageActive()) {
+                 !skankPageActive() && !drumPageActive() &&
+                 arpSlotAt(arpOptionSel(), 0) < 0) {
         seqOctaveShiftAdjust(ed);           // octave shift of the edit seq
         // (the open HARM page takes ENC1 for its GENRE, the COMP page for
-        //  its HITS and the SKANK page for its TES - handled below)
+        //  its HITS, the SKANK page for its TES and an armed ARP sub-page
+        //  that owns ENC1 for its own knob - handled below)
         if (logRoom(48)) {
           Serial.print("  octshift ");
           Serial.println(seqOctaveShift());
@@ -2367,6 +2425,50 @@ void handleEncoderEvents() {
             if (logRoom(48)) {
               Serial.print("  tie ");
               Serial.print(seqGenTieOf(gs));
+              Serial.println("%");
+            }
+          }
+        // M2 ARP page with an F sub-page armed: that page owns its slots
+        // (see arpSlotT).  Slots it does not own fall through to the plain
+        // page branch below, so SPAN/SKIP/MODE/INST/GATE/VEL/OCT/PROB stay
+        // reachable from inside every sub-page
+        } else if (ed != 0 && arpPageActive() &&
+                   arpSlotAt(arpOptionSel(), ei) >= 0) {
+          uint8_t slot = (uint8_t)arpSlotAt(arpOptionSel(), ei);
+          uint8_t seq = (uint8_t)(seqEditChannel() - 1);
+          seqArpPAdjust(slot, ed);
+          if (logRoom(56)) {
+            Serial.print("  ");
+            Serial.print(seqArpPName(slot));
+            Serial.print(' ');
+            Serial.println(seqArpPValue(slot, seqArpPOf(seq, slot)));
+          }
+        // M2 ARP page: GATE / VEL / PROB are the plain row's knobs and the
+        // page always turns the step-edit radio off, which is what those
+        // three encoders are normally gated on - so they get their own
+        // path here, or the slots read a value a turn can never move.  A
+        // sub-page that owns the slot (F3's MEM / BIAS) is handled above
+        } else if (ed != 0 && arpPageActive() &&
+                   (ei == 4 || ei == 5 || ei == 7) &&
+                   arpSlotAt(arpOptionSel(), ei) < 0) {
+          if (ei == 4) {
+            seqGateAdjust(ed);
+            if (logRoom(48)) {
+              Serial.print("  gate ");
+              Serial.print(seqGatePct());
+              Serial.println("%");
+            }
+          } else if (ei == 5) {
+            seqVelocityAdjust(ed);
+            if (logRoom(48)) {
+              Serial.print("  vel ");
+              Serial.println(seqVelocity());
+            }
+          } else {
+            seqProbAdjust(ed);
+            if (logRoom(48)) {
+              Serial.print("  prob ");
+              Serial.print(seqProbPct());
               Serial.println("%");
             }
           }
@@ -2593,6 +2695,23 @@ void handleEncoderEvents() {
         // armed step TYPE while those targets are engaged (POLY),
         // ENC8 = the probability of the edit track itself - live, so every
         // PROB step of that track re-rolls at the new rate
+        } else if (ed != 0 && ei == 4 && seqTrack() == SEQ_TRACK_DRUM) {
+          // SEQMODE ENC5 on a DRUM track = the kit MAPPING: CUSTOM (this
+          // kit, boot default) or GM (General MIDI percussion).  It is a
+          // track setting, so it works with the step-edit radio on or off;
+          // the M2 DRUM page keeps ENC5 = KICK while it is open.  Two-state,
+          // NO wrap (CW = GM, CCW = CUSTOM, like KLOCK); a change re-bakes
+          // the pattern onto the new map (one undo burst)
+          if (drumMapSetDir(ed)) {
+            drumProduce();
+            char mb[16];
+            snprintf(mb, sizeof(mb), "map %s", drumMapName(drumMap()));
+            headerShow(mb);
+            refreshAllLeds();
+            refreshMainScreen();
+            if (logRoom(48)) { Serial.print("  "); Serial.println(mb); }
+          }
+          any = true;
         } else if (ei == 5 && ed != 0 && f3AccentActive()) {
           seqAccentVelocityAdjust(ed);
           if (logRoom(48)) {
@@ -2661,8 +2780,10 @@ void handleEncoderEvents() {
       } else if (ei == 2 && ed != 0) {
         // SEQMODE3: ENC3 = FOLLOW, three-state (OFF / ON / FREEZE): OFF =
         // own steps play the stored line, ON = notes re-resolve live from
-        // the feeder, FREEZE = hold the last incoming chord (4 counts = 1
-        // state, wraps)
+        // the feeder, FREEZE = hold the chord the feeder is playing at the
+        // moment you switch.  4 counts = 1 state, clamped at both ends like
+        // every other SEQMODE dial (no wrap - a turn past FREEZE used to
+        // drop straight back to OFF)
         static int16_t folRes = 0;
         folRes += ed;
         int8_t st = 0;
@@ -2671,8 +2792,9 @@ void handleEncoderEvents() {
         if (st) {
           static const char *folN[3] = { "OFF", "ON", "FREEZE" };
           int m = (int)seqFollowMode() + st;
-          m = ((m % 3) + 3) % 3;
-          seqFollowModeSet((uint8_t)m);
+          if (m < 0) m = 0;
+          if (m > 2) m = 2;
+          if ((uint8_t)m != seqFollowMode()) seqFollowModeSet((uint8_t)m);
           if (logRoom(48)) {
             Serial.print("  follow ");
             Serial.println(folN[m]);

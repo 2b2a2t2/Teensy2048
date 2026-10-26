@@ -130,6 +130,51 @@ static CRGB dimColorFor(ModeBase b) {
   return c;
 }
 
+// SEQMODE track-type palette: ONE hue per track type.  The M2 page pad wears
+// it (so the pad says which page it opens), and the M2 page's own F row
+// wears it too.  RED / ORANGE / YELLOW ARE OFF LIMITS - they already mean
+// REC, the drum / encoder MUTE overlays and the channel + attribute markers -
+// and the step-edit attribute row keeps its blue (TIE / GLIDE / ACCENT /
+// PROB), so every track hue lives in the cool arc from spring green through
+// cyan and blue to indigo and pink.  Two pale tints (STRUM lavender, COMP
+// pale sky) buy extra separation from their vivid neighbours by lightness
+// rather than by hue.  SEQ_PAGE_DIM is the idle brightness (the page-open
+// state breathes on top of it).
+#define SEQ_PAGE_DIM 64
+static uint8_t seqPagePulse() {          // breathing brightness 64..200
+  uint8_t s = sin8((uint32_t)millis() * 256UL / PULSE_PERIOD_MS);
+  return (uint8_t)(SEQ_PAGE_DIM + scale8(s, (uint8_t)(200 - SEQ_PAGE_DIM)));
+}
+static CRGB seqPageColor() {
+  if (seqTrack() == SEQ_TRACK_DRUM) return CRGB(120, 0, 255);     // indigo
+  if (seqTrack() == SEQ_TRACK_MONO) {
+    if (seqMonoType() == SEQ_MONO_ARP) return CRGB(255, 0, 170);  // pink
+    if (seqMonoType() == SEQ_MONO_BASS) return CRGB(0, 70, 200);  // blue
+    return CRGB(46, 120, 80);                                     // LEAD sea green
+  }
+  if (seqPolyType() == SEQ_POLY_HARM)  return CRGB(0, 215, 215);  // aqua
+  if (seqPolyType() == SEQ_POLY_STEP)  return CRGB(135, 195, 255); // pale sky
+  if (seqPolyType() == SEQ_POLY_SKANK) return CRGB(0, 205, 125);  // spring green
+  return CRGB(205, 135, 255);                                     // STRUM / HAND lavender
+}
+// does the edit track own a page on M2?  (POLY+STEP is conditional and is
+// handled at the call site: its COMP page is optional)
+static bool seqPagePadHas() {
+  if (seqTrack() == SEQ_TRACK_DRUM) return true;
+  if (seqTrack() == SEQ_TRACK_MONO) {
+    return seqMonoType() == SEQ_MONO_ARP || seqMonoType() == SEQ_MONO_BASS ||
+           seqMonoType() == SEQ_MONO_LEAD;
+  }
+  uint8_t t = seqPolyType();
+  return t == SEQ_POLY_HARM || t == SEQ_POLY_SKANK || t == SEQ_POLY_STRUM ||
+         t == SEQ_POLY_HAND;
+}
+static bool seqPagePadOpen() {
+  return arpPageActive() || genPageActive() || leadPageActive() ||
+         harmPageActive() || compPageActive() || skankPageActive() ||
+         strumFRowActive() || drumPageActive();
+}
+
 static CRGB modeLedHook(uint8_t pad, bool isTouched, CRGB defaultColor) {
   int8_t led = ledForPad[pad];
   for (uint8_t i = 0; i < 3; i++) {
@@ -175,7 +220,8 @@ static CRGB modeLedHook(uint8_t pad, bool isTouched, CRGB defaultColor) {
       return y;
     }
     // DRUM part-select overlay (hold M1): dim orange, selected part bright
-    // orange (pad N = drum note 36+N, pad0 = C1 ... pad15 = D#2)
+    // orange (pad N = drum note 36+N, pad0 = C1 ... pad15 = D#2) - orange is
+    // reserved for these mute/select overlays, never for a track hue
     if (modeBase == MODE_SEQ && modeVariant != 3 &&
         drumPartSelectActive() && seqTrack() == SEQ_TRACK_DRUM) {
       if (led == (int8_t)(drumPartNote() - 36)) return CRGB(255, 72, 0);
@@ -389,15 +435,15 @@ static CRGB modeLedHook(uint8_t pad, bool isTouched, CRGB defaultColor) {
   bool seqDrumRadio = (modeBase == MODE_SEQ && modeVariant != 3 &&
                        seqTrack() == SEQ_TRACK_DRUM);
   // SEQMODE + DRUM page open: the F row is the page's KNOB-SET radio
-  // (F1 GROOVE / F2 LINES / F3 FILL% / F4 MOT%), so it lights indigo -
-  // dim when idle, bright for the armed set (base row = all four dim)
+  // (F1 GROOVE / F2 LINES / F3 FILL% / F4 MOT%), so it lights in the DRUM
+  // track hue - dim when idle, bright for the armed set (base row = all dim)
   if (modeBase == MODE_SEQ && modeVariant != 3 && drumPageActive() &&
       led >= groupControls[5] && led <= groupControls[8]) {
     if (isTouched) return CRGB::White;
     uint8_t ssel = drumSetSelGet();
     bool armed = (ssel != 0xFF &&
                   ssel == (uint8_t)(led - groupControls[5]));
-    CRGB p = CRGB::Indigo;
+    CRGB p = seqPageColor();              // same hue as the DRUM M2 pad
     p.nscale8(armed ? 176 : 48);
     return p;
   }
@@ -411,25 +457,34 @@ static CRGB modeLedHook(uint8_t pad, bool isTouched, CRGB defaultColor) {
         (!seqPolyRadio && (led == groupControls[5] + 2 ||
                            led == groupControls[5] + 3))))) {
     if (isTouched) return CRGB::White;
-    // strum ADDS row open: F1..F3 light violet when their color is armed
-    // (sus4/add6/add9), F4 lights while anything is armed (it clears),
-    // dim dark blue otherwise - the step-edit radio and its blink stay out
+    // strum ADDS row open: F1..F3 burn the STRUM/HAND hue when their color
+    // is armed (sus4/add6/add9), F4 lights while anything is armed (it
+    // clears), a dim version of the same hue otherwise - the step-edit
+    // radio and its blue stay out of the way
     if (strumFRowActive() && led >= groupControls[5] &&
         led <= groupControls[8]) {
       uint8_t fi = (uint8_t)(led - groupControls[5]);
       uint8_t ext = strumExtGet();
       bool lit = (fi < 3) ? (((ext >> fi) & 1) != 0) : (ext != 0);
-      if (lit) {
-        CRGB e = CRGB(110, 0, 190);        // the option-toggle violet
-        e.nscale8(160);
-        return e;
-      }
-      CRGB d = CRGB::DarkBlue;
-      d.nscale8(32);
-      return d;
+      CRGB e = seqPageColor();           // the STRUM/HAND hue of the M2 pad
+      e.nscale8(lit ? 176 : 48);
+      return e;
+    }
+    // ARP page open: the F row = the four encoder sub-pages (order &
+    // shape / motion / generative / engine opts) - dim TRACK COLOR marks the
+    // borrowed row, the armed page burns bright, so the row's owner is
+    // always visible and the row matches the M2 pad that opened it
+    if (arpPageActive() && led >= groupControls[5] &&
+        led <= groupControls[8]) {
+      uint8_t sel = arpOptionSel();
+      bool armed = (sel != 0xFF &&
+                    sel == (uint8_t)(led - groupControls[5]));
+      CRGB p = seqPageColor();
+      p.nscale8(sel == 0xFF ? 48 : (armed ? 176 : 32));
+      return p;
     }
     // GNR8 page open: the F row = option radios (F1 = full OPTS page,
-    // F2 = OCT/MAP, F3 = BRW, F4 = PROB) - dim violet marks the
+    // F2 = OCT/MAP, F3 = BRW, F4 = PROB) - dim TRACK COLOR marks the
     // borrowed row (no target blink, no chain mask), the ARMED radio
     // burns bright so the sub-page it owns is visible
     if (genPageActive() && led >= groupControls[5] &&
@@ -437,7 +492,7 @@ static CRGB modeLedHook(uint8_t pad, bool isTouched, CRGB defaultColor) {
       uint8_t sel = genOptionSel();
       bool armed = (sel != 0xFF &&
                     sel == (uint8_t)(led - groupControls[5]));
-      CRGB p = CRGB::Purple;
+      CRGB p = seqPageColor();
       p.nscale8(sel == 0xFF ? 48 : (armed ? 176 : 32));
       return p;
     }
@@ -473,156 +528,34 @@ static CRGB modeLedHook(uint8_t pad, bool isTouched, CRGB defaultColor) {
     d.nscale8(32);
     return d;
   }
-  // SEQMODE M2 on a MONO+ARP track: purple = an arp lives behind that pad,
-  // and while the ARP encoder page is open it BREATHES purple instead of
-  // sitting dim (M2 is otherwise idle in variants 1/2/4, so the color
-  // never fights another pad role)
-  if (modeBase == MODE_SEQ && modeVariant != 3 &&
-      seqTrack() == SEQ_TRACK_MONO && seqMonoType() == SEQ_MONO_ARP &&
-      led == groupControls[3]) {
-    if (isTouched) return CRGB::White;
-    CRGB p = CRGB::Purple;
-    if (arpPageActive()) {
-      uint8_t s = sin8((uint32_t)millis() * 256UL / PULSE_PERIOD_MS);
-      p.nscale8((uint8_t)(48 + scale8(s, 144)));  // 48..192 breathing
-    } else {
-      p.nscale8(48);
+  // SEQMODE M2 on a track that owns an encoder page: the pad carries that
+  // TRACK TYPE's hue (seqPageColor) and BREATHES while its page is open
+  // instead of sitting dim - so DRUM indigo, ARP pink, BASS blue, LEAD sea
+  // green, STRUM/HAND lavender, HARM aqua, COMP pale sky and SKANK spring
+  // green are all tellable apart at a glance, and no page is a blind key
+  // (the F row of the open page wears the same hue: see above).
+  // POLY+STEP is the one conditional case: the COMP page is optional, so
+  // with it closed the pad keeps its generic M2 look
+  if (modeBase == MODE_SEQ && modeVariant != 3 && led == groupControls[3]) {
+    bool polyStep = (seqTrack() == SEQ_TRACK_POLY &&
+                     seqPolyType() == SEQ_POLY_STEP);
+    bool live = seqPagePadHas() || (polyStep && compPageActive());
+    if (live) {
+      if (isTouched) return CRGB::White;
+      CRGB c = seqPageColor();
+      c.nscale8(seqPagePadOpen() ? seqPagePulse() : SEQ_PAGE_DIM);
+      return c;
     }
-    return p;
   }
-  // SEQMODE M2 on a POLY STRUM/HAND track: purple = the strum ADDS row
-  // lives behind that pad, and it BREATHES purple while the row is open
-  // (same rule as the ARP page's M2 - M2 is otherwise idle on POLY)
-  if (modeBase == MODE_SEQ && modeVariant != 3 &&
-      seqTrack() == SEQ_TRACK_POLY &&
-      (seqPolyType() == SEQ_POLY_STRUM || seqPolyType() == SEQ_POLY_HAND) &&
-      led == groupControls[3]) {
-    if (isTouched) return CRGB::White;
-    CRGB p = CRGB::Purple;
-    if (strumFRowActive()) {
-      uint8_t s = sin8((uint32_t)millis() * 256UL / PULSE_PERIOD_MS);
-      p.nscale8((uint8_t)(48 + scale8(s, 144)));  // 48..192 breathing
-    } else {
-      p.nscale8(48);
-    }
-    return p;
-  }
-  // SEQMODE M2 on a MONO+BASS track: purple = the GNR8 generator lives
-  // behind that pad, and while its encoder page is open it BREATHES
-  // purple instead of sitting dim (M2 is otherwise idle in variants
-  // 1/2/4, so the color never fights another pad role)
-  if (modeBase == MODE_SEQ && modeVariant != 3 &&
-      seqTrack() == SEQ_TRACK_MONO && seqMonoType() == SEQ_MONO_BASS &&
-      led == groupControls[3]) {
-    if (isTouched) return CRGB::White;
-    CRGB p = CRGB::Purple;
-    if (genPageActive()) {
-      uint8_t s = sin8((uint32_t)millis() * 256UL / PULSE_PERIOD_MS);
-      p.nscale8((uint8_t)(48 + scale8(s, 144)));  // 48..192 breathing
-    } else {
-      p.nscale8(48);
-    }
-    return p;
-  }
-  // ...and M3 on that track is the generator button (tap = generate,
-  // hold = undo): a slow dim hue cycle, mirroring KEYMODE4's APPLY
-  if (modeBase == MODE_SEQ && modeVariant != 3 &&
-      seqTrack() == SEQ_TRACK_MONO && seqMonoType() == SEQ_MONO_BASS &&
-      led == groupControls[4]) {
+  // ...and M3 on the generator tracks is the GENERATOR button (tap =
+  // generate, hold = undo): a slow dim hue cycle, mirroring KEYMODE4's
+  // APPLY - BASS, LEAD and the HARM harmonizer
+  if (modeBase == MODE_SEQ && modeVariant != 3 && led == groupControls[4] &&
+      ((seqTrack() == SEQ_TRACK_MONO &&
+        (seqMonoType() == SEQ_MONO_BASS || seqMonoType() == SEQ_MONO_LEAD)) ||
+       (seqTrack() == SEQ_TRACK_POLY && seqPolyType() == SEQ_POLY_HARM))) {
     if (isTouched) return CRGB::White;
     return CHSV((uint8_t)(millis() >> 2), 255, 100);  // full cycle ~1s
-  }
-  // SEQMODE M2 on a MONO+LEAD track: medium sea green = the LEAD generator
-  // lives behind that pad, and while its encoder page is open it BREATHES
-  // instead of sitting dim (mirrors the BASS M2 rule, sea green to tell the
-  // two generator tracks apart)
-  if (modeBase == MODE_SEQ && modeVariant != 3 &&
-      seqTrack() == SEQ_TRACK_MONO && seqMonoType() == SEQ_MONO_LEAD &&
-      led == groupControls[3]) {
-    if (isTouched) return CRGB::White;
-    CRGB g = CRGB::MediumSeaGreen;
-    if (leadPageActive()) {
-      uint8_t s = sin8((uint32_t)millis() * 256UL / PULSE_PERIOD_MS);
-      g.nscale8((uint8_t)(48 + scale8(s, 144)));  // 48..192 breathing
-    } else {
-      g.nscale8(48);
-    }
-    return g;
-  }
-  // ...and M3 on that track is the LEAD generator button (tap = generate,
-  // hold = undo): the same slow dim hue cycle as the BASS generator
-  if (modeBase == MODE_SEQ && modeVariant != 3 &&
-      seqTrack() == SEQ_TRACK_MONO && seqMonoType() == SEQ_MONO_LEAD &&
-      led == groupControls[4]) {
-    if (isTouched) return CRGB::White;
-    return CHSV((uint8_t)(millis() >> 2), 255, 100);  // full cycle ~1s
-  }
-  // SEQMODE M2 on a POLY+HARM track: teal = the HARM generator lives behind
-  // that pad, and while its encoder page is open it BREATHES instead of
-  // sitting dim (mirrors the BASS/LEAD M2 rules; teal tells the harmonizer
-  // apart from the sea-green LEAD and purple BASS generators)
-  if (modeBase == MODE_SEQ && modeVariant != 3 &&
-      seqTrack() == SEQ_TRACK_POLY && seqPolyType() == SEQ_POLY_HARM &&
-      led == groupControls[3]) {
-    if (isTouched) return CRGB::White;
-    CRGB t = CRGB::Teal;
-    if (harmPageActive()) {
-      uint8_t s = sin8((uint32_t)millis() * 256UL / PULSE_PERIOD_MS);
-      t.nscale8((uint8_t)(48 + scale8(s, 144)));  // 48..192 breathing
-    } else {
-      t.nscale8(48);
-    }
-    return t;
-  }
-  // ...and M3 on that track is the harmonizer button (tap = bake, hold =
-  // undo): the same slow dim hue cycle as the BASS/LEAD generators
-  if (modeBase == MODE_SEQ && modeVariant != 3 &&
-      seqTrack() == SEQ_TRACK_POLY && seqPolyType() == SEQ_POLY_HARM &&
-      led == groupControls[4]) {
-    if (isTouched) return CRGB::White;
-    return CHSV((uint8_t)(millis() >> 2), 255, 100);  // full cycle ~1s
-  }
-  // SEQMODE M2 on a POLY+STEP track: while the COMP page is open the pad
-  // BREATHES teal (the same chord-page family as the HARM generator);
-  // closed it keeps its generic M2 look
-  if (modeBase == MODE_SEQ && modeVariant != 3 &&
-      seqTrack() == SEQ_TRACK_POLY && seqPolyType() == SEQ_POLY_STEP &&
-      led == groupControls[3] && compPageActive()) {
-    if (isTouched) return CRGB::White;
-    CRGB t = CRGB::Teal;
-    uint8_t s = sin8((uint32_t)millis() * 256UL / PULSE_PERIOD_MS);
-    t.nscale8((uint8_t)(48 + scale8(s, 144)));  // 48..192 breathing
-    return t;
-  }
-  // ...and M2 on a POLY+SKANK track: orange = the walking-voicing page
-  // lives behind that pad, and while its encoder page is open it BREATHES
-  // instead of sitting dim (mirrors the HARM/LEAD M2 rules)
-  if (modeBase == MODE_SEQ && modeVariant != 3 &&
-      seqTrack() == SEQ_TRACK_POLY && seqPolyType() == SEQ_POLY_SKANK &&
-      led == groupControls[3]) {
-    if (isTouched) return CRGB::White;      CRGB t = CRGB::Orange;
-    if (skankPageActive()) {
-      uint8_t s = sin8((uint32_t)millis() * 256UL / PULSE_PERIOD_MS);
-      t.nscale8((uint8_t)(48 + scale8(s, 144)));  // 48..192 breathing
-    } else {
-      t.nscale8(48);
-    }
-    return t;
-  }
-  // SEQMODE M2 on a DRUM track: indigo = the pattern page lives behind that
-  // pad; it BREATHES while the page is open (same rhythm as the HARM/COMP/
-  // SKANK pulses), so the drum track's page is never a blind key
-  if (modeBase == MODE_SEQ && modeVariant != 3 &&
-      seqTrack() == SEQ_TRACK_DRUM && led == groupControls[3]) {
-    if (isTouched) return CRGB::White;
-    CRGB t = CRGB::Indigo;
-    if (drumPageActive()) {
-      uint8_t s = sin8((uint32_t)millis() * 256UL / PULSE_PERIOD_MS);
-      t.nscale8((uint8_t)(48 + scale8(s, 144)));  // 48..192 breathing
-    } else {
-      t.nscale8(48);
-    }
-    return t;
   }
   // ENCMODE function pads: always show their identity colors even when
   // idle - M1 dim orange, M2 dim orange-red (touch still wins).  M3 is

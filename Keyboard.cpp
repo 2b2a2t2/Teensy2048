@@ -6,6 +6,7 @@
 #include "Display.h"    // headerShow (strum option / string feedback)
 #include "Key4.h"       // KEYMODE4 proposal gesture (press/release/commit)
 #include "Gen.h"        // GNR8 params (the SEQ EEPROM block stores them)
+#include "Encoders.h"   // encDrain - accelerated 0-100% dials
 #include "Skank.h"      // SKANK derive (POLY TYPE = SKANK playback)
 #include "Drum.h"       // DRUM page params (the SEQ EEPROM block stores them)
 #include "Encoders.h"   // encSetChannel - boot reconcile of a locked ENCOD
@@ -1762,6 +1763,99 @@ static uint8_t arpExpand(const uint8_t *src, uint8_t len, uint8_t inst,
   return k;
 }
 
+// extended walk orders (the ORDER knob on the F1 sub-page).  The MODE
+// knob still owns 0..4; the shapes past RANDOM2 sit above them so an
+// ORDER = MODE setting keeps its exact old behaviour
+typedef enum {
+  ARP_ORD_UP = 0, ARP_ORD_DOWN, ARP_ORD_UPDN, ARP_ORD_RAND, ARP_ORD_RAND2,
+  ARP_ORD_OUTIN, ARP_ORD_INOUT, ARP_ORD_CONV, ARP_ORD_DIV
+} arpOrder;
+
+static uint8_t rootOf(const uint8_t *ch, uint8_t n);   // chord-root probe
+
+// deterministic per-position roll: the builder stays a pure function of
+// (chord, params, position), so the playhead and the live keyboard voice
+// agree and nothing has to be stored between calls
+static uint16_t arpRoll(uint32_t seed, uint16_t i) {
+  uint32_t x = seed ^ (0x9E3779B9u * (uint32_t)(i + 1));
+  x ^= x << 13; x ^= x >> 17; x ^= x << 5;
+  return (uint16_t)(x & 0xFFFF);
+}
+
+// which entry of the canonical walk the PIVOT knob points at: root, fifth,
+// top, low or centre - resolved to the nearest note that is actually in it
+static uint8_t arpPivotIdx(const uint8_t *src, uint8_t L, uint8_t n,
+                           const uint8_t *sorted, uint8_t pivot) {
+  if (L < 2) return 0;
+  if (pivot == 2) return (uint8_t)(L - 1);          // TOP
+  if (pivot == 3) return 0;                         // LOW
+  if (pivot == 4) return (uint8_t)(L / 2);          // CTR
+  uint8_t want = rootOf(sorted, n);
+  if (pivot == 1) want = (uint8_t)(want + 7);       // 5TH
+  uint8_t best = 0;
+  uint16_t bd = 0xFFFF;
+  for (uint8_t i = 0; i < L; i++) {
+    int d = (int)src[i] - (int)want;
+    if (d < 0) d = -d;
+    if ((uint16_t)d < bd) { bd = (uint16_t)d; best = i; }
+  }
+  return best;
+}
+
+// One engine pass: a walk of `n` slots over `range` positions, generated
+// from (seed, params) alone - MARKOV favours small deltas and repeats
+// (SMOOTH / STAY), WALK moves a fixed step (STEP) that DRIFT steers and
+// REFLECT turns around at the edges.  MEMORY holds a slot, so 100 = frozen
+static void arpEngPass(uint32_t seed, uint8_t engine, uint8_t range,
+                       uint8_t start, uint8_t depth, uint8_t mem,
+                       const uint8_t *opt, uint8_t n, uint8_t *out) {
+  if (range == 0 || n == 0) return;
+  if (range == 1) { for (uint8_t i = 0; i < n; i++) out[i] = 0; return; }
+  uint32_t st = seed ? seed : 0x9E3779B9u;
+  int pos = (int)start;
+  if (pos >= (int)range) pos = (int)range - 1;
+  int dir = 1;
+  int maxJump = 1 + ((int)depth * ((int)range - 1)) / 100;
+  if (maxJump < 1) maxJump = 1;
+  if (maxJump > (int)range - 1) maxJump = (int)range - 1;
+  // MARKOV: JUMP widens the depth-derived leap range (0 = depth alone,
+  // 100 = twice as far), so it stays a shaping knob and not a dead one
+  int mJump = maxJump;
+  if (engine == SEQ_ARP_ENG_MARKOV) {
+    mJump = maxJump + (maxJump * (int)opt[0]) / 100;
+    if (mJump < 1) mJump = 1;
+    if (mJump > (int)range - 1) mJump = (int)range - 1;
+  }
+  for (uint8_t i = 0; i < n; i++) {
+    out[i] = (uint8_t)pos;
+    st ^= st << 13; st ^= st >> 17; st ^= st << 5;
+    uint16_t roll = (uint16_t)(st & 0xFFFF);
+    uint8_t pct = (uint8_t)(roll % 100);
+    if (engine == SEQ_ARP_ENG_MARKOV) {
+      if (pct >= mem) {                            // MEMORY holds the slot
+        int jump = 1 + (int)((roll >> 7) % (uint16_t)mJump);
+        if (opt[1] && (uint8_t)((roll >> 9) % 100) < opt[1]) jump = 1;  // SMOOTH
+        pos += ((roll >> 5) & 1) ? -jump : jump;
+      }
+    } else {                                       // WALK
+      int stepSz = 1 + ((int)opt[0] * 3) / 100;    // STEP 1..4
+      if (pct >= mem) {
+        if ((uint8_t)((roll >> 7) % 100) < opt[2]) // DRIFT steers
+          dir = ((roll >> 9) & 1) ? 1 : -1;
+        pos += dir * stepSz;
+        if (pos < 0 || pos >= (int)range) {
+          if (opt[1] >= 50) {                      // REFLECT
+            dir = -dir;
+            pos += 2 * dir * stepSz;
+          }
+        }
+      }
+    }
+    if (pos < 0) pos = 0;
+    if (pos >= (int)range) pos = (int)range - 1;
+  }
+}
+
 static uint8_t arpNoteAt(const uint8_t *ch, uint8_t n, uint8_t seq,
                          uint8_t idx, uint8_t *outLen) {
   *outLen = 0;
@@ -1771,9 +1865,20 @@ static uint8_t arpNoteAt(const uint8_t *ch, uint8_t n, uint8_t seq,
   if (span < 1) span = 1; else if (span > 4) span = 4;
   uint8_t mode = seqArpModeOf(seq);
   uint8_t inst = seqArpInstOf(seq);
+  // the F sub-page knobs; every default reproduces the plain page
+  uint8_t pOrder  = seqArpPOf(seq, ARP_P_ORDER);
+  uint8_t pStep   = seqArpPOf(seq, ARP_P_STEP);
+  uint8_t pPivot  = seqArpPOf(seq, ARP_P_PIVOT);
+  uint8_t pWeight = seqArpPOf(seq, ARP_P_WEIGHT);
+  uint8_t pMut    = seqArpPOf(seq, ARP_P_MUTATE);
+  uint8_t pIns    = seqArpPOf(seq, ARP_P_INSERT);
+  uint8_t pMorph  = seqArpPOf(seq, ARP_P_MORPH);
+  uint8_t pCfg    = seqArpPOf(seq, ARP_P_CYCLE);
+  uint8_t eng     = seqArpPOf(seq, ARP_P_ENGINE);
 
   // canonical walk: chord sorted low to high, one copy per octave, with
-  // the extension folded back into the MIDI range (Arpie clamps as well)
+  // the extension folded back into the MIDI range (Arpie clamps as well).
+  // ORDER = PLAY keeps the chord in the order the keys arrived instead
   static uint8_t sorted[CHORD_MAX];
   for (uint8_t i = 0; i < n; i++) sorted[i] = ch[i];
   for (uint8_t i = 1; i < n; i++) {            // insertion sort (n <= 8)
@@ -1782,21 +1887,40 @@ static uint8_t arpNoteAt(const uint8_t *ch, uint8_t n, uint8_t seq,
     while (j > 0 && sorted[j - 1] > v) { sorted[j] = sorted[j - 1]; j--; }
     sorted[j] = v;
   }
+  const uint8_t *src0 = (pOrder == 8) ? ch : sorted;
   uint8_t L = 0;
   for (uint8_t o = 0; o < span && L < ARP_SEQ_MAX; o++)
     for (uint8_t i = 0; i < n && L < ARP_SEQ_MAX; i++) {
-      uint8_t v = (uint8_t)(sorted[i] + 12 * o);
+      uint8_t v = (uint8_t)(src0[i] + 12 * o);
       while (v > 127) v = (uint8_t)(v - 12);
       arpSrc[L++] = v;
     }
   if (L == 0) return 0;
 
+  // ORDER 0 follows the MODE knob; 1..3 are MODE's first three shapes and
+  // 4..7 the new pivot shapes, 8 = as-played (handled by src0 above)
+  uint8_t order;
+  if (pOrder == 0 || pOrder == 8)  order = mode;
+  else if (pOrder <= 3)            order = (uint8_t)(pOrder - 1);
+  else                             order = (uint8_t)(pOrder + 1);
+  uint8_t piv = arpPivotIdx(arpSrc, L, n, sorted, pPivot);
+
+  // stable fingerprint of the walked chord: every stochastic decision
+  // below is derived from it, so a static chord repeats exactly
+  uint32_t h = 0x811C9DC5u;
+  for (uint8_t i = 0; i < n; i++) { h ^= sorted[i]; h *= 16777619u; }
+  h = h * 2654435761u + (uint32_t)span * 977u +
+      (uint32_t)order * 131u + (uint32_t)piv;
+
+  // CYCLE = bars between RANDOM2 rerolls (16 steps per bar)
+  uint32_t cycle = idx / (uint32_t)(16u << (pCfg > 4 ? 0 : pCfg));
+
   for (uint8_t i = 0; i < L; i++) arpOrd[i] = arpSrc[i];
   uint8_t M = L;                             // length before INST expansion
 
-  if (mode == SEQ_ARP_DOWN) {
+  if (order == ARP_ORD_DOWN) {
     for (uint8_t i = 0; i < L; i++) arpOrd[i] = arpSrc[L - 1 - i];
-  } else if (mode == SEQ_ARP_UPDOWN) {
+  } else if (order == ARP_ORD_UPDN) {
     // up through every octave, back down without repeating either turning
     // point: 0..L-1, L-2..1, ... (period 2L-2; Arpie skips the top note
     // on the way down and the bottom one on the way up)
@@ -1806,31 +1930,150 @@ static uint8_t arpNoteAt(const uint8_t *ch, uint8_t n, uint8_t seq,
       for (uint8_t i = (uint8_t)(L - 2); i > 0; i--) arpOrd[k++] = arpSrc[i];
       M = k;
     }
-  } else if (mode == SEQ_ARP_RANDOM || mode == SEQ_ARP_RANDOM2) {
+  } else if (order == ARP_ORD_RAND || order == ARP_ORD_RAND2) {
     // stable shuffle per chord: RANDOM keeps it until the chord changes,
-    // RANDOM2 rerolls every full pass of the sequence (Arpie rebuilds it
-    // on the wrap).  The pass length is order-independent, so it can be
-    // measured on the unshuffled walk first.
-    uint32_t h = 0x811C9DC5u;
-    for (uint8_t i = 0; i < n; i++) { h ^= sorted[i]; h *= 16777619u; }
-    h = h * 2654435761u + span;
-    uint8_t cycle = 0;
-    if (mode == SEQ_ARP_RANDOM2) {
+    // RANDOM2 rerolls every CYCLE passes (Arpie rebuilds it on the wrap).
+    // The pass length is order-independent, so it is measured first.
+    if (order == ARP_ORD_RAND2) {
       uint8_t e0 = arpExpand(arpSrc, L, inst, arpBuf);
-      if (e0) cycle = (uint8_t)((idx / e0) & 0xFF);
+      if (e0) cycle = ((uint32_t)idx / e0) / (uint32_t)(1u << (pCfg > 4 ? 0 : pCfg));
     }
     for (uint8_t o = 0; o < span; o++) {
       arpPrng = h ^ (0x9E3779B9u * (uint32_t)(o + 1)) ^
-                        (0x85EBCA6Bu * (uint32_t)(cycle + 1));
+                        (0x85EBCA6Bu * (cycle + 1));
       if (!arpPrng) arpPrng = 0x9E3779B9u;
       arpShuffle(&arpOrd[o * n], n);
     }
+  } else if (order == ARP_ORD_OUTIN) {
+    uint8_t k = 0, lo = 0, hi = (uint8_t)(L - 1);
+    while (lo <= hi && k < ARP_SEQ_MAX) {
+      arpOrd[k++] = arpSrc[lo];
+      if (lo++ < hi) arpOrd[k++] = arpSrc[hi--];
+    }
+    M = k;
+  } else if (order == ARP_ORD_INOUT) {
+    uint8_t k = 0;
+    if (k < L) arpOrd[k++] = arpSrc[piv];
+    for (uint8_t d = 1; k < L && d < L; d++) {
+      if (piv >= d)         arpOrd[k++] = arpSrc[piv - d];
+      if (k < L && piv + d < L) arpOrd[k++] = arpSrc[piv + d];
+    }
+    M = k;
+  } else if (order == ARP_ORD_CONV || order == ARP_ORD_DIV) {
+    // converge on / diverge from the pivot: emit indices by decreasing /
+    // increasing distance from it (ties resolve downward, so it is stable)
+    static uint8_t used[ARP_SEQ_MAX];
+    for (uint8_t i = 0; i < L; i++) used[i] = 0;
+    uint8_t k = 0;
+    while (k < L) {
+      int best = -1, bd = 0;
+      for (uint8_t i = 0; i < L; i++) {
+        if (used[i]) continue;
+        int d = (int)i - (int)piv;
+        if (d < 0) d = -d;
+        bool better = (best < 0) || (order == ARP_ORD_DIV ? (d < bd) : (d > bd));
+        if (better) { best = (int)i; bd = d; }
+      }
+      if (best < 0) break;
+      used[best] = 1;
+      arpOrd[k++] = arpSrc[best];
+    }
+    M = k;
   }
 
-  uint8_t E = arpExpand(arpOrd, M, inst, arpBuf);
+  // STEP: a skip pattern over that walk, 1/1 = untouched.  Every fwd-th
+  // step jumps ahead and then steps back, which generalises ping-pong
+  if (pStep && pStep <= 5 && M > 1) {
+    static const uint8_t fwdT[6] = { 1, 2, 3, 2, 3, 4 };
+    static const uint8_t bkT[6]  = { 0, 1, 1, 2, 2, 2 };
+    uint8_t fwd = fwdT[pStep], back = bkT[pStep];
+    static uint8_t tmp[ARP_SEQ_MAX];
+    uint8_t o = 0, j = 0;
+    int16_t i = 0;
+    while (i >= 0 && i < (int16_t)M && o < ARP_SEQ_MAX) {
+      tmp[o++] = arpOrd[i];
+      j++;
+      i = (j % fwd == 0) ? (int16_t)(i - back) : (int16_t)(i + 1);
+    }
+    for (uint8_t z = 0; z < o; z++) arpOrd[z] = tmp[z];
+    M = o;
+  }
+
+  // INSERT: 0 follows the INST knob, 1..5 are its list, 6 rolls a fresh
+  // insert pattern once per CYCLE (Arpie's list, plus the random one)
+  uint8_t instEff = inst;
+  if (pIns == 6) instEff = (uint8_t)(arpRoll(h ^ 0x51ED270Bu, (uint16_t)cycle) % 5);
+  else if (pIns) instEff = (uint8_t)(pIns - 1);   // 1..5 -> INST ids 0..4
+
+  uint8_t E = arpExpand(arpOrd, M, instEff, arpBuf);
   if (E == 0) return 0;
   *outLen = E;
-  return arpBuf[idx % E];
+  uint8_t outIdx = (uint8_t)(idx % E);
+  uint8_t note = arpBuf[outIdx];
+
+  // MORPH: fall back to the plain ascending walk for that share of steps
+  if (pMorph && (arpRoll(h ^ 0x1B873593u, idx) % 100) < pMorph)
+    note = arpSrc[outIdx % L];
+
+  // WEIGHT: pull the step onto the pivot tone, in the same register
+  if (pWeight && (arpRoll(h ^ 0xA5A5A5A5u, idx) % 100) < pWeight) {
+    int pv = (int)arpSrc[piv];
+    while (pv + 12 <= (int)note) pv += 12;
+    while (pv > (int)note) pv -= 12;
+    if (pv < 0) pv += 12;
+    if (pv <= 127) note = (uint8_t)pv;
+  }
+
+  // MUTATE: swap in another chord tone, keeping the step's register
+  if (pMut && (arpRoll(h ^ 0x7F4A7C15u, idx) % 100) < pMut) {
+    uint8_t k = (uint8_t)(arpRoll(h ^ 0xC2B2AE35u, idx) % L);
+    int v = (int)arpSrc[k];
+    while (v + 12 <= (int)note) v += 12;
+    if (v <= 127) note = (uint8_t)v;
+  }
+
+  // ENGINE: a walk that only exists for the duration of one pass, rebuilt
+  // from (chord, params, seed, cycle) - so the playhead and the live voice
+  // agree, nothing is stored, and undo is just the seed
+  if (eng != SEQ_ARP_ENG_OFF) {
+    uint8_t rate  = seqArpPOf(seq, ARP_P_RATE);
+    uint8_t depth = seqArpPOf(seq, ARP_P_DEPTH);
+    uint8_t mem   = seqArpPOf(seq, ARP_P_MEM);
+    uint8_t seed  = seqArpPOf(seq, ARP_P_SEED);
+    uint8_t bias  = seqArpPOf(seq, ARP_P_BIAS);
+    uint8_t tgt   = seqArpPOf(seq, ARP_P_TARGET);
+    uint8_t clk   = seqArpPOf(seq, ARP_P_CLOCK);
+    uint8_t opt[4] = { seqArpPOf(seq, ARP_P_OPT1), seqArpPOf(seq, ARP_P_OPT2),
+                       seqArpPOf(seq, ARP_P_OPT3), seqArpPOf(seq, ARP_P_OPT4) };
+    uint16_t bound = 1;                              // CLOCK: reroll point
+    if (clk == SEQ_ARP_CLK_PASS)        bound = E;
+    else if (clk == SEQ_ARP_CLK_BAR)    bound = 16;
+    else if (clk == SEQ_ARP_CLK_PHRASE) bound = 64;
+    uint32_t period = 1 + (uint32_t)bound * (uint32_t)(100 - rate) / 100;
+    if (period < 1) period = 1;
+    uint32_t ecyc = (uint32_t)idx / period;
+    uint32_t es = h ^ (0x9E3779B9u * ((uint32_t)seed + 1)) ^
+                     (0x85EBCA6Bu * (ecyc + 1));
+    static uint8_t ep[ARP_SEQ_MAX];
+    if (tgt == SEQ_ARP_TGT_ORDER || tgt == SEQ_ARP_TGT_BOTH) {
+      uint8_t d = depth;
+      if (bias == SEQ_ARP_BIAS_SPARSE && d < 60) d = 60;   // wider leaps
+      arpEngPass(es, eng, E, (uint8_t)(piv % E), d, mem, opt, E, ep);
+      note = arpBuf[ep[outIdx]];
+    }
+    if (tgt == SEQ_ARP_TGT_PITCH || tgt == SEQ_ARP_TGT_BOTH) {
+      static uint8_t opk[ARP_SEQ_MAX];
+      arpEngPass(es ^ 0x27D4EB2Fu, eng, 3, 1, 60, mem, opt, E, opk);
+      int v = (int)note + 12 * ((int)opk[outIdx] - 1);
+      while (v < 0) v += 12;
+      while (v > 127) v -= 12;
+      note = (uint8_t)v;
+    }
+    if (bias == SEQ_ARP_BIAS_HIGH) { if (note + 12 <= 127) note += 12; }
+    else if (bias == SEQ_ARP_BIAS_LOW) { if (note >= 12) note -= 12; }
+  }
+
+  return note;
 }
 
 // chord-root detection: try each chord note as candidate root (lowest
@@ -2545,6 +2788,41 @@ static void skankDerive(uint8_t c, uint8_t stp, const Chord &src,
 // sub-tick (`go[c]`) walks its position and re-voices, the others keep
 // sounding untouched.  lo/hi are recomputed (stateless) so FOLLOW can
 // still read a feeder that did not advance
+// FOLLOW FREEZE: latch the chord/note the feeder is sounding RIGHT NOW, so
+// switching to FREEZE holds what the follower was just hearing instead of
+// whatever its next active step happens to catch.  Same backward scan as
+// the playback path (an empty feeder step holds its last content).  Returns
+// false when the feeder has nothing to give right now - the playback path
+// then captures lazily on the first frozen step
+bool seqFollowFreezeCapture(uint8_t ch) {
+  if (ch >= SEQ_CH_COUNT) return false;
+  frzN[ch] = 0;
+  uint8_t fx = (uint8_t)(seqInCh[ch] - 1);
+  if (fx >= SEQ_CH_COUNT || fx == ch) return false;
+  if (seqTrackOf(fx) == SEQ_TRACK_DRUM) return false;   // drums: no chord
+  uint8_t stp = chStep[fx];
+  uint8_t len = stepChordLen[fx][stp];
+  if (len == 0) {
+    uint8_t lo, hi;
+    seqPlayRange(fx, &lo, &hi);
+    uint8_t N = (uint8_t)(hi - lo);
+    if (!N) return false;
+    uint8_t n = (uint8_t)((stp >= lo && stp < hi) ? (stp - lo) : 0);
+    for (uint8_t k = 1; k < N && len == 0; k++) {
+      uint8_t j = (uint8_t)(lo + (n + N - k) % N);
+      if (stepChordLen[fx][j] > 0) { stp = j; len = stepChordLen[fx][j]; }
+    }
+  }
+  if (len == 0) return false;
+  frzN[ch] = (len > CHORD_MAX) ? CHORD_MAX : len;
+  for (uint8_t i = 0; i < frzN[ch]; i++) frzCh[ch][i] = stepChord[fx][stp][i];
+  return true;
+}
+
+void seqFollowFreezeClear(uint8_t ch) {
+  if (ch < SEQ_CH_COUNT) frzN[ch] = 0;
+}
+
 static void seqAdvanceOnce(bool start, const bool *go,
                            uint32_t now, uint32_t stepDur) {
   // position of every track for this tick: it walks its own pattern toward
@@ -3339,15 +3617,13 @@ void seqOctaveShiftAdjust(int16_t counts) {
 int seqOctaveShift() { return seqOct[seqEditCh]; }
 
 // ENC5 in SEQMODE (MONO + step-edit): gate time of the edit sequence as a
-// % of one measured step, 4 counts = 5%, clamped 10..100 (100 = hold until
-// the next step).  Track parameters survive an erase (like seqOct)
+// % of one measured step, 1 count = 1% (encDrain, so 4% per detent and more
+// when spun), clamped 10..100 (100 = hold until the next step).  Track
+// parameters survive an erase (like seqOct)
 void seqGateAdjust(int16_t counts) {
-  gateSRes += counts;
-  int16_t st = 0;
-  while (gateSRes >= 4) { gateSRes -= 4; st++; }
-  while (gateSRes <= -4) { gateSRes += 4; st--; }
+  int16_t st = encDrain(counts, &gateSRes);
   if (!st) return;
-  int v = (int)seqGate[seqEditCh] + st * 5;
+  int v = (int)seqGate[seqEditCh] + st;
   if (v < 10) v = 10;
   if (v > 100) v = 100;
   seqGate[seqEditCh] = (uint8_t)v;
@@ -3376,10 +3652,7 @@ int seqVelocity() { return seqVel[seqEditCh]; }
 // into the steps - the playhead re-reads seqProb on every advance, so a
 // turn is audible on the very next hit
 void seqProbAdjust(int16_t counts) {
-  probSRes += counts;
-  int16_t st = 0;
-  while (probSRes >= 4) { probSRes -= 4; st++; }
-  while (probSRes <= -4) { probSRes += 4; st--; }
+  int16_t st = encDrain(counts, &probSRes);
   if (!st) return;
   int v = (int)seqProb[seqEditCh] + st;
   if (v < 0) v = 0;
@@ -3421,10 +3694,7 @@ static uint8_t skankPrmDef(uint8_t idx) { return idx == 1 ? 50 : 0; }
 
 void skankPrmAdjust(uint8_t idx, int16_t counts) {
   if (idx >= 8) return;
-  skankRes[idx] += counts;
-  int16_t st = 0;
-  while (skankRes[idx] >= 4)  { skankRes[idx] -= 4; st++; }
-  while (skankRes[idx] <= -4) { skankRes[idx] += 4; st--; }
+  int16_t st = encDrain(counts, &skankRes[idx]);
   if (!st) return;
   int v = (int)skankPrmM[seqEditCh][idx] + (int)st;
   if (v < 0) v = 0;
@@ -3659,14 +3929,17 @@ void seqEraseAll() {
 // encLink | keyLink | keyModeMem[16] | encBankMem[16] | encM3Mem[16] |
 // leadCtBlend[16] | leadGdDepth[16] | klock[16] | speedLadderVersion |
 // drumGenre[16] | drumVar[16] | drumLine[64] | drumFill[64] | drumMot[64] |
-// drumFillMaster[16] | drumMotMaster[16] | checksum = 923 bytes; blank or
+// drumFillMaster[16] | drumMotMaster[16] | drumMap[16] |
+// checksum = 940 bytes; blank or
 // corrupt keeps the defaults.  A block written by an older build
 // (666/665/649/616/567/564/532/436/420/404/388/260 bytes) still loads: the
 // core fields are at the same offsets and the newer params keep their
 // defaults - saved config survives the upgrade
 static const uint8_t  SEQ_EE_MAGIC = 0x53;
 static const uint16_t SEQ_EE_ADDR = 160;
-static const uint16_t SEQ_EE_LEN = 923;       // + DRUM page params
+static const uint16_t SEQ_EE_LEN = 1262;      // + ARP F sub-page params
+static const uint16_t SEQ_EE_LEN_ARP = 940;   // previous: DRUM kit mapping
+static const uint16_t SEQ_EE_LEN_DRUM2 = 923; // previous: DRUM page params
 static const uint16_t SEQ_EE_LEN_DRUM = 666;  // previous: before the DRUM page
                                               // (speed-ladder marker ends it)
 static const uint16_t SEQ_EE_LEN_SPD = 665;   // previous: 7-rung speed ladder
@@ -3677,6 +3950,7 @@ static const uint16_t SEQ_EE_LEN_KLOCK = 649; // previous: LEAD CT/GD knobs
 // (7-rung) values; this byte is validated with it so an old block cannot
 // pose as the new layout on a lucky checksum
 static const uint8_t  SEQ_SPD_MARK = 2;
+static const uint8_t  SEQ_ARP_MARK = 1;   // ARP sub-page params present (b[1260])
 static const uint16_t SEQ_EE_LEN_LEAD2 = 616; // previous: mode/page mem
 static const uint16_t SEQ_EE_LEN_MODE = 567;  // previous: link flags only
 static const uint16_t SEQ_EE_LEN_SKANK2 = 564; // previous: SKANK knobs[128]
@@ -3753,7 +4027,12 @@ void seqCfgSave() {
     }
     b[890 + i] = drumFillOf(i);      // master FILL (page display value)
     b[906 + i] = drumMotOf(i);       // master MOT
+    b[923 + i] = drumMapOf(i);       // kit MAPPING (CUSTOM / GM)
   }
+  for (uint8_t i = 0; i < SEQ_CH_COUNT; i++)   // ARP F sub-page params
+    for (uint8_t p = 0; p < ARP_P_COUNT; p++)
+      b[940 + i * ARP_P_COUNT + p] = seqArpPOf(i, p);
+  b[1260] = SEQ_ARP_MARK;            // ARP params present
   uint8_t sum = 0;
   for (uint16_t i = 0; i < SEQ_EE_LEN - 1; i++) sum += b[i];
   b[SEQ_EE_LEN - 1] = sum;
@@ -3772,14 +4051,17 @@ void seqCfgLoad() {
   for (uint16_t L = SEQ_EE_LEN;;) {
     uint8_t sum = 0;
     for (uint16_t i = 0; i < L - 1; i++) sum += b[i];
-    // the newest length also needs its ladder marker, so an old block whose
+    // the newest length also needs its markers, so an old block whose
     // trailing checksum happens to match the sum cannot pose as a new one
     if (b[0] == SEQ_EE_MAGIC && sum == b[L - 1] &&
-        (L < SEQ_EE_LEN || b[664] == SEQ_SPD_MARK)) {
+        (L < SEQ_EE_LEN ||
+         (b[664] == SEQ_SPD_MARK && b[1260] == SEQ_ARP_MARK))) {
       len = L;
       break;
     }
-    if (L == SEQ_EE_LEN) L = SEQ_EE_LEN_DRUM;
+    if (L == SEQ_EE_LEN) L = SEQ_EE_LEN_ARP;
+    else if (L == SEQ_EE_LEN_ARP) L = SEQ_EE_LEN_DRUM2;
+    else if (L == SEQ_EE_LEN_DRUM2) L = SEQ_EE_LEN_DRUM;
     else if (L == SEQ_EE_LEN_DRUM) L = SEQ_EE_LEN_SPD;
     else if (L == SEQ_EE_LEN_SPD) L = SEQ_EE_LEN_KLOCK;
     else if (L == SEQ_EE_LEN_KLOCK) L = SEQ_EE_LEN_LEAD2;
@@ -3805,7 +4087,9 @@ void seqCfgLoad() {
   bool extD = (len >= SEQ_EE_LEN_KLOCK); // LEAD CT/GD knobs (649)
   bool extKL = (len >= SEQ_EE_LEN_SPD);  // per-track Klock (665)
   bool extSp = (len >= SEQ_EE_LEN_DRUM); // 9-rung speed ladder (666)
-  bool extDR = (len >= SEQ_EE_LEN);      // DRUM page params (923)
+  bool extDR = (len >= SEQ_EE_LEN_DRUM2); // DRUM page params (923)
+  bool extDM = (len >= SEQ_EE_LEN_ARP);  // DRUM kit mapping (940)
+  bool extA  = (len >= SEQ_EE_LEN);      // ARP sub-page params (1262)
   for (uint8_t i = 0; i < SEQ_CH_COUNT; i++) {
     int v = (int8_t)b[3 + i];            // octave: keep the cast signed
     if (v < -60) v = -60;
@@ -3851,6 +4135,11 @@ void seqCfgLoad() {
     chanKeyLinkSet(b[565] != 0);
   }
   seqMapSet(b[2]);                       // GNR8/LEAD mapping (bad -> NEAR)
+  if (extA) {                            // ARP F sub-page params (1262)
+    for (uint8_t i = 0; i < SEQ_CH_COUNT; i++)
+      for (uint8_t p = 0; p < ARP_P_COUNT; p++)
+        seqArpPSet(i, p, b[940 + i * ARP_P_COUNT + p]);
+  }
   if (extG) {                            // GNR8 params (new-format block;
     for (uint8_t i = 0; i < SEQ_CH_COUNT; i++) {   // legacy blocks keep the
       seqGenFillSet(i, b[259 + i]);                 // defaults above)
@@ -3916,6 +4205,10 @@ void seqCfgLoad() {
       drumFillSet(i, b[890 + i]);
       drumMotSet(i, b[906 + i]);
     }
+  }
+  if (extDM) {                          // DRUM kit mapping (newest block only)
+    for (uint8_t i = 0; i < 16; i++)
+      drumMapSet(i, b[923 + i]);        // clamped inside (bad -> CUSTOM)
   }
   // boot reconcile: a LOCKED family takes the hub channel (its own saved
   // channel is stale by definition once the link is on); then the boot

@@ -3,6 +3,7 @@
 #include "SeqClock.h"      // seqPatLenOf, track types
 #include "Chords.h"        // keyIsInScale (notes stay in the KEY + SCALE)
 #include "Display.h"       // headerShow feedback
+#include "Encoders.h"      // encDrain - accelerated 0-100% dials
 #include "bjorklund.h"     // Euclidean placement (Aciduino V2's dependency)
 
 // per-sequence parameter slots (index = sequence 0..15); boot defaults
@@ -62,13 +63,11 @@ static uint8_t genIdx() {
   return ch < 16 ? ch : 0;
 }
 
-// 4 counts = 1 step, clamped (shared shape of every GEN knob)
+// 4 counts = 1 step at a slow dial and more per detent when spun (encDrain),
+// clamped (shared shape of every GEN knob)
 static void genAdjust(uint8_t *slot, int16_t *res, int16_t counts,
                       uint8_t lo, uint8_t hi) {
-  *res += counts;
-  int16_t step = 0;
-  while (*res >= 4) { *res -= 4; step++; }
-  while (*res <= -4) { *res += 4; step--; }
+  int16_t step = encDrain(counts, res);
   if (!step) return;
   int16_t v = (int16_t)*slot + step;
   if (v < lo) v = lo;
