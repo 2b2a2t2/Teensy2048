@@ -254,6 +254,10 @@ uint8_t seqFMask();                   // attributes the playhead reads this step
 //  hold    = assign mode: keyboard keys played while held REPLACE that
 //            step's chord (first key starts the new chord)
 int  stepChordPress(uint8_t step);   // notes recorded; -1 = silent (active/bad)
+// why the last press recorded nothing (0 notes): a short full-word reason for
+// the header - "Feeder track empty" when the input track on ENC5 has nothing
+// to copy, else "No notes to record".  Empty string = the press landed
+const char* stepRecordWarn();
 int  stepChordClick(uint8_t step);   // EV_CLICKED: 0 = step disabled
 void stepAssignSet(int8_t step);     // step = 0..63 to arm, -1 to disarm
 

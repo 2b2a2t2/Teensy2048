@@ -14,8 +14,8 @@
 
 U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, U8X8_PIN_NONE);
 
-static char headerLeft[16] = "";
-static char headerText[24] = "";
+static char headerLeft[24] = "";
+static char headerText[40] = "";
 static unsigned long headerDeadline = 0;
 static bool headerActive = false;
 static char headerStick[24] = "";
@@ -700,23 +700,24 @@ void drawHeaderText() {
   u8g2.setFont(u8g2_font_6x12_tf);   // header always uses its own font
   clearHeader();
   // SEQMODE step-edit: while an attribute target is engaged, the left
-  // header slot shows it instead of the mode name (TIE/GLIDE/ACCENT/PROB
-  // on MONO, FX/TYPE/ACCENT/PROB on POLY); an open ARP page wins over both
-  // so the rebind is always visible
+  // header slot shows it instead of the mode name (TIE/GLIDE/ACCENT on MONO,
+  // STEP FX/STEP TYPE/EMBED on POLY); an open page wins over both so the
+  // rebind is always visible.  Every label here is a whole word - the strip
+  // is read at a glance during a set, so "PROB" is not a label
   const char* left = headerLeft;
   if (drumPageActive()) {
-    left = "DRUMS";              // the drum pattern page owns the row
+    left = "DRUM PATTERN";       // the drum pattern page owns the row
   } else if (genPageActive()) {
-    left = "GNR8";               // the generator page owns the encoder row
+    left = "GENERATOR";          // the generator page owns the encoder row
   } else if (arpPageActive()) {
-    left = arpOptionName(arpOptionSel());   // ARP / ARP ORD..ARP OPT
+    left = arpOptionName(arpOptionSel());   // ARP / ARP ORDER .. ARP OPTIONS
   } else if (strumFRowActive()) {
-    left = "EXT";               // strum ADDS row: the F row edits colors
+    left = "STRUM ADDS";        // strum ADDS row: the F row edits colors
   } else if (stepEditActive()) {
-    static const char* ed[4] = { "TIE", "GLIDE", "ACCENT", "PROB" };
-    if (stepEditSel() == 5) left = "FX";
-    else if (stepEditSel() == 6) left = "TYPE";
-    else if (stepEditSel() == 7) left = "EMB";
+    static const char* ed[4] = { "TIE", "GLIDE", "ACCENT", "PROBABILITY" };
+    if (stepEditSel() == 5) left = "STEP FX";
+    else if (stepEditSel() == 6) left = "STEP TYPE";
+    else if (stepEditSel() == 7) left = "EMBED";
     else left = ed[stepEditSel() - 1];
   }
   // a transient message owns the whole strip: long strings (the KEY4
@@ -726,14 +727,19 @@ void drawHeaderText() {
   // only when the two fit side by side
   if (headerActive && headerText[0]) {
     int w = u8g2.getStrWidth(headerText);
-    u8g2.drawStr(SCREEN_W - w - 2, 13, headerText);
+    int x = SCREEN_W - w - 2;
+    if (x < 2) x = 2;   // too wide for the band: pin left so the head reads
+    u8g2.drawStr(x, 13, headerText);
   } else if (headerStickOn && headerStick[0]) {
     int w = u8g2.getStrWidth(headerStick);
     int r = SCREEN_W - w - 2;
     if (r < 0) r = 0;
     u8g2.drawStr(r, 13, headerStick);
-    if (left[0] && 2 + u8g2.getStrWidth(left) + 2 <= r)
-      u8g2.drawStr(2, 13, left);
+    // the mode word starts at the very edge and yields first: with the
+    // KEY4 progression on the right, "KEYBOARD 4" (60 px) fits exactly,
+    // and a longer progression simply wins the whole strip
+    if (left[0] && u8g2.getStrWidth(left) + 1 <= r)
+      u8g2.drawStr(0, 13, left);
   } else if (left[0]) {
     u8g2.drawStr(2, 13, left);
   }
@@ -760,6 +766,21 @@ void headerShow(const char* name) {
   headerActive = true;
   drawHeaderText();
   displayDirty = true;
+}
+
+// the one announcement shape: a full parameter name, then its value.
+// Every knob, switch and page in the firmware goes through here, so the
+// strip can never drift back into "klock ON" / "mot 30%" codes
+void headerAnnounce(const char* name, const char* value) {
+  char buf[sizeof(headerText)];
+  snprintf(buf, sizeof(buf), "%s %s", name, value ? value : "");
+  headerShow(buf);
+}
+
+void headerAnnounceInt(const char* name, int value, const char* suffix) {
+  char buf[sizeof(headerText)];
+  snprintf(buf, sizeof(buf), "%s %d%s", name, value, suffix ? suffix : "");
+  headerShow(buf);
 }
 
 void headerSetStick(const char* text) {

@@ -280,6 +280,20 @@ static int8_t srcStepBack(uint8_t x, uint8_t n) {
   return -1;
 }
 
+// does track x hold any note at all inside its own pattern?  A follower
+// copies its feeder's timeline into a step, so an all-empty feeder is
+// exactly the case where a step press has nothing to copy - the refusal
+// names it ("Feeder track empty") instead of leaving the pad dead
+static bool trackHasNotes(uint8_t x) {
+  if (x >= SEQ_CH_COUNT) return false;
+  uint8_t L = seqPatLenOf(x);
+  if (L == 0) return false;
+  if (L > STEP_MAX) L = STEP_MAX;
+  for (uint8_t i = 0; i < L; i++)
+    if (stepChordLen[x][i] > 0) return true;
+  return false;
+}
+
 // clamp a sequence's octave shift so every stored note + 12*shift stays in
 // 0..127 (the -2..8 octave convention spans notes 0..127): range derived
 // from the stored min/max note - notes at C3 (60) give -5..+5, exactly the
@@ -868,7 +882,10 @@ int keyPadPress(uint8_t idx) {
   // header says on/off, nothing is written to the pattern and no chord
   // build happens on the black row while the strum owns the keyboard
   if (hand && (idx == 1 || idx == 3 || idx == 6 || idx == 8 || idx == 10)) {
-    static const char *const nm[5] = { "GUITAR", "GTR2", "ADDS", "SUS", "SUSCOMMON" };
+    // whole words in the header: the LED legend's GTR2/SUSCOM shorthands
+    // are unreadable alone, and the strip has room for the real names
+    static const char *const nm[5] = { "Guitar", "Guitar 2", "Strum Adds",
+                                       "Sustain", "Sustain Common" };
     static const uint8_t bit[5] = { STRUM_OPT_GUITAR, STRUM_OPT_GUITAR2,
                                     STRUM_OPT_ADDS, STRUM_OPT_SUS, STRUM_OPT_SUSCOM };
     uint8_t k = (idx == 1) ? 0 : (idx == 3) ? 1 : (idx == 6) ? 2 : (idx == 8) ? 3 : 4;
@@ -1026,8 +1043,16 @@ static uint8_t liveHeldChord(uint8_t s, const uint8_t **out) {
   return 0;
 }
 
+// why the LAST step press recorded nothing: set by stepChordPress when it
+// returns 0, empty when the press did land.  The step-edit layer prints it in
+// the header, so a refused press is never silent
+static const char *stepRecWarn = "";
+
+const char *stepRecordWarn() { return stepRecWarn; }
+
 int stepChordPress(uint8_t step) {
   if (step >= STEP_MAX) return -1;
+  stepRecWarn = "";
   // pressing an ACTIVE step makes no sound yet: if the tap completes as a
   // click it is disabled; if it turns into a hold it means "edit", not off
   if (stepChordLen[seqEditCh][step] > 0) {
@@ -1091,7 +1116,20 @@ int stepChordPress(uint8_t step) {
       // else: input track empty - keep pending (last gesture), like MONO
     }
   }
-  if (n == 0) return 0;
+  if (n == 0) {
+    // nothing to copy: name the reason.  The track mirrors its INPUT track
+    // (ENC5) - the feeder - so a feeder with no step written yet is the
+    // common case; without it the press looks broken (no header, no LED).
+    // A HARM track only READS the feeder while FOLLOW is on, so with FOLLOW
+    // off the empty input is not the reason (it wants a held/pending chord)
+    bool harmOwn = seqTrack() == SEQ_TRACK_POLY &&
+                   seqPolyType() == SEQ_POLY_HARM && !seqFollow();
+    uint8_t x = (uint8_t)(seqInCh[seqEditCh] - 1);
+    stepRecWarn = (!harmOwn && x < SEQ_CH_COUNT && x != seqEditCh &&
+                   !trackHasNotes(x)) ? "Feeder track empty"
+                                      : "No notes to record";
+    return 0;
+  }
   for (uint8_t i = 0; i < n && i < CHORD_MAX; i++)
     stepChord[seqEditCh][step][i] = src[i];
   stepChordLen[seqEditCh][step] = n;

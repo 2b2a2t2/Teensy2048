@@ -138,9 +138,12 @@ bool arpPageActive()  { return arpPageOn && arpTrackCtx(); }
 uint8_t arpOptionSel() { return arpPageActive() ? arpOptSel : 0xFF; }
 void arpOptionSet(uint8_t sel) { arpOptSel = (sel < 4) ? sel : 0xFF; }
 
+// the page's sub-page names in full: F1 order & shape, F2 motion,
+// F3 generative, F4 the armed engine's own options.  These are OLED
+// labels, so no three-letter codes: "ARP ORDER", never "ARP ORD"
 const char *arpOptionName(uint8_t sel) {
-  static const char *const n[4] = { "ARP ORD", "ARP MOT", "ARP GEN",
-                                    "ARP OPT" };
+  static const char *const n[4] = { "ARP ORDER", "ARP MOTION",
+                                    "ARP GENERATIVE", "ARP OPTIONS" };
   return (sel < 4) ? n[sel] : "ARP";
 }
 
@@ -356,40 +359,40 @@ static int16_t genModStep(uint8_t i, int16_t counts) {
 // "pick step" instead)
 static void genOptionHeader(uint8_t sel) {
   uint8_t ch = (uint8_t)(seqEditChannel() - 1);
-  char hb[24];
+  char hb[32];
   if (genOptSel == 0) {
     if (sel == 0)
-      snprintf(hb, sizeof(hb), "TONES %s", seqGenTonesName(seqGenTonesOf(ch)));
+      snprintf(hb, sizeof(hb), "Tones %s", seqGenTonesName(seqGenTonesOf(ch)));
     else if (sel == 1)
-      snprintf(hb, sizeof(hb), "LOW %s", seqGenLowName(seqGenLowOf(ch)));
+      snprintf(hb, sizeof(hb), "Low %s", seqGenLowName(seqGenLowOf(ch)));
     else if (sel == 2)
-      snprintf(hb, sizeof(hb), "RANGE %uoct", seqGenRangeOf(ch));
+      snprintf(hb, sizeof(hb), "Range %u oct", seqGenRangeOf(ch));
     else
-      snprintf(hb, sizeof(hb), "ALGO %s", seqGenAlgoName(seqGenAlgoOf(ch)));
+      snprintf(hb, sizeof(hb), "Algo %s", seqGenAlgoName(seqGenAlgoOf(ch)));
   } else if (sel == 1) {
     int8_t ss = genStepSelStep();
     if (ss < 0)
-      snprintf(hb, sizeof(hb), "step oct");
+      snprintf(hb, sizeof(hb), "Pick a Step");
     else if (stepOctAt((uint8_t)ss))
-      snprintf(hb, sizeof(hb), "step %u oct %+d", ss + 1,
+      snprintf(hb, sizeof(hb), "Step %u Octave %+d", ss + 1,
                (int)stepOctAt((uint8_t)ss));
     else
-      snprintf(hb, sizeof(hb), "step %u oct 0", ss + 1);
+      snprintf(hb, sizeof(hb), "Step %u Octave 0", ss + 1);
   } else if (sel == 2) {
     int8_t ss = genStepSelStep();
     if (ss < 0)
-      snprintf(hb, sizeof(hb), "step brw");
+      snprintf(hb, sizeof(hb), "Pick a Step");
     else if (stepBrwAt((uint8_t)ss) == 0)
-      snprintf(hb, sizeof(hb), "step %u brw off", ss + 1);
+      snprintf(hb, sizeof(hb), "Step %u Borrow off", ss + 1);
     else
-      snprintf(hb, sizeof(hb), "step %u brw %u", ss + 1,
+      snprintf(hb, sizeof(hb), "Step %u Borrow %u", ss + 1,
                stepBrwAt((uint8_t)ss));
   } else {
     int8_t ss = genStepSelStep();
     if (ss < 0)
-      snprintf(hb, sizeof(hb), "step prob");
+      snprintf(hb, sizeof(hb), "Pick a Step");
     else
-      snprintf(hb, sizeof(hb), "step %u prob %u%%", ss + 1,
+      snprintf(hb, sizeof(hb), "Step %u Mod Prob %u%%", ss + 1,
                stepModPAt((uint8_t)ss));
   }
   headerShow(hb);
@@ -539,9 +542,9 @@ void handleButtonEvents() {
       if (encMute) {
         if (ev == EV_PRESSED) {
           seqMuteToggle(sidx);
-          char mb[12];
-          snprintf(mb, sizeof(mb), "ch%u %s", sidx + 1,
-                   seqIsMuted(sidx) ? "mute" : "on");
+          char mb[24];
+          snprintf(mb, sizeof(mb), "Channel %u %s", sidx + 1,
+                   seqIsMuted(sidx) ? "muted" : "on");
           headerShow(mb);
           if (logRoom(48)) {
             Serial.print("  ");
@@ -551,9 +554,9 @@ void handleButtonEvents() {
       } else if (drumVoice) {
         if (ev == EV_PRESSED) {
           drumVoiceMuteToggle(36 + sidx);
-          char db[12];
+          char db[26];
           snprintf(db, sizeof(db), "%s %s", drumVoiceName(36 + sidx),
-                   drumVoiceMuted(36 + sidx) ? "mute" : "on");
+                   drumVoiceMuted(36 + sidx) ? "muted" : "on");
           headerShow(db);
           if (logRoom(48)) {
             Serial.print("  ");
@@ -577,6 +580,12 @@ void handleButtonEvents() {
           }
           if (modeBase == MODE_ENC)
             refreshMainScreen();   // CC values belong to the new channel
+          // the pad row IS the channel picker while variant 3 is held, so
+          // the strip names the channel - the press's own "Step 7" label
+          // would be the wrong thing to leave up
+          char cb[20];
+          snprintf(cb, sizeof(cb), "Channel %u", sidx + 1);
+          headerShow(cb);
           if (logRoom(48)) {
             Serial.print(modeBase == MODE_KEY ? "  kbd channel " :
                          modeBase == MODE_SEQ ? "  seq channel " :
@@ -591,6 +600,7 @@ void handleButtonEvents() {
       } else if (partSel) {
         if (ev == EV_PRESSED) {
           drumPartSet(sidx);
+          headerAnnounce("Drum Part", drumPartName());
           if (logRoom(48)) {
             Serial.print("  part ");
             Serial.println(drumPartName());
@@ -615,8 +625,8 @@ void handleButtonEvents() {
         // span at all
         static const uint8_t attOf[4] = { SEQ_ATT_TIE, SEQ_ATT_GLIDE,
                                           SEQ_ATT_ACCENT, SEQ_ATT_PROB };
-        static const char *const nmOf[4] = { "tie", "glide", "accent",
-                                             "prob" };
+        static const char *const nmOf[4] = { "Tie", "Glide", "Accent",
+                                             "Probability" };
         bool chainCtx = genTrackCtx() && stepEditTarget == 1;  // TIE only
         char ab[24];
         // a forgotten arm expires after 5 s (plain toggles again)
@@ -632,7 +642,7 @@ void handleButtonEvents() {
           chainArmed = true;
           chainStart = stp;
           chainArmAt = millis();
-          snprintf(ab, sizeof(ab), "chain from %u", stp + 1);
+          snprintf(ab, sizeof(ab), "Chain From Step %u", stp + 1);
           headerShow(ab);
           if (logRoom(48)) {
             Serial.print("  ");
@@ -642,7 +652,7 @@ void handleButtonEvents() {
                    stp == chainStart) {
           // tap the armed start itself = cancel the span
           chainArmed = false;
-          headerShow("chain off");
+          headerShow("Chain Cleared");
           if (logRoom(48)) Serial.println("  chain off");
         } else if (ev == EV_PRESSED && chainCtx && chainArmed &&
             stp != chainStart) {
@@ -650,10 +660,10 @@ void handleButtonEvents() {
           uint8_t n = stepAttrChain(chainStart, stp, att);
           chainArmed = false;
           if (n)
-            snprintf(ab, sizeof(ab), "%u steps %s", n,
-                     nmOf[stepEditTarget - 1]);
+            snprintf(ab, sizeof(ab), "%s %u Steps",
+                     nmOf[stepEditTarget - 1], n);
           else
-            snprintf(ab, sizeof(ab), "chain empty");
+            snprintf(ab, sizeof(ab), "Chain Empty");
           headerShow(ab);
           if (logRoom(48)) {
             Serial.print("  ");
@@ -665,30 +675,33 @@ void handleButtonEvents() {
           if (stepEditTarget == 5) {
             // POLY FX target: the pad arms the SELECTED FX type on it
             on = stepFxToggle(stp, stepFxType);
-            snprintf(ab, sizeof(ab), "%u %s %s", stp + 1,
+            snprintf(ab, sizeof(ab), "Step %u FX %s %s", stp + 1,
                      stepFxName(stepFxType), on ? "on" : "off");
           } else if (stepEditTarget == 6) {
             // POLY TYPE target: the pad stamps the ARMED override on it
             // (a second tap clears back to inherit-the-track)
             on = stepTypeToggle(stp, stepTypeArmV);
-            snprintf(ab, sizeof(ab), "%u %s %s", stp + 1,
-                     on ? stepTypeArmName() : "type",
-                     on ? "on" : "inherit");
+            if (on)
+              snprintf(ab, sizeof(ab), "Step %u Type %s on", stp + 1,
+                       stepTypeArmName());
+            else
+              snprintf(ab, sizeof(ab), "Step %u Type inherit", stp + 1);
           } else if (stepEditTarget == 7) {
             // POLY EMB target: cycle through SUB/INV/PAS/COL for this step
             // ENC7 selects which param to edit, tap cycles the value
             on = stepEmbToggle(stp);
-            snprintf(ab, sizeof(ab), "%u %s", stp + 1, on ? "emb" : "emb");
+            snprintf(ab, sizeof(ab), "Step %u Embed", stp + 1);
           } else {
             uint8_t att = attOf[stepEditTarget - 1];
             on = stepAttrToggle(stp, att);
             if (seqTrack() == SEQ_TRACK_DRUM) {
-              // per voice: name the SELECTED PART and its short attribute
-              snprintf(ab, sizeof(ab), "%u %s %s %s", stp + 1,
-                       drumPartName(), att == SEQ_ATT_ACCENT ? "acc" : "prb",
+              // the pressed pad already names the STEP, so the drum form
+              // leads with the PART: "Snare Accent on"
+              snprintf(ab, sizeof(ab), "%s %s %s", drumPartName(),
+                       att == SEQ_ATT_ACCENT ? "Accent" : "Probability",
                        on ? "on" : "off");
             } else {
-              snprintf(ab, sizeof(ab), "%u %s %s", stp + 1,
+              snprintf(ab, sizeof(ab), "Step %u %s %s", stp + 1,
                        nmOf[stepEditTarget - 1], on ? "on" : "off");
             }
           }
@@ -737,6 +750,18 @@ void handleButtonEvents() {
           if (n > 0 && logRoom(48)) {
             Serial.print("  step record notes=");
             Serial.println(n);
+          } else if (n == 0) {
+            // refused: the header names WHY (a follower's feeder not fed yet,
+            // or nothing held to record) - a dark pad plus a silent header
+            // reads like a dead step
+            const char *w = stepRecordWarn();
+            if (w && w[0]) {
+              headerShow(w);
+              if (logRoom(48)) {
+                Serial.print("  ");
+                Serial.println(w);
+              }
+            }
           }
         }
       } else if (ev == EV_CLICKED) {
@@ -757,7 +782,7 @@ void handleButtonEvents() {
           if (k4Write()) stepAssignSet((int8_t)stp);
           refreshMainScreen();    // the encoder labels are the overlay's now
           char sb[24];
-          snprintf(sb, sizeof(sb), "step %u", stp + 1);
+          snprintf(sb, sizeof(sb), "Step %u", stp + 1);
           headerShow(sb);
           if (logRoom(48)) {
             Serial.print("  step hold ");
@@ -780,13 +805,13 @@ void handleButtonEvents() {
             refreshMainScreen();  // the encoder labels are the overlay's
             char tb[24];
             if (skankRow) {
-              snprintf(tb, sizeof(tb), "step %u locks", stp + 1);
+              snprintf(tb, sizeof(tb), "Step %u Locks", stp + 1);
             } else {
               int8_t tv = stepTrAt(stp);
               if (tv >= 0)
-                snprintf(tb, sizeof(tb), "step %u trans +%d", stp + 1, tv);
+                snprintf(tb, sizeof(tb), "Step %u Transpose +%d", stp + 1, tv);
               else
-                snprintf(tb, sizeof(tb), "step %u trans %d", stp + 1, tv);
+                snprintf(tb, sizeof(tb), "Step %u Transpose %d", stp + 1, tv);
             }
             headerShow(tb);
             if (logRoom(48)) {
@@ -831,7 +856,7 @@ void handleButtonEvents() {
       if (ev == EV_PRESSED && modeBase == MODE_SEQ && modeVariant != 3 &&
           seqTrack() == SEQ_TRACK_DRUM) {
         drumPartSelectHold(true);
-        headerShow("PART SELECT");
+        headerShow("Drum Part Select");
         if (logRoom(48)) {
           Serial.print("  part select (");
           Serial.print(drumPartName());
@@ -843,7 +868,7 @@ void handleButtonEvents() {
         refreshAllLeds();
       } else if (ev == EV_PRESSED && modeBase == MODE_ENC) {
         drumMuteHold(true);
-        headerShow("DRUM MUTE");
+        headerShow("Drum Voice Mute");
         if (logRoom(48)) Serial.println("  drum voice mute");
         refreshAllLeds();
       } else if (ev == EV_RELEASED && drumVoiceMuteActive()) {
@@ -892,15 +917,15 @@ void handleButtonEvents() {
             if (logRoom(48)) Serial.println("  drum page off (edit on)");
           }
           stepEditSet(true, 0);
-          headerShow("EDIT ON");
+          headerShow("Step Edit on");
           if (logRoom(48)) Serial.println("  step edit on (steps)");
         } else if (stepEditTarget != 0) {
           stepEditSet(true, 0);
-          headerShow("STEPS");
+          headerShow("Step Recording");
           if (logRoom(48)) Serial.println("  edit target steps");
         } else {
           stepEditSet(false, 0);
-          headerShow("EDIT OFF");
+          headerShow("Step Edit off");
           if (logRoom(48)) Serial.println("  step edit off");
         }
         refreshAllLeds();
@@ -910,7 +935,7 @@ void handleButtonEvents() {
         // (a HOLD still opens the part select - hold suppresses the click)
         if (stepEditOn) {
           stepEditSet(false, 0);
-          headerShow("EDIT OFF");
+          headerShow("Step Edit off");
           if (logRoom(48)) Serial.println("  step edit off");
         } else {
           // master on: reuse the last attribute, default to ACCENT
@@ -918,11 +943,11 @@ void handleButtonEvents() {
           if (t == 5 && seqTrack() != SEQ_TRACK_POLY) t = 3; // FX is POLY-only
           if (t == 6 && seqTrack() != SEQ_TRACK_POLY) t = 3; // TYPE is POLY-only
           stepEditSet(true, t);
-          if (t == 3) headerShow("ACCENT");
-          else if (t == 4) headerShow("PROB");
+          if (t == 3) headerShow("Accent");
+          else if (t == 4) headerShow("Probability");
           else {
-            char hb[16];
-            snprintf(hb, sizeof(hb), "%s %s", t == 6 ? "TYPE" : "FX",
+            char hb[24];
+            snprintf(hb, sizeof(hb), "%s %s", t == 6 ? "Step Type" : "Step FX",
                      t == 6 ? stepTypeArmName() : stepFxName(stepFxType));
             headerShow(hb);
           }
@@ -948,7 +973,7 @@ void handleButtonEvents() {
         (uint8_t)(kl - groupControls[5]) == 2) {
       if (ev == EV_PRESSED) {
         f3AccentHold(true);
-        headerShow("ACCENT VEL");
+        headerShow("Accent Velocity");
         refreshMainScreen();
         if (logRoom(48)) {
           Serial.print("  accent vel ");
@@ -972,7 +997,7 @@ void handleButtonEvents() {
       static const char *const xn[3] = { "sus4", "add6", "add9" };
       if (idx == 3) {
         strumExtSet(0);
-        headerShow("ADDS cleared");
+        headerShow("Strum Adds cleared");
         if (logRoom(48)) Serial.println("  adds cleared");
       } else {
         strumExtSet((uint8_t)(strumExtGet() ^ (1u << idx)));
@@ -1018,12 +1043,12 @@ void handleButtonEvents() {
       uint8_t idx = (uint8_t)(kl - groupControls[5]);      // 0..3
       if (genOptSel == idx) {
         genOptSel = 0xFF;
-        headerShow("GNR8");
+        headerShow("Generator");
         if (logRoom(48)) Serial.println("  gen option off");
       } else {
         genOptSel = idx;
         if (idx == 0) {                // F1 = the four-knob options page
-          headerShow("GNR8 opts");
+          headerShow("Generator Options");
           if (logRoom(48)) Serial.println("  gen opts page");
         } else {
           genOptionHeader(idx);
@@ -1045,8 +1070,8 @@ void handleButtonEvents() {
       uint8_t idx = (uint8_t)(kl - groupControls[5]);      // 0..3
       uint8_t want = (drumSetSelGet() == idx) ? 0xFF : idx;
       drumSetSelSet(want);
-      static const char *const sn[4] = { "GROOVE", "LINES", "FILL%", "MOT%" };
-      headerShow(want == 0xFF ? "DRUMS" : sn[idx]);
+      static const char *const sn[4] = { "Groove", "Lines", "Fill %", "Motion %" };
+      headerShow(want == 0xFF ? "Drum Pattern" : sn[idx]);
       if (logRoom(48)) {
         Serial.print("  drum set ");
         Serial.println(want == 0xFF ? "all" : sn[idx]);
@@ -1065,7 +1090,7 @@ void handleButtonEvents() {
         (stepEditCtx() || stepEditAccCtx()) &&
         kl >= groupControls[5] && kl <= groupControls[8]) {
       uint8_t idx = (uint8_t)(kl - groupControls[5]);      // 0..3
-      static const char *const tn[4] = { "TIE", "GLIDE", "ACCENT", "PROB" };
+      static const char *const tn[4] = { "Tie", "Glide", "Accent", "Probability" };
       bool droppedArp = false;
       if (stepEditCtx()) {
         // arming a target wins over the M2 ARP page (the radio is one
@@ -1109,7 +1134,7 @@ void handleButtonEvents() {
       } else if (idx >= 2) {               // DRUM/POLY: ACCENT (F3) / PROB (F4)
         if (stepEditOn && stepEditTarget == idx + 1) {
           stepEditSet(false, 0);
-          headerShow("EDIT OFF");
+          headerShow("Step Edit off");
           if (logRoom(48)) Serial.println("  step edit off");
         } else {
           stepEditSet(true, (uint8_t)(idx + 1));
@@ -1124,17 +1149,17 @@ void handleButtonEvents() {
         if (stepEditOn && stepEditTarget == 5) {
           stepEditSet(true, 7);
           char hb[24];
-          snprintf(hb, sizeof(hb), "EMB SUB=%u INV=%u", k4EmbSubProb(), k4EmbInvBias());
+          snprintf(hb, sizeof(hb), "Embed Sub %u Inv %u", k4EmbSubProb(), k4EmbInvBias());
           headerShow(hb);
           if (logRoom(48)) { Serial.print("  edit target emb "); Serial.println(hb); }
         } else if (stepEditOn && stepEditTarget == 7) {
           stepEditSet(false, 0);
-          headerShow("EDIT OFF");
+          headerShow("Step Edit off");
           if (logRoom(48)) Serial.println("  step edit off");
         } else {
           stepEditSet(true, 5);
-          char hb[16];
-          snprintf(hb, sizeof(hb), "FX %s", stepFxName(stepFxType));
+          char hb[24];
+          snprintf(hb, sizeof(hb), "Step FX %s", stepFxName(stepFxType));
           headerShow(hb);
           if (logRoom(48)) {
             Serial.print("  edit target fx ");
@@ -1146,12 +1171,12 @@ void handleButtonEvents() {
         // the armed value, a tap on a step stamps it (tap again = inherit)
         if (stepEditOn && stepEditTarget == 6) {
           stepEditSet(false, 0);
-          headerShow("EDIT OFF");
+          headerShow("Step Edit off");
           if (logRoom(48)) Serial.println("  step edit off");
         } else {
           stepEditSet(true, 6);
-          char hb[16];
-          snprintf(hb, sizeof(hb), "TYPE %s", stepTypeArmName());
+          char hb[24];
+          snprintf(hb, sizeof(hb), "Step Type %s", stepTypeArmName());
           headerShow(hb);
           if (logRoom(48)) {
             Serial.print("  edit target type ");
@@ -1171,7 +1196,7 @@ void handleButtonEvents() {
         kl == groupControls[4]) {
       bool on = !encM3Page();
       encM3PageSet(on);
-      headerShow(on ? "CC21-36" : "CC1-16");
+      headerShow(on ? "CC Bank 21-36" : "CC Bank 1-16");
       if (logRoom(48)) {
         Serial.print("  enc page group ");
         Serial.println(on ? "2 (CC21-36)" : "1 (CC1-16)");
@@ -1191,8 +1216,8 @@ void handleButtonEvents() {
       uint8_t idx = (uint8_t)(kl - groupControls[5]);      // 0..3
       encBankSet(idx);
       uint8_t c1 = encCcNum(4);          // first CC of the armed block
-      char hb[20];
-      snprintf(hb, sizeof(hb), "F%u CC%u-%u", idx + 1, c1, c1 + 3);
+      char hb[24];
+      snprintf(hb, sizeof(hb), "CC Bank %u-%u", c1, c1 + 3);
       headerShow(hb);
       if (logRoom(48)) {
         Serial.print("  enc bank ");
@@ -1209,7 +1234,7 @@ void handleButtonEvents() {
     if (ledForPad[pad] == groupControls[3]) {
       if (ev == EV_PRESSED && modeBase == MODE_ENC) {
         encMuteHold(true);
-        headerShow("MUTE");
+        headerShow("Channel Mute");
         if (logRoom(48)) Serial.println("  mute overlay");
         refreshAllLeds();
       } else if (ev == EV_RELEASED && encMuteActive()) {
@@ -1217,8 +1242,8 @@ void handleButtonEvents() {
         refreshAllLeds();
       } else if (ev == EV_CLICKED && modeBase == MODE_SEQ && modeVariant == 3) {
         seqErase((uint8_t)(seqEditChannel() - 1));
-        char eb[14];
-        snprintf(eb, sizeof(eb), "ch%u erased", seqEditChannel());
+        char eb[24];
+        snprintf(eb, sizeof(eb), "Channel %u erased", seqEditChannel());
         headerShow(eb);
         if (logRoom(48)) {
           Serial.print("  ");
@@ -1230,7 +1255,7 @@ void handleButtonEvents() {
         // (F1..F4 = sus4/add6/add9/clear) on/off - POLY had no M2 job yet,
         // so this never collides with the ARP page (MONO) or erase (mode 3)
         strumFRowToggle();
-        headerShow(strumFRowActive() ? "ADDS" : "ADDS OFF");
+        headerShow(strumFRowActive() ? "Strum Adds" : "Strum Adds off");
         if (logRoom(48)) {
           Serial.print("  strum adds row ");
           Serial.println(strumFRowActive() ? "on" : "off");
@@ -1250,7 +1275,7 @@ void handleButtonEvents() {
         } else {
           stepChainDisarm();           // the F row leaves too
         }
-        headerShow(arpPageActive() ? "ARP" : "ARP OFF");
+        headerShow(arpPageActive() ? "Arpeggiator" : "Arpeggiator off");
         if (logRoom(48)) {
           Serial.print("  arp page ");
           Serial.println(arpPageActive() ? "on" : "off");
@@ -1270,7 +1295,7 @@ void handleButtonEvents() {
         } else {
           stepChainDisarm();           // the F row leaves too
         }
-        headerShow(genPageActive() ? "GNR8" : "GNR8 OFF");
+        headerShow(genPageActive() ? "Generator" : "Generator off");
         if (logRoom(48)) {
           Serial.print("  gen page ");
           Serial.println(genPageActive() ? "on" : "off");
@@ -1290,7 +1315,7 @@ void handleButtonEvents() {
         } else {
           stepChainDisarm();           // the F row leaves too
         }
-        headerShow(leadPageActive() ? "LEAD" : "LEAD OFF");
+        headerShow(leadPageActive() ? "Lead" : "Lead off");
         if (logRoom(48)) {
           Serial.print("  lead page ");
           Serial.println(leadPageActive() ? "on" : "off");
@@ -1310,7 +1335,7 @@ void handleButtonEvents() {
         } else {
           stepChainDisarm();           // the F row leaves too
         }
-        headerShow(harmPageActive() ? "HARM" : "HARM OFF");
+        headerShow(harmPageActive() ? "Harmonizer" : "Harmonizer off");
         if (logRoom(48)) {
           Serial.print("  harm page ");
           Serial.println(harmPageActive() ? "on" : "off");
@@ -1328,7 +1353,7 @@ void handleButtonEvents() {
         } else {
           stepChainDisarm();           // the F row leaves too
         }
-        headerShow(compPageActive() ? "COMP" : "COMP OFF");
+        headerShow(compPageActive() ? "Comping" : "Comping off");
         if (logRoom(48)) {
           Serial.print("  comp page ");
           Serial.println(compPageActive() ? "on" : "off");
@@ -1348,7 +1373,7 @@ void handleButtonEvents() {
         } else {
           stepChainDisarm();           // the F row leaves too
         }
-        headerShow(skankPageActive() ? "SKANK" : "SKANK OFF");
+        headerShow(skankPageActive() ? "Skank" : "Skank off");
         if (logRoom(48)) {
           Serial.print("  skank page ");
           Serial.println(skankPageActive() ? "on" : "off");
@@ -1368,7 +1393,7 @@ void handleButtonEvents() {
         } else {
           stepChainDisarm();           // the F row leaves too
         }
-        headerShow(drumPageActive() ? "DRUMS" : "DRUMS OFF");
+        headerShow(drumPageActive() ? "Drum Pattern" : "Drum Pattern off");
         if (logRoom(48)) {
           Serial.print("  drum page ");
           Serial.println(drumPageActive() ? "on" : "off");
@@ -1383,7 +1408,7 @@ void handleButtonEvents() {
     if (ev == EV_PRESSED && ledForPad[pad] == groupTransport[1] &&
         modeBase == MODE_SEQ && modeVariant == 3) {
       seqEraseAll();
-      headerShow("ALL ERASED");
+      headerShow("All Erased");
       if (logRoom(48)) Serial.println("  erase all tracks");
       refreshAllLeds();
     }
@@ -1393,7 +1418,7 @@ void handleButtonEvents() {
     if (ev == EV_PRESSED && ledForPad[pad] == groupTransport[1] &&
         modeBase == MODE_ENC && modeVariant == 4) {
       encCcSave();
-      headerShow("CC SAVED");
+      headerShow("CC Saved");
       if (logRoom(48)) Serial.println("  cc values saved to eeprom");
     }
 
@@ -1404,7 +1429,7 @@ void handleButtonEvents() {
     if (ev == EV_PRESSED && ledForPad[pad] == groupTransport[1] &&
         modeBase == MODE_SEQ && modeVariant == 4) {
       seqCfgSave();
-      headerShow("SEQ SAVED");
+      headerShow("Sequence Saved");
       if (logRoom(48)) Serial.println("  seq config saved to eeprom");
     }
 
@@ -1417,9 +1442,9 @@ void handleButtonEvents() {
          (modeBase == MODE_KEY &&
           (modeVariant == 1 || modeVariant == 2 || modeVariant == 4)))) {
       uint8_t r = seqRecToggle();
-      if (r == 0) headerShow("kbd ch mismatch");
-      else if (r == 1) headerShow("rec armed");
-      else headerShow("rec off");
+      if (r == 0) headerShow("Keyboard Ch Mismatch");
+      else if (r == 1) headerShow("Record armed");
+      else headerShow("Record off");
       refreshAllLeds();
       if (logRoom(48)) {
         Serial.print("  rec ");
@@ -1487,7 +1512,7 @@ void handleButtonEvents() {
         k4EmbMenuSet(on);
         if (on) setOverlay(G_ENC, ENC_KEY4_EMB);
         else clearOverlay(G_ENC);
-        headerShow(on ? "EMB MENU" : "MENU OFF");
+        headerShow(on ? "Embed Menu on" : "Embed Menu off");
         refreshMainScreen();   // the row swaps to EMB/PLACE labels
         if (logRoom(48))
           Serial.println(on ? "  emb menu on" : "  emb menu off");
@@ -1497,44 +1522,44 @@ void handleButtonEvents() {
         if (logRoom(48)) Serial.println("  focus next");
       } else if (k4ci == 2 && ev == EV_CLICKED) {
         bool on = k4WriteToggle();
-        headerShow(on ? "KEY WRITE" : "KEY AUDITION");
+        headerShow(on ? "Key Write" : "Key Audition");
         if (logRoom(48))
           Serial.println(on ? "  key write" : "  key audition");
       } else if (k4ci == 3 && ev == EV_CLICKED) {
         bool on = k4AutoToggle();
-        headerShow(on ? "AUTO ADV" : "AUTO OFF");
+        headerShow(on ? "Auto Advance on" : "Auto Advance off");
         if (logRoom(48)) Serial.println(on ? "  auto on" : "  auto off");
       } else if (k4ci == 4 && ev == EV_CLICKED) {
         int w = k4ApplyAll();
         if (w > 0) k4AnnouncePattern();   // the progression that was written
-        else headerShow("APPLIED 0");
+        else headerShow("Nothing Written");
         refreshAllLeds();
         refreshMainScreen();   // focus/locks may have been re-read
         if (logRoom(48)) Serial.println(w > 0 ? "  applied" : "  applied 0");
       } else if (k4ci == 4 && ev == EV_HOLD) {
         int u = k4Undo();
         if (u == 0) k4AnnouncePattern();   // the restored progression
-        else headerShow("nothing to undo");
+        else headerShow("Nothing To Undo");
         refreshAllLeds();
         refreshMainScreen();
         if (logRoom(48)) Serial.println("  undo");
       } else if (k4ci == 5 && ev == EV_CLICKED) {
         int w = k4Variation();
         if (w > 0) k4AnnouncePattern();   // the reseeded progression
-        else headerShow("VAR 0");
+        else headerShow("No Variation");
         refreshAllLeds();
         if (logRoom(48)) Serial.println(w > 0 ? "  variation" : "  var 0");
       } else if (k4ci == 6 && ev == EV_CLICKED) {
         bool on = k4LockToggle(k4Focus());
-        char lb[14];
-        snprintf(lb, sizeof(lb), "%s %u", on ? "lock" : "unlock",
-                 (unsigned)(k4Focus() + 1));
+        char lb[24];
+        snprintf(lb, sizeof(lb), "Step %u %s", (unsigned)(k4Focus() + 1),
+                 on ? "Locked" : "Unlocked");
         headerShow(lb);
         refreshAllLeds();       // amber focus/lock pads follow
         if (logRoom(48)) { Serial.print("  "); Serial.println(lb); }
       } else if (k4ci == 7 && ev == EV_CLICKED) {
         bool on = k4LeadToggle();
-        headerShow(on ? "LEAD ON" : "LEAD OFF");
+        headerShow(on ? "Lead on" : "Lead off");
         if (logRoom(48)) Serial.println(on ? "  lead on" : "  lead off");
       } else if (k4ci == 8 && ev == EV_PRESSED) {
         k4HoldSet(true);
@@ -1556,8 +1581,8 @@ void handleButtonEvents() {
         k4ci == 4) {
       if (ev == EV_CLICKED) {
         int w = seqGenProduce();
-        char gb[24];
-        snprintf(gb, sizeof(gb), "gen %d steps", w > 0 ? w : 0);
+        char gb[32];
+        snprintf(gb, sizeof(gb), "Generator %d Steps", w > 0 ? w : 0);
         headerShow(gb);
         refreshAllLeds();       // the step LEDs follow the new pattern
         refreshMainScreen();
@@ -1567,7 +1592,7 @@ void handleButtonEvents() {
         }
       } else if (ev == EV_HOLD) {
         int u = stepSnapshotRestore();
-        headerShow(u == 0 ? "undo" : "nothing to undo");
+        headerShow(u == 0 ? "Undo" : "Nothing To Undo");
         refreshAllLeds();
         refreshMainScreen();
         if (logRoom(48))
@@ -1584,8 +1609,8 @@ void handleButtonEvents() {
         k4ci == 4) {
       if (ev == EV_CLICKED) {
         int w = seqLeadProduce();
-        char lb[24];
-        snprintf(lb, sizeof(lb), "lead %d steps", w > 0 ? w : 0);
+        char lb[32];
+        snprintf(lb, sizeof(lb), "Lead %d Steps", w > 0 ? w : 0);
         headerShow(lb);
         refreshAllLeds();       // the step LEDs follow the new melody
         refreshMainScreen();
@@ -1595,7 +1620,7 @@ void handleButtonEvents() {
         }
       } else if (ev == EV_HOLD) {
         int u = stepSnapshotRestore();
-        headerShow(u == 0 ? "undo" : "nothing to undo");
+        headerShow(u == 0 ? "Undo" : "Nothing To Undo");
         refreshAllLeds();
         refreshMainScreen();
         if (logRoom(48))
@@ -1611,8 +1636,8 @@ void handleButtonEvents() {
         k4ci == 4) {
       if (ev == EV_CLICKED) {
         int w = k4Harm();
-        char hb[24];
-        snprintf(hb, sizeof(hb), "harm %d steps", w > 0 ? w : 0);
+        char hb[32];
+        snprintf(hb, sizeof(hb), "Harmonizer %d Steps", w > 0 ? w : 0);
         headerShow(hb);
         refreshAllLeds();       // the step LEDs follow the new chords
         refreshMainScreen();
@@ -1622,7 +1647,7 @@ void handleButtonEvents() {
         }
       } else if (ev == EV_HOLD) {
         int u = stepSnapshotRestore();
-        headerShow(u == 0 ? "undo" : "nothing to undo");
+        headerShow(u == 0 ? "Undo" : "Nothing To Undo");
         refreshAllLeds();
         refreshMainScreen();
         if (logRoom(48))
@@ -1639,15 +1664,15 @@ void handleButtonEvents() {
         k4ci == 4) {
       if (ev == EV_CLICKED) {
         int w = drumProduce();
-        char rb[24];
-        snprintf(rb, sizeof(rb), "drums %d steps", w > 0 ? w : 0);
+        char rb[32];
+        snprintf(rb, sizeof(rb), "Drum Pattern %d Steps", w > 0 ? w : 0);
         headerShow(rb);
         refreshAllLeds();       // the step LEDs follow the new pattern
         refreshMainScreen();
         if (logRoom(48)) { Serial.print("  "); Serial.println(rb); }
       } else if (ev == EV_HOLD) {
         int u = stepSnapshotRestore();
-        headerShow(u == 0 ? "undo" : "nothing to undo");
+        headerShow(u == 0 ? "Undo" : "Nothing To Undo");
         refreshAllLeds();
         refreshMainScreen();
         if (logRoom(48))
@@ -1705,7 +1730,7 @@ void handleButtonEvents() {
     if (ev == EV_PRESSED && ledForPad[pad] == groupTransport[0]) {
       if (modeBase == MODE_ENC && modeVariant == 3) {
         seqSetSyncInternal(!seqIsSyncInternal());
-        headerShow(seqIsSyncInternal() ? "clock INT" : "clock EXT");
+        headerShow(seqIsSyncInternal() ? "Clock Internal" : "Clock External");
         if (logRoom(48)) {
           Serial.print("  clock ");
           Serial.println(seqIsSyncInternal() ? "INT" : "EXT");
@@ -1733,12 +1758,12 @@ void handleButtonEvents() {
         uint8_t r = seqBarPress(bar);
         char bb[20];
         if (r == 0)
-          snprintf(bb, sizeof(bb), "steps %u-%u",
+          snprintf(bb, sizeof(bb), "Steps %u-%u",
                    bar * 16 + 1, bar * 16 + 16);
         else if (r == 1)
-          snprintf(bb, sizeof(bb), "loop %u-%u", bar * 16 + 1, bar * 16 + 16);
+          snprintf(bb, sizeof(bb), "Loop %u-%u", bar * 16 + 1, bar * 16 + 16);
         else
-          snprintf(bb, sizeof(bb), "loop off");
+          snprintf(bb, sizeof(bb), "Loop Off");
         headerShow(bb);
         if (logRoom(48)) {
           Serial.print("  bar ");
@@ -1893,8 +1918,12 @@ void handleEncoderEvents() {
     // playhead, recorded steps and the pattern length read again) and only
     // holding SEQ into SEQMODE3 brings the selector up
     if (ed != 0 && modeBase == MODE_SEQ && modeVariant == 3 &&
-        seq3ChSelDismiss())
+        seq3ChSelDismiss()) {
       refreshAllLeds();
+      // the pads are back on the sequencer: the left slot stops claiming
+      // to be the channel picker (the turn's own message follows below)
+      headerSetLeft(modeHeaderLabel());
+    }
 
     // KEYMODE: ENC1 = octave -2..8 (clamped, no wrap; 4 counts = 1 octave).
     // KEYMODE4: the main row owns ENC1 for GENRE - the octave lives on the
@@ -1902,6 +1931,7 @@ void handleEncoderEvents() {
     if (modeBase == MODE_KEY && ei == 0 && ed != 0 &&
         (modeVariant != 4 || currentBinding().enc == ENC_KEY4_PREV)) {
       keyOctaveAdjust(ed);
+      headerAnnounceInt("Octave", keyOctave());
       if (logRoom(48)) {
         Serial.print("  octave ");
         Serial.println(keyOctave());
@@ -1921,7 +1951,10 @@ void handleEncoderEvents() {
         k4Refresh();                // the framework follows the scale
         k4Announce();               // the sticky header shows the ranking
       }
-      headerShow(keyScaleMood());   // the mood flashes over it (all variants)
+      // the MOOD only ("Scale Happy", "Scale Sad"): the name is already on
+      // the knob's own value line, so repeating it here just squeezed the
+      // interesting part off the strip
+      headerAnnounce("Scale", keyScaleMood());
       if (logRoom(48)) {
         Serial.print("  scale ");
         Serial.println(keyScaleName());
@@ -1943,6 +1976,7 @@ void handleEncoderEvents() {
         k4Refresh();
         k4Announce();
       }
+      headerAnnounce("Key", keyRootName());
       if (logRoom(48)) {
         Serial.print("  root ");
         Serial.println(keyRootName());
@@ -1959,27 +1993,27 @@ void handleEncoderEvents() {
         currentBinding().enc == ENC_KEY4_STEP && ei <= 3 &&
         k4StepSelGet() >= 0) {
       uint8_t stp = (uint8_t)k4StepSelGet();
-      char hb[24];
+      char hb[32];
       char dgs[8], ivs[8];
       if (ei == 0) {
         stepOctSet(stp, (int8_t)(stepOctAt(stp) + ((ed > 0) ? 1 : -1)));
         int8_t nv = stepOctAt(stp);
-        if (nv == 0) snprintf(hb, sizeof(hb), "%u oct 0", stp + 1);
-        else snprintf(hb, sizeof(hb), "%u oct %+d", stp + 1, nv);
+        if (nv == 0) snprintf(hb, sizeof(hb), "Step %u Octave 0", stp + 1);
+        else snprintf(hb, sizeof(hb), "Step %u Octave %+d", stp + 1, nv);
         headerShow(hb);
         if (logRoom(48)) { Serial.print("  "); Serial.println(hb); }
       } else if (ei == 1) {
         int8_t dd = (ed > 12) ? 12 : (ed < -12) ? -12 : (int8_t)ed;
         stepDegAdjust(stp, dd);
         if (k4StepLabels(stp, dgs, sizeof(dgs), NULL, 0)) {
-          snprintf(hb, sizeof(hb), "%u deg %s", stp + 1, dgs);
+          snprintf(hb, sizeof(hb), "Step %u Degree %s", stp + 1, dgs);
           headerShow(hb);
           if (logRoom(48)) { Serial.print("  "); Serial.println(hb); }
         }
       } else if (ei == 2) {
         stepInvAdjust(stp, (int8_t)((ed > 0) ? 1 : -1));
         if (k4StepLabels(stp, NULL, 0, ivs, sizeof(ivs))) {
-          snprintf(hb, sizeof(hb), "%u inv %s", stp + 1, ivs);
+          snprintf(hb, sizeof(hb), "Step %u Inversion %s", stp + 1, ivs);
           headerShow(hb);
           if (logRoom(48)) { Serial.print("  "); Serial.println(hb); }
         }
@@ -1993,7 +2027,7 @@ void handleEncoderEvents() {
             if (nt[i] < lo) lo = nt[i];
             if (nt[i] > hi) hi = nt[i];
           }
-          snprintf(hb, sizeof(hb), "%u voice %uoct", stp + 1,
+          snprintf(hb, sizeof(hb), "Step %u Voicing %u oct", stp + 1,
                    (uint8_t)((hi - lo) / 12));
           headerShow(hb);
           if (logRoom(48)) { Serial.print("  "); Serial.println(hb); }
@@ -2013,17 +2047,20 @@ void handleEncoderEvents() {
         currentBinding().enc == ENC_KEY4) {
       if (ei == 0) {
         k4GenreAdjust(ed);
+        headerAnnounce("Genre", k4GenreName());
         if (logRoom(48)) {
           Serial.print("  genre ");
           Serial.println(k4GenreName());
         }
       } else {
         k4KnobAdjust((uint8_t)(ei - 1), ed);
+        static const char* const kn[7] = { "Mood", "Tension", "Motion",
+                                           "Cadence", "Complexity", "Era",
+                                           "Surprise" };
+        headerAnnounceInt(kn[ei - 1], (int)k4Knob((uint8_t)(ei - 1)));
         if (logRoom(48)) {
-          static const char* kn[7] = { "mood ", "tens ", "motion ", "cad ",
-                                       "cpx ", "era ", "surp " };
-          Serial.print(kn[ei - 1]);
-          Serial.println(k4Knob((uint8_t)(ei - 1)));
+          Serial.print("  ");
+          Serial.println(kn[ei - 1]);
         }
       }
       k4Regenerate();       // the written progression follows the knobs
@@ -2041,30 +2078,35 @@ void handleEncoderEvents() {
         currentBinding().enc == ENC_KEY4_PREV) {
       if (ei == 3) {
         chordFScaleAdjust(ed);
+        headerAnnounce("Force To Scale", chordFScale() ? "on" : "off");
         if (logRoom(48)) {
           Serial.print("  fscale ");
           Serial.println(chordFScale() ? "ON" : "OFF");
         }
       } else if (ei == 4) {       // EN5 = SUB prob
         k4EmbSubProbAdjust(ed);
+        headerAnnounceInt("Substitution", k4EmbSubProb(), "%");
         if (logRoom(48)) {
           Serial.print("  sub% ");
           Serial.println(k4EmbSubProb());
         }
       } else if (ei == 5) {       // EN6 = INV bias
         k4EmbInvBiasAdjust(ed);
+        headerAnnounceInt("Inversion Bias", k4EmbInvBias(), "%");
         if (logRoom(48)) {
           Serial.print("  inv ");
           Serial.println(k4EmbInvBias());
         }
       } else if (ei == 6) {       // EN7 = PAS amt
         k4EmbPassAmtAdjust(ed);
+        headerAnnounceInt("Passing Amount", k4EmbPassAmt(), "%");
         if (logRoom(48)) {
           Serial.print("  pas% ");
           Serial.println(k4EmbPassAmt());
         }
       } else if (ei == 7) {       // EN8 = COL amt
         k4EmbColorAmtAdjust(ed);
+        headerAnnounceInt("Colour Amount", k4EmbColorAmt(), "%");
         if (logRoom(48)) {
           Serial.print("  col% ");
           Serial.println(k4EmbColorAmt());
@@ -2080,16 +2122,12 @@ void handleEncoderEvents() {
         currentBinding().enc == ENC_KEY4_EMB) {
       if (ei == 0) {
         k4EmbModeAdjust(ed);
-        char eb[8];
-        snprintf(eb, sizeof(eb), "EMB %s", k4EmbModeName());
-        headerShow(eb);
-        if (logRoom(48)) { Serial.print("  "); Serial.println(eb); }
+        headerAnnounce("Embed Mode", k4EmbModeName());
+        if (logRoom(48)) { Serial.print("  embed "); Serial.println(k4EmbModeName()); }
       } else if (ei == 1) {
         k4EmbPlaceAdjust(ed);
-        char pb[8];
-        snprintf(pb, sizeof(pb), "PLC %s", k4EmbPlaceName());
-        headerShow(pb);
-        if (logRoom(48)) { Serial.print("  "); Serial.println(pb); }
+        headerAnnounce("Embed Place", k4EmbPlaceName());
+        if (logRoom(48)) { Serial.print("  place "); Serial.println(k4EmbPlaceName()); }
       }
       any = true;
     }
@@ -2105,6 +2143,11 @@ void handleEncoderEvents() {
         else if (ei == 5) chordPerfAdjust(ed);
         if (ei >= 3 && ei <= 5) {
           refreshAllLeds();         // latch off silences the chord's tint
+          headerAnnounce(ei == 3 ? "Chord Latch" :
+                         ei == 4 ? "Chord Key Lock" : "Chord Performance",
+                         ei == 3 ? (chordLatch() ? "on" : "off") :
+                         ei == 4 ? (chordKeyLock() ? "on" : "off") :
+                                   (chordPerf() ? "on" : "off"));
           if (logRoom(48)) {
             Serial.print(ei == 3 ? "  latch " : ei == 4 ? "  klock " : "  perf ");
             Serial.println(ei == 3 ? (chordLatch() ? "ON" : "OFF") :
@@ -2116,6 +2159,7 @@ void handleEncoderEvents() {
       } else if (ei == 7) {
         chordLatchAdjust(ed);       // main row: ENC8 = latch
         refreshAllLeds();
+        headerAnnounce("Chord Latch", chordLatch() ? "on" : "off");
         if (logRoom(48)) {
           Serial.print("  latch ");
           Serial.println(chordLatch() ? "ON" : "OFF");
@@ -2124,6 +2168,7 @@ void handleEncoderEvents() {
       } else if (ei == 3) {
         chordFScaleAdjust(ed);      // main row: ENC4 = Force-to-scale
         refreshAllLeds();
+        headerAnnounce("Force To Scale", chordFScale() ? "on" : "off");
         if (logRoom(48)) {
           Serial.print("  fscale ");
           Serial.println(chordFScale() ? "ON" : "OFF");
@@ -2131,10 +2176,12 @@ void handleEncoderEvents() {
         any = true;
       } else if (ei >= 4 && ei <= 6) {
         chordParamAdjust(ei - 3, ed);   // BASS / SPRD / DENS
+        static const char* const pn[4] = { "", "Chord Bass", "Chord Spread",
+                                           "Chord Density" };
+        headerAnnounceInt(pn[ei - 3], (int)chordParam(ei - 3));
         if (logRoom(48)) {
-          static const char* pn[4] = { "voic ", "bass ", "sprd ", "dens " };
-          Serial.print(pn[ei - 3]);
-          Serial.println(chordParam(ei - 3));
+          Serial.print("  ");
+          Serial.println(pn[ei - 3]);
         }
         any = true;
       }
@@ -2152,7 +2199,7 @@ void handleEncoderEvents() {
       if (ei == 2) {
         if (want != chanEncLocked()) {
           chanEncLinkSet(want);
-          headerShow(want ? "ENCOD locked" : "ENCOD free");
+          headerShow(want ? "Encoder Link locked" : "Encoder Link free");
           if (logRoom(48)) {
             Serial.print("  encod link ");
             Serial.println(want ? "locked" : "free");
@@ -2162,7 +2209,7 @@ void handleEncoderEvents() {
       } else {
         if (want != chanKeyLocked()) {
           chanKeyLinkSet(want);
-          headerShow(want ? "KBOARD locked" : "KBOARD free");
+          headerShow(want ? "Keyboard Link locked" : "Keyboard Link free");
           if (logRoom(48)) {
             Serial.print("  kboard link ");
             Serial.println(want ? "locked" : "free");
@@ -2185,6 +2232,9 @@ void handleEncoderEvents() {
       if (v != ccVal[cc - 1][cch - 1]) {
         ccVal[cc - 1][cch - 1] = v;
         usbMIDI.sendControlChange(cc, (uint8_t)v, cch);
+        char ccb[24];
+        snprintf(ccb, sizeof(ccb), "CC %u = %d", (unsigned)cc, (int)v);
+        headerShow(ccb);
         if (logRoom(48)) {
           Serial.print("  CC ");
           Serial.print(cc);
@@ -2210,8 +2260,8 @@ void handleEncoderEvents() {
         // -12..+12 (DRUM tracks refuse the turn).  The other six idle
         if (ei == 0) {
           seqGenShiftAdjust(ed);
-          char rb[12];
-          snprintf(rb, sizeof(rb), "rot %u", seqGenShiftPos() + 1);
+          char rb[24];
+          snprintf(rb, sizeof(rb), "Pattern Start %u", seqGenShiftPos() + 1);
           headerShow(rb);
           if (logRoom(48)) {
             Serial.print("  ");
@@ -2219,10 +2269,10 @@ void handleEncoderEvents() {
           }
         } else if (ei == 1) {
           seqTransAdjust(ed);
-          char tb[16];
+          char tb[24];
           int8_t tv = (int8_t)seqTrans();
-          if (tv >= 0) snprintf(tb, sizeof(tb), "trans +%d", (int)tv);
-          else         snprintf(tb, sizeof(tb), "trans %d", (int)tv);
+          if (tv >= 0) snprintf(tb, sizeof(tb), "Transpose +%d", (int)tv);
+          else         snprintf(tb, sizeof(tb), "Transpose %d", (int)tv);
           headerShow(tb);
           if (logRoom(48)) {
             Serial.print("  ");
@@ -2235,7 +2285,7 @@ void handleEncoderEvents() {
           // continuous turn saturates at the end instead of toggling on
           // every count; only a change repaints/echoes
           if (seqKlockSetDir(ed)) {
-            headerShow(seqKlock() ? "klock ON" : "klock OFF");
+            headerShow(seqKlock() ? "Scale Lock on" : "Scale Lock off");
             if (logRoom(48)) {
               Serial.print("  klock ");
               Serial.println(seqKlock() ? "ON" : "OFF");
@@ -2254,11 +2304,11 @@ void handleEncoderEvents() {
           if (nv < -12) nv = -12;
           if (nv > 12) nv = 12;
           stepTrSet((uint8_t)seqTrStepSel, (int8_t)nv);
-          char tb[20];
+          char tb[28];
           if (nv >= 0)
-            snprintf(tb, sizeof(tb), "step %d trans +%d", seqTrStepSel + 1, nv);
+            snprintf(tb, sizeof(tb), "Step %d Transpose +%d", seqTrStepSel + 1, nv);
           else
-            snprintf(tb, sizeof(tb), "step %d trans %d", seqTrStepSel + 1, nv);
+            snprintf(tb, sizeof(tb), "Step %d Transpose %d", seqTrStepSel + 1, nv);
           headerShow(tb);
           if (logRoom(48)) {
             Serial.print("  ");
@@ -2276,24 +2326,28 @@ void handleEncoderEvents() {
         // plain held-step row (NOT% stays page-level, no lock slot)
         int8_t stp = seqTrStepSel;
         if (ei < 7) {
-          static const char *nm[7] = { "tes", "mot", "shp", "thn",
-                                       "ext", "sub", "tes" };
+          static const char *nm[7] = { "Tessitura", "Motion", "Shape",
+                                       "Thinning", "Extension", "Substitution",
+                                       "Tessitura" };
           int16_t cur = stepSkankLockAt((uint8_t)stp, (uint8_t)ei);
           if (cur < 0) cur = skankPrm((uint8_t)ei);   // inherit: grab the knob
           int16_t nv = cur + ed;
           if (nv > 100) nv = 100;
           if (nv < -1) nv = -1;
           stepSkankLockSet((uint8_t)stp, (uint8_t)ei, nv);
-          char tb[24];
+          char tb[32];
           if (nv < 0)
-            snprintf(tb, sizeof(tb), "step %d %s inherit", stp + 1, nm[ei]);
+            // the long knob names (Substitution / Random Tessitura) do not
+            // fit behind a two-digit step number, and the held pad already
+            // is the step: name the parameter and its "auto" value only
+            snprintf(tb, sizeof(tb), "%s auto", nm[ei]);
           else if (ei == 2)
-            snprintf(tb, sizeof(tb), "step %d shp %s", stp + 1,
+            snprintf(tb, sizeof(tb), "Step %d Shape %s", stp + 1,
                      skankShpName((uint8_t)nv));
           else if (ei == 6)
-            snprintf(tb, sizeof(tb), "step %d tes %d%%", stp + 1, nv);
+            snprintf(tb, sizeof(tb), "Step %d Tessitura %d%%", stp + 1, nv);
           else
-            snprintf(tb, sizeof(tb), "step %d %s %d", stp + 1, nm[ei], nv);
+            snprintf(tb, sizeof(tb), "Step %d %s %d", stp + 1, nm[ei], nv);
           headerShow(tb);
           if (logRoom(48)) {
             Serial.print("  ");
@@ -2305,11 +2359,11 @@ void handleEncoderEvents() {
           if (nv < -12) nv = -12;
           if (nv > 12) nv = 12;
           stepTrSet((uint8_t)stp, (int8_t)nv);
-          char tb[24];
+          char tb[28];
           if (nv >= 0)
-            snprintf(tb, sizeof(tb), "step %d trans +%d", stp + 1, nv);
+            snprintf(tb, sizeof(tb), "Step %d Transpose +%d", stp + 1, nv);
           else
-            snprintf(tb, sizeof(tb), "step %d trans %d", stp + 1, nv);
+            snprintf(tb, sizeof(tb), "Step %d Transpose %d", stp + 1, nv);
           headerShow(tb);
           if (logRoom(48)) {
             Serial.print("  ");
@@ -2340,7 +2394,7 @@ void handleEncoderEvents() {
         } else if (genOptSel == 1 && (ei == 1 || ei == 2)) {
           if (ei == 1) {                    // ENC2: the step's octave
             int8_t ss = genStepSelStep();
-            if (ss < 0) headerShow("pick step");
+            if (ss < 0) headerShow("Pick a Step");
             else {
               int v = (int)stepOctAt((uint8_t)ss) + genModStep(0, ed);
               if (v < -2) v = -2;
@@ -2350,8 +2404,8 @@ void handleEncoderEvents() {
             }
           } else {                          // ENC3: mapping mode
             seqMapAdjust(ed);
-            char mb[16];
-            snprintf(mb, sizeof(mb), "map %s", seqMapName(seqMap()));
+            char mb[24];
+            snprintf(mb, sizeof(mb), "Kit Map %s", seqMapName(seqMap()));
             headerShow(mb);
             if (logRoom(48)) {
               Serial.print("  ");
@@ -2360,7 +2414,7 @@ void handleEncoderEvents() {
           }
         } else if (genOptSel == 2 && ei == 2) {
           int8_t ss = genStepSelStep();     // ENC3: borrowed chord tone
-          if (ss < 0) headerShow("pick step");
+          if (ss < 0) headerShow("Pick a Step");
           else {
             int v = (int)stepBrwAt((uint8_t)ss) + genModStep(1, ed);
             if (v < 0) v = 0;
@@ -2370,7 +2424,7 @@ void handleEncoderEvents() {
           }
         } else if (genOptSel == 3 && ei == 3) {
           int8_t ss = genStepSelStep();     // ENC4: modifier probability
-          if (ss < 0) headerShow("pick step");
+          if (ss < 0) headerShow("Pick a Step");
           else {
             int v = (int)stepModPAt((uint8_t)ss) + genModStep(2, ed);
             if (v < 0) v = 0;
@@ -2387,6 +2441,7 @@ void handleEncoderEvents() {
         // (the open HARM page takes ENC1 for its GENRE, the COMP page for
         //  its HITS, the SKANK page for its TES and an armed ARP sub-page
         //  that owns ENC1 for its own knob - handled below)
+        headerAnnounceInt("Octave Shift", seqOctaveShift());
         if (logRoom(48)) {
           Serial.print("  octshift ");
           Serial.println(seqOctaveShift());
@@ -2401,6 +2456,7 @@ void handleEncoderEvents() {
           uint8_t gs = (uint8_t)(seqEditChannel() - 1);
           if (ei == 1) {
             seqGenFillAdjust(ed);
+            headerAnnounceInt("Fill", seqGenFillOf(gs), "%");
             if (logRoom(48)) {
               Serial.print("  fill ");
               Serial.print(seqGenFillOf(gs));
@@ -2408,6 +2464,7 @@ void handleEncoderEvents() {
             }
           } else if (ei == 2) {
             seqGenAccAdjust(ed);
+            headerAnnounceInt("Accent", seqGenAccOf(gs), "%");
             if (logRoom(48)) {
               Serial.print("  acc ");
               Serial.print(seqGenAccOf(gs));
@@ -2415,6 +2472,7 @@ void handleEncoderEvents() {
             }
           } else if (ei == 3) {
             seqGenGlideAdjust(ed);
+            headerAnnounceInt("Glide", seqGenGlideOf(gs), "%");
             if (logRoom(48)) {
               Serial.print("  glide ");
               Serial.print(seqGenGlideOf(gs));
@@ -2422,6 +2480,7 @@ void handleEncoderEvents() {
             }
           } else {
             seqGenTieAdjust(ed);
+            headerAnnounceInt("Tie", seqGenTieOf(gs), "%");
             if (logRoom(48)) {
               Serial.print("  tie ");
               Serial.print(seqGenTieOf(gs));
@@ -2437,6 +2496,12 @@ void handleEncoderEvents() {
           uint8_t slot = (uint8_t)arpSlotAt(arpOptionSel(), ei);
           uint8_t seq = (uint8_t)(seqEditChannel() - 1);
           seqArpPAdjust(slot, ed);
+          {
+            char ab[32];
+            snprintf(ab, sizeof(ab), "Arp %s %s", seqArpPName(slot),
+                     seqArpPValue(slot, seqArpPOf(seq, slot)));
+            headerShow(ab);
+          }
           if (logRoom(56)) {
             Serial.print("  ");
             Serial.print(seqArpPName(slot));
@@ -2453,6 +2518,7 @@ void handleEncoderEvents() {
                    arpSlotAt(arpOptionSel(), ei) < 0) {
           if (ei == 4) {
             seqGateAdjust(ed);
+            headerAnnounceInt("Gate", seqGatePct(), "%");
             if (logRoom(48)) {
               Serial.print("  gate ");
               Serial.print(seqGatePct());
@@ -2460,12 +2526,14 @@ void handleEncoderEvents() {
             }
           } else if (ei == 5) {
             seqVelocityAdjust(ed);
+            headerAnnounceInt("Velocity", seqVelocity());
             if (logRoom(48)) {
               Serial.print("  vel ");
               Serial.println(seqVelocity());
             }
           } else {
             seqProbAdjust(ed);
+            headerAnnounceInt("Probability", seqProbPct(), "%");
             if (logRoom(48)) {
               Serial.print("  prob ");
               Serial.print(seqProbPct());
@@ -2481,6 +2549,7 @@ void handleEncoderEvents() {
           uint8_t seq = (uint8_t)(seqEditChannel() - 1);
           if (ei == 1) {
             seqArpSpanAdjust(ed);
+            headerAnnounceInt("Arp Span", seqArpSpanOf(seq), " oct");
             if (logRoom(48)) {
               Serial.print("  span ");
               Serial.print(seqArpSpanOf(seq));
@@ -2488,18 +2557,21 @@ void handleEncoderEvents() {
             }
           } else if (ei == 2) {
             seqArpSkipToggle(ed);
+            headerAnnounce("Arp Skip", seqArpSkipOf(seq) ? "on" : "off");
             if (logRoom(48)) {
               Serial.print("  skip ");
               Serial.println(seqArpSkipOf(seq) ? "ON" : "OFF");
             }
           } else if (ei == 3) {
             seqArpModeAdjust(ed);
+            headerAnnounce("Arp Mode", seqArpModeName(seqArpModeOf(seq)));
             if (logRoom(48)) {
               Serial.print("  arpmode ");
               Serial.println(seqArpModeName(seqArpModeOf(seq)));
             }
           } else {
             seqArpInstAdjust(ed);
+            headerAnnounce("Arp Insert", seqArpInstName(seqArpInstOf(seq)));
             if (logRoom(48)) {
               Serial.print("  inst ");
               Serial.println(seqArpInstName(seqArpInstOf(seq)));
@@ -2525,18 +2597,21 @@ void handleEncoderEvents() {
               refreshAllLeds();       // the step LEDs follow the melody
               refreshMainScreen();
             }
+            headerAnnounce("Contour", seqLeadContourName(seqLeadContourOf(seq)));
             if (logRoom(48)) {
               Serial.print("  contour ");
               Serial.println(seqLeadContourName(seqLeadContourOf(seq)));
             }
           } else if (ei == 2) {
             seqGenLowAdjust(ed);
+            headerAnnounce("Low", seqGenLowName(seqGenLowOf(seq)));
             if (logRoom(48)) {
               Serial.print("  low ");
               Serial.println(seqGenLowName(seqGenLowOf(seq)));
             }
           } else if (ei == 3) {
             seqGenRangeAdjust(ed);
+            headerAnnounceInt("Range", seqGenRangeOf(seq), " oct");
             if (logRoom(48)) {
               Serial.print("  range ");
               Serial.print(seqGenRangeOf(seq));
@@ -2544,6 +2619,7 @@ void handleEncoderEvents() {
             }
           } else if (ei == 4) {
             seqLeadCtAdjust(ed);          // LEAD CT blend %
+            headerAnnounceInt("Chord Tone", seqLeadCtOf(seq), "%");
             if (logRoom(48)) {
               Serial.print("  ct blend ");
               Serial.print(seqLeadCtOf(seq));
@@ -2551,12 +2627,14 @@ void handleEncoderEvents() {
             }
           } else if (ei == 5) {
             seqLeadGdAdjust(ed);          // LEAD GD set depth
+            headerAnnounce("Guide Tones", seqLeadGdName(seqLeadGdOf(seq)));
             if (logRoom(48)) {
               Serial.print("  gd set ");
               Serial.println(seqLeadGdName(seqLeadGdOf(seq)));
             }
           } else {
             seqGenFillAdjust(ed);          // LEAD density % (shared FILL)
+            headerAnnounceInt("Density", seqGenFillOf(seq), "%");
             if (logRoom(48)) {
               Serial.print("  dens ");
               Serial.print(seqGenFillOf(seq));
@@ -2573,30 +2651,21 @@ void handleEncoderEvents() {
             (ei == 0 || ei == 1 || ei == 2 || ei == 3)) {
           if (ei == 0) {
             k4GenreAdjust(ed);
-            headerShow(k4GenreShort());   // announce the picked genre
+            headerAnnounce("Genre", k4GenreName());  // the picked genre
             if (logRoom(48)) {
               Serial.print("  genre ");
               Serial.println(k4GenreName());
             }
           } else if (ei == 1) {
             seqGenFillAdjust(ed);         // FILL% of the HARM track itself
-            char fb[10];
-            snprintf(fb, sizeof(fb), "FILL %u%%",
-                     seqGenFillOf((uint8_t)(seqEditChannel() - 1)));
-            headerShow(fb);
-            if (logRoom(48)) { Serial.print("  "); Serial.println(fb); }
+            headerAnnounceInt("Fill",
+                              seqGenFillOf((uint8_t)(seqEditChannel() - 1)), "%");
           } else if (ei == 2) {
             k4HarmInputAdjust(ed);
-            char sb[10];
-            snprintf(sb, sizeof(sb), "SRC %s", k4HarmInputName());
-            headerShow(sb);
-            if (logRoom(48)) { Serial.print("  "); Serial.println(sb); }
+            headerAnnounce("Source", k4HarmInputName());
           } else {
             k4HarmHoldAdjust(ed);
-            char hh[12];
-            snprintf(hh, sizeof(hh), "HOLD %s", k4HarmHoldName());
-            headerShow(hh);
-            if (logRoom(48)) { Serial.print("  "); Serial.println(hh); }
+            headerAnnounce("Hold", k4HarmHoldName());
           }
         } else if (ed != 0 && drumPageActive()) {
           // DRUM page (M2 on a DRUM track): the armed F set picks which
@@ -2613,35 +2682,35 @@ void handleEncoderEvents() {
           else if (set == 1 && ei <= 3) prm = (int8_t)(10 + ei);
           else if (set == 2 && ei <= 3) prm = (int8_t)(20 + ei);
           else if (set == 3 && ei <= 3) prm = (int8_t)(30 + ei);
-          static const char *const lane[4] = { "kick", "snare", "hat", "perc" };
-          char db[26];
+          static const char *const lane[4] = { "Kick", "Snare", "Hat", "Perc" };
+          char db[32];
           db[0] = 0;
           if (prm == 0) {
             drumGenreAdjust(ed);
-            snprintf(db, sizeof(db), "drums %s", drumGenreName(drumGenre()));
+            snprintf(db, sizeof(db), "Genre %s", drumGenreName(drumGenre()));
           } else if (prm == 1) {
             drumVarAdjust(ed);
-            snprintf(db, sizeof(db), "var %s", drumVarName(drumVar()));
+            snprintf(db, sizeof(db), "Variation %s", drumVarName(drumVar()));
           } else if (prm == 2) {
             drumFillAdjust(ed);
-            snprintf(db, sizeof(db), "fill %u%%", (unsigned)drumFill());
+            snprintf(db, sizeof(db), "Fill %u%%", (unsigned)drumFill());
           } else if (prm == 3) {
             drumMotAdjust(ed);
-            snprintf(db, sizeof(db), "mot %u%%", (unsigned)drumMot());
+            snprintf(db, sizeof(db), "Motion %u%%", (unsigned)drumMot());
           } else if (prm >= 10 && prm <= 13) {
             uint8_t ln = (uint8_t)(prm - 10);
             drumLineAdjust(ln, ed);
-            snprintf(db, sizeof(db), "%s %s", lane[ln],
+            snprintf(db, sizeof(db), "%s Line %s", lane[ln],
                      drumLineName(drumLine(ln)));
           } else if (prm >= 20 && prm <= 23) {
             uint8_t ln = (uint8_t)(prm - 20);
             drumLaneFillAdjust(ln, ed);
-            snprintf(db, sizeof(db), "%s fill %u%%", lane[ln],
+            snprintf(db, sizeof(db), "%s Fill %u%%", lane[ln],
                      (unsigned)drumLaneFill(ln));
           } else if (prm >= 30 && prm <= 33) {
             uint8_t ln = (uint8_t)(prm - 30);
             drumLaneMotAdjust(ln, ed);
-            snprintf(db, sizeof(db), "%s mot %u%%", lane[ln],
+            snprintf(db, sizeof(db), "%s Motion %u%%", lane[ln],
                      (unsigned)drumLaneMot(ln));
           }
           if (prm >= 0) {
@@ -2655,11 +2724,11 @@ void handleEncoderEvents() {
         } else if (ed != 0 && compPageActive() && ei == 0) {
           seqCompHitsAdjust(ed);            // ENC1 = HITS (stabs, 0..8,
                                             // 4 counts = 1)
-          char cb[10];
+          char cb[24];
           if (seqCompHits() <= 1) {
-            headerShow("comp off");
+            headerShow("Comping off");
           } else {
-            snprintf(cb, sizeof(cb), "comp %d", seqCompHits());
+            snprintf(cb, sizeof(cb), "Comping Hits %d", (int)seqCompHits());
             headerShow(cb);
           }
           if (logRoom(48)) {
@@ -2674,16 +2743,17 @@ void handleEncoderEvents() {
           // NOT% mutates one voicing tone to a random in-scale note
           if (ei < 8) {
             skankPrmAdjust((uint8_t)ei, ed);
-            char sb[14];
+            char sb[32];
             if (ei == 2) {
-              snprintf(sb, sizeof(sb), "shp %s", skankShpName(skankPrm(2)));
+              snprintf(sb, sizeof(sb), "Shape %s", skankShpName(skankPrm(2)));
             } else if (ei == 4 || ei == 5 || ei == 6 || ei == 7) {
-              static const char *nm[4] = { "ext", "sub", "tes", "not" };
+              static const char *nm[4] = { "Extension", "Substitution",
+                                           "Random Tessitura", "Random Note" };
               snprintf(sb, sizeof(sb), "%s %u%%", nm[ei - 4],
                        skankPrm((uint8_t)ei));
             } else {
-              static const char *nm[6] = { "tes", "mot", "shp", "thn",
-                                           "ext", "sub" };
+              static const char *nm[4] = { "Tessitura", "Motion", "Shape",
+                                           "Thinning" };
               snprintf(sb, sizeof(sb), "%s %u", nm[ei], skankPrm((uint8_t)ei));
             }
             headerShow(sb);
@@ -2704,8 +2774,8 @@ void handleEncoderEvents() {
           // the pattern onto the new map (one undo burst)
           if (drumMapSetDir(ed)) {
             drumProduce();
-            char mb[16];
-            snprintf(mb, sizeof(mb), "map %s", drumMapName(drumMap()));
+            char mb[24];
+            snprintf(mb, sizeof(mb), "Kit Map %s", drumMapName(drumMap()));
             headerShow(mb);
             refreshAllLeds();
             refreshMainScreen();
@@ -2714,6 +2784,7 @@ void handleEncoderEvents() {
           any = true;
         } else if (ei == 5 && ed != 0 && f3AccentActive()) {
           seqAccentVelocityAdjust(ed);
+          headerAnnounceInt("Accent Velocity", seqAccentVelocity());
           if (logRoom(48)) {
             Serial.print("  accvel ");
             Serial.println(seqAccentVelocity());
@@ -2721,6 +2792,7 @@ void handleEncoderEvents() {
         } else if (ed != 0 && stepEditOn) {
           if (ei == 4 && stepEditCtx()) {
             seqGateAdjust(ed);
+            headerAnnounceInt("Gate", seqGatePct(), "%");
             if (logRoom(48)) {
               Serial.print("  gate ");
               Serial.print(seqGatePct());
@@ -2728,6 +2800,7 @@ void handleEncoderEvents() {
             }
           } else if (ei == 5 && stepEditCtx()) {
             seqVelocityAdjust(ed);
+            headerAnnounceInt("Velocity", seqVelocity());
             if (logRoom(48)) {
               Serial.print("  vel ");
               Serial.println(seqVelocity());
@@ -2738,8 +2811,8 @@ void handleEncoderEvents() {
             uint8_t t = (uint8_t)((stepFxType + (ed > 0 ? 1 : 6)) % 7);
             if (t != stepFxType) {
               stepFxType = t;
-              char hb[16];
-              snprintf(hb, sizeof(hb), "FX %s", stepFxName(stepFxType));
+              char hb[24];
+              snprintf(hb, sizeof(hb), "Step FX %s", stepFxName(stepFxType));
               headerShow(hb);
               if (logRoom(48)) {
                 Serial.print("  fx type ");
@@ -2750,8 +2823,8 @@ void handleEncoderEvents() {
                      seqTrack() == SEQ_TRACK_POLY) {
             // armed step TYPE of the pads: STEP STRUM HAND (wrap)
             stepTypeArmAdjust(ed);
-            char hb[16];
-            snprintf(hb, sizeof(hb), "TYPE %s", stepTypeArmName());
+            char hb[24];
+            snprintf(hb, sizeof(hb), "Step Type %s", stepTypeArmName());
             headerShow(hb);
             if (logRoom(48)) {
               Serial.print("  type arm ");
@@ -2760,6 +2833,7 @@ void handleEncoderEvents() {
           } else if (ei == 7 &&
                      (stepEditCtx() || stepEditAccCtx())) {
             seqProbAdjust(ed);
+            headerAnnounceInt("Probability", seqProbPct(), "%");
             if (logRoom(48)) {
               Serial.print("  prob ");
               Serial.print(seqProbPct());
@@ -2772,6 +2846,7 @@ void handleEncoderEvents() {
         // steps, boot default 16; 0 = silent track; per-track RAM only)
         seqPatLenAdjust(ed);
         refreshAllLeds();       // playhead / step view follows the length
+        headerAnnounceInt("Pattern Length", seqPatLen());
         if (logRoom(48)) {
           Serial.print("  len ");
           Serial.println(seqPatLen());
@@ -2790,11 +2865,12 @@ void handleEncoderEvents() {
         while (folRes >= 4) { folRes -= 4; st++; }
         while (folRes <= -4) { folRes += 4; st--; }
         if (st) {
-          static const char *folN[3] = { "OFF", "ON", "FREEZE" };
+          static const char *folN[3] = { "Off", "On", "Freeze" };
           int m = (int)seqFollowMode() + st;
           if (m < 0) m = 0;
           if (m > 2) m = 2;
           if ((uint8_t)m != seqFollowMode()) seqFollowModeSet((uint8_t)m);
+          headerAnnounce("Follow", folN[m]);
           if (logRoom(48)) {
             Serial.print("  follow ");
             Serial.println(folN[m]);
@@ -2806,6 +2882,7 @@ void handleEncoderEvents() {
         if (bpm < 40) bpm = 40;
         if (bpm > 240) bpm = 240;
         seqSetTempo((uint16_t)bpm);
+        headerAnnounceInt("Tempo", seqTempo());
         if (logRoom(48)) {
           Serial.print("  tempo ");
           Serial.println(seqTempo());
@@ -2813,6 +2890,8 @@ void handleEncoderEvents() {
         any = true;
       } else if (ei == 3 && ed != 0) {
         seqSpeedAdjust(ed);               // SPEED: 1/64 .. 1 .. 4 (no wrap)
+        headerAnnounce("Pattern Speed", seqSpeedName(seqSpeedIdxOf(
+            (uint8_t)(seqEditChannel() - 1))));
         if (logRoom(48)) {
           Serial.print("  speed ");
           Serial.println(seqSpeedName(seqSpeedIdxOf(
@@ -2821,6 +2900,7 @@ void handleEncoderEvents() {
         any = true;
       } else if (ei == 4 && ed != 0) {
         seqInputChannelAdjust(ed);         // input channel of the edit seq
+        headerAnnounceInt("Input Channel", seqInputChannel());
         if (logRoom(48)) {
           Serial.print("  in ch ");
           Serial.println(seqInputChannel());
@@ -2838,6 +2918,7 @@ void handleEncoderEvents() {
         drumPageDismiss();                 // ...and the DRUM page needs a DRUM track
         stepChainDisarm();                 // ...and a chain arm outlives nothing
         refreshAllLeds();                  // the step-edit radio follows the track type
+        headerAnnounce("Track Type", seqTrackName());
         if (logRoom(48)) {
           Serial.print("  track ");
           Serial.println(seqTrackName());
@@ -2855,6 +2936,7 @@ void handleEncoderEvents() {
           compPageDismiss();      // ...and COMP needs a POLY track
           skankPageDismiss();     // ...and so does the SKANK page
           stepChainDisarm();      // ...and the chain arm belongs to BASS
+          headerAnnounce("Mono Type", seqMonoTypeName());
           if (logRoom(48)) {
             Serial.print("  mono ");
             Serial.println(seqMonoTypeName());
@@ -2866,6 +2948,7 @@ void handleEncoderEvents() {
           if (seqPolyType() != SEQ_POLY_STEP) compPageDismiss();  // left STEP
           if (seqPolyType() != SEQ_POLY_SKANK)
             skankPageDismiss();   // left SKANK
+          headerAnnounce("Poly Type", seqPolyTypeName());
           if (logRoom(48)) {
             Serial.print("  poly ");
             Serial.println(seqPolyTypeName());

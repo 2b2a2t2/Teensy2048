@@ -1442,7 +1442,7 @@ void k4AnnouncePattern() {
   }
   if (off && rest && off < (int)sizeof(buf) - 5)
     snprintf(buf + off, sizeof(buf) - (size_t)off, " +%u", (unsigned)rest);
-  headerShow(buf[0] ? buf : "no chords");
+  headerShow(buf[0] ? buf : "No Chords");
 }
 
 // ---------------------------------------------------------------------------

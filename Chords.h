@@ -27,8 +27,9 @@
 // --- scale (ENC2 in every KEY variant; root in KEYMODE2 / the PREV row) --
 void        keyScaleAdjust(int16_t counts);  // 4 counts = 1 scale, clamp, no wrap
 int         keyScale();                      // 0 = Chrom (no filter, no LED change)
-const char* keyScaleName();
-const char* keyScaleMood();                  // 1-word mood for the header
+const char* keyScaleName();                  // <= 7 chars, the OLED column
+const char* keyScaleMood();                  // 1-word mood - the header on a scale change
+                                             // (the knob value carries the name)
 void        keyRootAdjust(int16_t counts);   // 4 counts = 1 root, clamp, no wrap
 int         keyRoot();                       // 0 = C
 const char* keyRootName();

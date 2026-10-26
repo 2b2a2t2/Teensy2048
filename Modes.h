@@ -13,6 +13,9 @@ void initModes();                    // installs LED color hook
 void pollModeLeds();                 // call every loop: pulse/blink animation
 void modeOnEvent(uint8_t pad, uint8_t ev);  // EV_CLICKED / EV_HOLD / EV_DOUBLE
 const char* modeName();              // "---", "ENC", "ENC2", "ENC3", "ENC4"...
+// the OLED left-slot spelling of the same state: "ENCODER 1" / "SEQUENCER 2"
+// / "CHANNEL SELECT" (variant 3) - whole words, never the internal code
+const char* modeHeaderLabel();
 
 // which KEY variant defines the keyboard behavior: the current one while
 // in KEYMODE, the last latched KEY variant elsewhere (KEYMODE2 = chord

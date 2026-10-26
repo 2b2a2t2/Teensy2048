@@ -402,8 +402,15 @@ int drumProduce() {
     fill[l] = dFill[ch][l];
     mot[l]  = dMot[ch][l];
     line[l] = dLine[ch][l] <= DRUM_LINE_OFF ? dLine[ch][l] : 0;
-    // length guard: a short authored line must not be read past its NUL
-    len[l]  = (uint8_t)strlen(kGenre[genre][l][line[l]]);
+    // length guard: a short authored line must not be read past its NUL.
+    // An OFF lane has no line at all - DRUM_LINE_OFF is one past the A/B
+    // pair - so it must never be dereferenced: on the LAST genre that slot
+    // reads past kGenre into whatever the linker put next (kTriad, whose
+    // bytes make a bogus pointer) and the strlen() faults, rebooting the
+    // device.  It is also why lanes 0..2 got a neighbour's line length
+    // instead of their own.
+    len[l]  = (line[l] < DRUM_LINE_OFF)
+                ? (uint8_t)strlen(kGenre[genre][l][line[l]]) : 0;
   }
 
   // bar-end fill zone: the last beat or the last half bar

@@ -141,6 +141,10 @@ void keyScaleAdjust(int16_t counts) {
 
 int keyScale() { return sScale; }
 const char* keyScaleName() { return kScaleName[sScale]; }
+
+// the scale's mood is what the header says when it changes ("Scale Happy"):
+// the knob's own value line already carries kScaleName, so the long spelling
+// would only repeat it and squeeze the interesting word off the strip
 const char* keyScaleMood() { return kScaleMood[sScale]; }
 
 void keyRootAdjust(int16_t counts) {

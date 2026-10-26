@@ -22,6 +22,9 @@ static bool seq3ChSel = true;        // SEQ3 step-pad channel overlay up
 static const uint8_t modeLeds[3] = { 32, 33, 34 };  // ENC, SEQ, KEY
 static const ModeBase modeOfLed[3] = { MODE_ENC, MODE_SEQ, MODE_KEY };
 static const char* baseNames[4] = { "---", "ENC", "SEQ", "KEY" };
+// the header's left slot never shows the internal code (ENC3 / SEQ1 / KEY2) -
+// whole words, and variant 3 says what it actually is: a channel picker
+static const char* fullNames[4] = { "---", "ENCODER", "SEQUENCER", "KEYBOARD" };
 
 #define MODE_DIM 64  // 25% brightness for unselected mode buttons
 #define KEY_DIM 128  // keyboard idle brightness in KEY mode (dark blue)
@@ -63,7 +66,7 @@ void keyModeRecall() {
     if (v == 4 && !wasK4) k4Enter();
     if (wasK4 && v != 4) k4Stop();
     applyModeLeds();
-    headerSetLeft(modeName());
+    headerSetLeft(modeHeaderLabel());
     refreshMainScreen();
   }
 }
@@ -691,7 +694,7 @@ void pollModeLeds() {
     recLast = recNow;
     refreshAllLeds();
   }
-  if (seqRecTakeDone()) headerShow("rec done");
+  if (seqRecTakeDone()) headerShow("Record Done");
 
   // transport edge: repaint the PLAY LED on every start/stop (button,
   // external clock, INT transport alike)
@@ -853,7 +856,7 @@ void initModes() {
   k4Refresh();              // proposal cache valid before the first LED pass
   setLedColorHook(modeLedHook);
   applyModeLeds();
-  headerSetLeft(modeName());
+  headerSetLeft(modeHeaderLabel());
   refreshMainScreen();      // main screen shows the KEY binding from boot
 }
 
@@ -913,7 +916,11 @@ void modeOnEvent(uint8_t pad, uint8_t ev) {
           }
         }
         applyModeLeds();
-        headerSetLeft(modeName());
+        // the channel picker is gone the instant the key comes up: drop its
+        // message too, or the strip would keep claiming "Channel Select"
+        // over a pad row that is already the sequencer / keyboard again
+        headerHide();
+        headerSetLeft(modeHeaderLabel());
         if (modeBase == MODE_KEY && modeVariant == 4)
           k4Enter();         // back into KEYMODE4: re-seed walk + header
         refreshMainScreen();   // labels/values belong to the restored binding
@@ -931,6 +938,9 @@ void modeOnEvent(uint8_t pad, uint8_t ev) {
       seq3ChSelEnter();    // (re)entry: SEQ3 gets its channel overlay back
     }
     modeVariant = 3;
+    // the momentary variant swaps the whole pad row for the channel
+    // picker: say so, or the only cue is 16 pads turning yellow
+    headerShow("Channel Select");
   } else if (ev == EV_DOUBLE) {
     modeVariant = 4;
     familyMem[b] = 4;
@@ -984,7 +994,7 @@ void modeOnEvent(uint8_t pad, uint8_t ev) {
   stepChainDisarm();        // ...nor an armed attribute chain span
 
   applyModeLeds();
-  headerSetLeft(modeName());
+  headerSetLeft(modeHeaderLabel());
   refreshMainScreen();   // encoder labels belong to the new binding
 }
 
@@ -993,5 +1003,20 @@ const char* modeName() {
   if (modeBase == MODE_NONE || modeVariant == 0) return "---";
   if (modeVariant == 1) return baseNames[modeBase];
   snprintf(name, sizeof(name), "%s%u", baseNames[modeBase], modeVariant);
+  return name;
+}
+
+// what the OLED's left header slot prints: the same state in whole words.
+// variant 3 is the channel picker in all three families - and on SEQMODE3
+// only while its pad overlay is actually up, since an encoder turn hands
+// the pads back to the sequencer
+const char* modeHeaderLabel() {
+  static char name[20];
+  if (modeBase == MODE_NONE || modeVariant == 0) return "---";
+  if (modeVariant == 3 &&
+      (modeBase != MODE_SEQ || seq3ChSelActive()))
+    return "CHANNEL SELECT";
+  if (modeVariant == 1) return fullNames[modeBase];
+  snprintf(name, sizeof(name), "%s %u", fullNames[modeBase], modeVariant);
   return name;
 }

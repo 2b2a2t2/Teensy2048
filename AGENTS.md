@@ -57,7 +57,10 @@ the source of truth.
    board only appears under **Teensy Ports** — that is success, not a disconnect.
 4. There is no automated test suite — verification is compiling plus on-hardware
    behavior. After edits, at minimum confirm the sketch still compiles
-   (`./tools/fw.sh build`).
+   (`./tools/fw.sh build`). OLED header text has one guard: `tools/header_lint.py`
+   fails on a message wider than the 21-character band and on the shorthand
+   codes the strip must not use (`PROB`, `mot`, `klock`, `GNR8`, …) — run it
+   after touching any header message.
 
 ## Conventions
 
