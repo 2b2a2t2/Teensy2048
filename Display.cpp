@@ -153,24 +153,34 @@ static const char* ctrlLegend(uint8_t i) {
 // ENCMODE main screen: one CC knob.  A 270-degree ring, open at 6 o'clock
 // (0 sits at the lower-left end, 127 at the lower-right one), a pointer at
 // the current value and the number itself in the middle: the ring is read
-// at a glance, the digits stay the truth.  Radius 8; the pointer reaches
-// one pixel OUTSIDE the rim, so the whole dial is 19 px tall
+// at a glance, the digits stay the truth.  Radius 9, so the ring is 19 px
+// wide, with room under it for the CC number printed in the 4x6 caption
+// font - and the pointer reaches one pixel OUTSIDE the rim, so the whole
+// dial is 21 px tall
 static void drawCcDial(uint8_t cx, uint8_t cy, uint8_t val) {
   // the ring: u8g2's Andres arc.  Its angles are 0..255 with 0 at 3 o'clock
   // (64 = 12, 128 = 9, 192 = 6), so the bottom quarter is 160..224 and
   // 224..160 draws the complement - the 270 degrees wanted here.  A
   // canonical 1 px circle paints 37 px of ink where the 5-degree polyline
   // it replaced painted 49, and that extra weight showed on the panel
-  u8g2.drawArc(cx, cy, 8, 224, 160);
-  // the pointer: 4 px, two inside the rim and one OUTSIDE it, so where the
-  // knob sits reads even while the value sits in the middle of the ring
+  u8g2.drawArc(cx, cy, 9, 224, 160);
+  // the pointer: 4 px long, two inside the rim and one OUTSIDE it, so where
+  // the knob sits reads even while the value sits in the middle of the ring.
+  // It is 2 px WIDE - a single Bresenham line read as a hairline next to the
+  // 1 px ring - which is a second pass one pixel across.  That pixel always
+  // goes on the upper side, so the tick can never grow down into the CC
+  // caption sitting in the ring's bottom notch, at either end of the travel
   const float d2r = 0.0174533f;
   float av = (225.0f + 270.0f * (float)val / 127.0f) * d2r;
-  int xo = (int)cx + (int)lroundf(sinf(av) * 9.0f);
-  int yo = (int)cy - (int)lroundf(cosf(av) * 9.0f);
-  int xi = (int)cx + (int)lroundf(sinf(av) * 6.0f);
-  int yi = (int)cy - (int)lroundf(cosf(av) * 6.0f);
+  int xo = (int)cx + (int)lroundf(sinf(av) * 10.0f);
+  int yo = (int)cy - (int)lroundf(cosf(av) * 10.0f);
+  int xi = (int)cx + (int)lroundf(sinf(av) * 7.0f);
+  int yi = (int)cy - (int)lroundf(cosf(av) * 7.0f);
+  int px = (int)lroundf(cosf(av));   // across the tick: (cos, sin) is the
+  int py = (int)lroundf(sinf(av));   // radial direction turned 90 degrees
+  if (py > 0) { px = -px; py = -py; }   // "up" = away from the caption
   u8g2.drawLine(xi, yi, xo, yo);
+  u8g2.drawLine(xi + px, yi + py, xo + px, yo + py);
   // the value, centred on the ring's middle (the font's box, descent
   // included, is what gets split in half)
   char v[4];
@@ -191,13 +201,15 @@ void refreshMainScreen() {
   if (modeBase == MODE_ENC && modeVariant != 3) {
     for (uint8_t c = 0; c < 4; c++) {
       uint8_t cx = (uint8_t)(c * 32 + 16);   // centre of the 32 px column
-      drawCcDial(cx, 25, encCcValue(c));
-      drawCcDial(cx, 49, encCcValue((uint8_t)(4 + c)));
+      drawCcDial(cx, 26, encCcValue(c));
+      drawCcDial(cx, 50, encCcValue((uint8_t)(4 + c)));
     }
-    // the CC numbers last, in the 3x3 caption font: the pointer needs the
-    // row above each ring, and a caption this small keeps the eye on the
-    // value inside the dial
-    u8g2.setFont(u8g2_font_3x3basic_tr);
+    // the CC numbers last, in 4x6: 15 px wide and 5 rows tall, i.e. the
+    // step between the 3x3 caption this started with (unreadably small) and
+    // the 19x6 5x7 one (too loud under a 19 px ring).  Its ink rows (34-38 /
+    // 58-62 for these baselines) fall in the ring's 90-degree bottom notch,
+    // where there is no ink to collide with
+    u8g2.setFont(u8g2_font_micro_tr);
     char ccLab[8];
     for (uint8_t c = 0; c < 4; c++) {
       uint8_t cx = (uint8_t)(c * 32 + 16);
