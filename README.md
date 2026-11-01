@@ -488,6 +488,8 @@ the shorthand codes the strip must not use again (`PROB`, `mot`, `klock`, `GNR8`
 …), and it lists the snprintf-built messages whose worst case would overflow.
 Run it after touching a message (exit status 1 = findings).
 
+**No-compile fallback** — an image built elsewhere can be flashed without the toolchain: drag `Teensy2048.ino.hex` onto the Teensy Loader window and press its button, or `teensy_loader_cli -mmcu=imxrt1062 -w Teensy2048.ino.hex -v`. The loader only writes bytes, it does not build, so the `.hex` must come from the commit you mean to run. This also needs the board on a USB port of the machine running the command: a cloud/remote session can compile and lint the tree but has no USB, so the flash itself always happens on the local checkout.
+
 ## Key Constants (Keyboard.cpp / Chords.h / TouchChips.h)
 
 ```cpp

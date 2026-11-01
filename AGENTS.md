@@ -26,6 +26,14 @@ plugged into this machine, so edits can be compiled and flashed straight away wi
 no sync-and-copy step. Never edit only a scratch copy — the user's own folder is
 the source of truth.
 
+**Steps 2–3 assume the machine with the board attached.** They need the Teensy on a
+USB port of whatever machine runs the command. A cloud/remote session has no USB
+passthrough — `arduino-cli board list` reports *No boards found* and there is no
+`/dev/cu.usbmodem*` or `/dev/ttyACM*` — so it can compile and lint, but it **cannot
+flash**, and must not report an upload it did not perform. In that case push the
+commit and flash from the local checkout, or hand over a `Teensy2048.ino.hex` built
+from that exact commit and flash it with the Teensy Loader.
+
 1. Teensyduino (Arduino IDE or VS Code + PlatformIO), libraries: FastLED,
    U8g2, Encoder, Adafruit_MPR121, uClock. Open `Teensy2048.ino`, select
    **Teensy 4.1**, **USB Type: MIDI**.
