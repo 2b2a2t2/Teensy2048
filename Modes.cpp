@@ -28,6 +28,9 @@ static const char* fullNames[4] = { "---", "ENCODER", "SEQUENCER", "KEYBOARD" };
 
 #define MODE_DIM 64  // 25% brightness for unselected mode buttons
 #define KEY_DIM 128  // keyboard idle brightness in KEY mode (dark blue)
+#define DRUM_KEY_IDLE 40  // drum-track keyboard: idle dim orange-red
+#define DRUM_KEY_HIT  56  // ...a note the playhead sounds: dim green blink
+#define DRUM_KEY_MUTE 48  // ...a muted drum voice: dim orange
 #define STEP_DIM 32   // step pad background (dark blue, barely visible)
 
 // semitone index (0=C..11=B) for LEDs 25..41; -1 = LEDs 32..36 (not keys)
@@ -91,6 +94,16 @@ static bool kbBlinkOn = false;
 // same driver for the F-row: while the playhead reads an attributed step
 // of the MONO edit channel, the F1-F4 LEDs flash dim green
 static bool fBlinkOn = false;
+
+// is the playhead sounding this exact note on the keyboard channel?
+// (drums match note for note - the pitch-class form below would light a
+// pad for any note of the same name, and the drum map cares which one)
+static bool kbDrumPlays(uint8_t note) {
+  uint8_t n = seqSoundingCount(keyChannel());
+  for (uint8_t i = 0; i < n; i++)
+    if (seqSoundingNote(keyChannel(), i) == note) return true;
+  return false;
+}
 
 // is the playhead currently playing this pitch class on the keyboard channel?
 static bool kbSeqPlays(uint8_t pc) {
@@ -324,9 +337,7 @@ static CRGB modeLedHook(uint8_t pad, bool isTouched, CRGB defaultColor) {
     // looping bar breathes green - the keys still play, just invisible
     if (modeBase == MODE_SEQ && modeVariant == 3) {
       if (isTouched) return CRGB::White;
-      int8_t bar = (led == 25) ? 0 : (led == 26) ? 1 :
-                   (led == 27) ? 2 : (led == 28) ? 3 : -1;
-      if (bar < 0) return CRGB::Black;
+      // one pulse phase for the whole row (verbs below, bars after)
       uint8_t s = sin8((uint32_t)millis() * 256UL / PULSE_PERIOD_MS);
 
       // the black keys of the bar octave are the track verbs, so they read
@@ -337,8 +348,13 @@ static CRGB modeLedHook(uint8_t pad, bool isTouched, CRGB defaultColor) {
       if (led >= 37 && led <= 41) {
         if (led == 37 || led == 38) {
           CRGB b = CRGB(140, 200, 255);            // light blue
-          uint8_t hi = (led == 38) ? 216 : 88;     // D# bright, C# dim
-          b.nscale8((uint8_t)(24 + scale8(s, hi)));
+          // D# is the faster breath of the pair, C# the slow one.  Both stay
+          // well below a bar LED: this row is a reminder of which verb sits
+          // under the finger, not a status light - the peak used to glare
+          uint16_t per = (led == 38) ? 550 : 1500;  // ms per breath
+          uint8_t pv = sin8((uint32_t)millis() * 256UL / per);
+          uint8_t hi = (led == 38) ? 104 : 56;     // pulse ceiling
+          b.nscale8((uint8_t)(12 + scale8(pv, hi)));
           return b;
         }
         if (led == 40) {                           // G#: bar follow
@@ -351,6 +367,10 @@ static CRGB modeLedHook(uint8_t pad, bool isTouched, CRGB defaultColor) {
         m.nscale8(96);
         return m;
       }
+      // the white keys are the bars - any other LED falls through
+      int8_t bar = (led == 25) ? 0 : (led == 26) ? 1 :
+                   (led == 27) ? 2 : (led == 28) ? 3 : -1;
+      if (bar < 0) return CRGB::Black;
       if (seqBarLooped((uint8_t)bar)) {
         CRGB g = CRGB::Green;         // looping bar: breathing green
         g.nscale8((uint8_t)(48 + scale8(s, 192)));
@@ -372,6 +392,11 @@ static CRGB modeLedHook(uint8_t pad, bool isTouched, CRGB defaultColor) {
     int8_t k = kbPitchIdx[led - 25];          // -1 for non-key LEDs in range
     uint8_t kv = keyBehaviorVariant();
     bool inScale = (keyScale() == 0) || keyIsInScale((uint8_t)k);
+    // DRUM track: these pads are drum notes (C..B of the kit), not pitches -
+    // there is no KEY and no SCALE to show, so the whole row reads as one
+    // dim orange-red pad grid and every scale / chord / proposal color is
+    // skipped (a pad is never dark for being out of scale)
+    bool drum = keyDrumTrack();
     if (isTouched) {
       // HAND strum zone: every key touch is a pluck/toggle feedback flash
       // (plucks bypass the scale filter, black keys toggle options)
@@ -379,9 +404,32 @@ static CRGB modeLedHook(uint8_t pad, bool isTouched, CRGB defaultColor) {
       // a key the scale filter silences flashes red (chord mode / KeyLock
       // play it, so they flash white; KEYMODE4 plays any PROPOSED key -
       // out-of-scale keys included, so they never flash red either)
-      if (kv != 2 && kv != 4 && !chordKeyLock() && !inScale)
+      if (!drum && kv != 2 && kv != 4 && !chordKeyLock() && !inScale)
         return CRGB(40, 0, 0);
       return CRGB::White;
+    }
+    if (drum) {
+      if (k < 0) return CRGB::Black;          // 32..36 are not keys
+      // the pad plays its chromatic note C..B at the keyboard's octave, so
+      // the kit's C1 = 36 sits at octave 1 - those drum-map ids are what the
+      // playhead sounds and what the voice mutes hold
+      uint8_t dn = (uint8_t)(12L * keyOctave() + 24L + k);
+      // a muted voice is never heard at all, so it reads dim orange and the
+      // blink never lights it (mute wins)
+      if (drumVoiceMuted(dn)) {
+        CRGB m = CRGB::Orange;
+        m.nscale8(DRUM_KEY_MUTE);
+        return m;
+      }
+      // the playhead sounding this pad's note right now: dim green blink
+      if (kbBlinkOn && kbDrumPlays(dn)) {
+        CRGB g = CRGB::Green;
+        g.nscale8(DRUM_KEY_HIT);
+        return g;
+      }
+      CRGB d = CRGB::OrangeRed;            // otherwise one dim orange-red row
+      d.nscale8(DRUM_KEY_IDLE);
+      return d;
     }
     // sequence playing on the keyboard channel: those pitch classes blink
     // dim green - wins over the chord tint and the scale (playback feedback).

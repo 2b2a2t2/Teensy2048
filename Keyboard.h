@@ -109,6 +109,48 @@ uint8_t     seqExtInSrcOf(uint8_t ch);          // per track
 void        seqExtInSrcSet(uint8_t ch, uint8_t v); // EEPROM load (bad -> USB)
 const char *seqExtInSrcName(uint8_t v);         // "USB" / "DIN" / "BOTH"
 
+// --- live-record options (SEQMODE 1/2, M1 step-edit row: ENC2/3/4) ---------
+// What the live REC pass writes and how the pattern replays it, per track:
+//   LISTEN (ENC2):  CHORD = the keyboard gesture records as always (a
+//             fresh gesture replaces the step); NOTE = the ARP's output
+//             note records onto the step it sounds on - one note per step,
+//             a pass PRINTS the arp line (capture hooks: the live keyboard
+//             arp and the EXT IN = LIVE injected pass; the track's own
+//             stored-step playback never feeds the recorder).  While NOTE
+//             is armed keyboard gesture edges do not record
+//   PLAYBACK (ENC3): GATE = stored steps play through the track's engine
+//             as always (ARP walks the chord, ROOT/BASS/LEAD pick); RECORDED
+//             = the stored notes play VERBATIM, all at once - no arp walk /
+//             root pick / window fold, no step FX / strum timing / FScale
+//             snap on POLY (octave + per-step OCT/TRANS still apply, the
+//             record path is pre-compensated for the octave)
+//   OVERDUB (ENC4): OFF = a fresh gesture replaces the step (as always);
+//             ON = new notes STACK onto the step's content, and a MONO
+//             track's multi-note steps then play ALL AT ONCE (the track
+//             is no longer mono on playback)
+// All clamped, no wrap (4 counts = 1 state); persisted per track in the
+// SEQ EEPROM block.  Boot CHORD/GATE/OFF = the behavior every build had.
+// DRUM already overdubs and ignores these knobs
+enum SeqRecListen : uint8_t { REC_LISTEN_CHORD = 0, REC_LISTEN_NOTE };
+enum SeqRecPlayback : uint8_t { REC_PLAY_GATE = 0, REC_PLAY_RECORDED };
+enum SeqRecOverdub : uint8_t { REC_OVER_OFF = 0, REC_OVER_ON };
+
+void        seqRecListenAdjust(int16_t counts); // edit track; 4 counts = 1, no wrap
+uint8_t     seqRecListen();                     // edit track (OLED)
+uint8_t     seqRecListenOf(uint8_t ch);         // per track
+void        seqRecListenSet(uint8_t ch, uint8_t v); // EEPROM load (bad -> CHORD)
+const char *seqRecListenName(uint8_t v);        // "CHORD" / "NOTE"
+void        seqRecPlaybackAdjust(int16_t counts); // edit track; no wrap
+uint8_t     seqRecPlayback();                   // edit track (OLED)
+uint8_t     seqRecPlaybackOf(uint8_t ch);       // per track
+void        seqRecPlaybackSet(uint8_t ch, uint8_t v); // EEPROM load (bad -> GATE)
+const char *seqRecPlaybackName(uint8_t v);      // "GATE" / "RECORDED"
+void        seqRecOverdubAdjust(int16_t counts); // edit track; no wrap
+uint8_t     seqRecOverdub();                    // edit track (OLED)
+uint8_t     seqRecOverdubOf(uint8_t ch);        // per track
+void        seqRecOverdubSet(uint8_t ch, uint8_t v); // EEPROM load (bad -> OFF)
+const char *seqRecOverdubName(uint8_t v);       // "OFF" / "ON"
+
 // incoming MIDI notes (port = the physical input they arrived on) feed
 // EVERY sequence whose input channel matches AND whose SRC allows that
 // port, independently of the edit focus, plus the step held in assign
@@ -232,6 +274,15 @@ bool stepFxToggle(uint8_t step, uint8_t type);
 // 7 white keys are the strings, the black keys toggle the strum options,
 // the chord engine stays muted (chordMute) so keys build silently
 bool handLive();
+
+// the keyboard channel points at a DRUM sequence: the 12 pads are a drum
+// pad grid (C..B = drum notes), so no KEY / SCALE may shape them - the
+// press skips the scale filter and the chord engines, and the LEDs drop
+// the scale/chord colors for one dim orange-red row.  A pad press also
+// selects that drum voice for the step edit (the direct form of hold M1 +
+// step N), and the octave snaps to 1 (C1 = 36 = the kit) on entry
+bool keyDrumTrack();
+void keyDrumOctPoll();             // octave 1 on entering a drum track (loop)
 
 // strum options - the black keys while handLive() (tap toggles, RAM only,
 // booted as SUS+SUSCOMMON): Le Strum's set ported from StrumController.c

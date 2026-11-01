@@ -15,6 +15,8 @@
 
 #define KEY_OCT_MIN   (-2)
 #define KEY_OCT_MAX    8
+#define KEY_DRUM_OCT   1   // a DRUM track's pads start on the kit: octave 1
+                           // puts C1 (36) .. B1 (47) under the 12 pads
 #define KEY_OCT_DEF    3      // C3 = 60 (middle C)
 #define KEY_VEL      100
 #define KEY_COUNTS_OCT 4      // encoder counts per octave step
@@ -238,6 +240,18 @@ static uint8_t recGestStep = 0;  // POLY: the step a gesture started on (one
                                  // playhead walks on - a strum keeps timing)
 static uint32_t recGestureT0 = 0;  // ms of the gesture's first touch
 
+// live-record options per track (SEQMODE 1/2, M1 step-edit row ENC2/3/4,
+// see Keyboard.h): LISTEN = gesture chord (as always) or the ARP's output
+// note per step; PLAYBACK = engine (as always) or the stored notes verbatim
+// at once; OVERDUB = replace the step (as always) or stack onto it.  Boot
+// 0/0/0 = the behavior every build had before these knobs existed
+static uint8_t recListen[16] = {0};     // REC_LISTEN_CHORD
+static uint8_t recPlayback[16] = {0};   // REC_PLAY_GATE
+static uint8_t recOverdub[16] = {0};    // REC_OVER_OFF
+static int16_t recListenRes = 0;        // leftover encoder counts (LISTEN)
+static int16_t recPlayRes = 0;          // leftover encoder counts (PLAYBACK)
+static int16_t recOverRes = 0;          // leftover encoder counts (OVERDUB)
+
 // a step's attributes live and die with its content (both the MONO flags
 // and the DRUM per-voice accent/probability masks; the POLY FX byte, the
 // HAND strum onsets and the GNR8 oct/borrow/prob modifiers too)
@@ -424,7 +438,9 @@ static uint8_t noteFor(uint8_t k, int8_t oct) {
 // In KEYMODE2 the snapshot is the chord engine's sounding notes instead
 // (chords feed the sequencer like single notes)
 static void updatePending() {
-  bool chordMode = keyChordMode();   // KEYMODE2 or KEYMODE4: the engine's notes
+  // KEYMODE2 or KEYMODE4: the engine's notes (never on a drum track - its
+  // pads are chromatic drum notes, so the held keys are what gets fed)
+  bool chordMode = keyChordMode() && !keyDrumTrack();
   const uint8_t *cn = chordNotes();
   uint8_t ccount = chordCount();
   for (uint8_t s = 0; s < SEQ_CH_COUNT; s++) {
@@ -524,6 +540,97 @@ uint8_t seqRecToggle() {
   return 1;
 }
 
+// --- live-record options (M1 step-edit row ENC2/3/4, variants 1/2) ---------
+// 4 counts = 1 state, clamped at both ends (no wrap), per edit track.
+// Switching is side-effect free: LISTEN/PLAYBACK/OVERDUB steer the next
+// record pass / the playback read - nothing stored is rewritten
+void seqRecListenAdjust(int16_t counts) {
+  recListenRes += counts;
+  int8_t step = 0;
+  while (recListenRes >= 4)  { recListenRes -= 4; step++; }
+  while (recListenRes <= -4) { recListenRes += 4; step--; }
+  if (!step) return;
+  int16_t v = (int16_t)recListen[seqEditCh] + step;
+  if (v < REC_LISTEN_CHORD) v = REC_LISTEN_CHORD;
+  if (v > REC_LISTEN_NOTE) v = REC_LISTEN_NOTE;    // no wrap
+  recListen[seqEditCh] = (uint8_t)v;
+}
+
+uint8_t seqRecListen() { return seqRecListenOf(seqEditCh); }
+
+uint8_t seqRecListenOf(uint8_t ch) {
+  return (ch < 16 && recListen[ch] <= REC_LISTEN_NOTE) ? recListen[ch]
+                                                       : REC_LISTEN_CHORD;
+}
+
+void seqRecListenSet(uint8_t ch, uint8_t v) {
+  if (ch < 16)
+    recListen[ch] = (v <= REC_LISTEN_NOTE) ? v : REC_LISTEN_CHORD;
+}
+
+const char *seqRecListenName(uint8_t v) {
+  static const char *const nm[2] = { "CHORD", "NOTE" };
+  return nm[(v == REC_LISTEN_NOTE) ? 1 : 0];
+}
+
+void seqRecPlaybackAdjust(int16_t counts) {
+  recPlayRes += counts;
+  int8_t step = 0;
+  while (recPlayRes >= 4)  { recPlayRes -= 4; step++; }
+  while (recPlayRes <= -4) { recPlayRes += 4; step--; }
+  if (!step) return;
+  int16_t v = (int16_t)recPlayback[seqEditCh] + step;
+  if (v < REC_PLAY_GATE) v = REC_PLAY_GATE;
+  if (v > REC_PLAY_RECORDED) v = REC_PLAY_RECORDED;  // no wrap
+  recPlayback[seqEditCh] = (uint8_t)v;
+}
+
+uint8_t seqRecPlayback() { return seqRecPlaybackOf(seqEditCh); }
+
+uint8_t seqRecPlaybackOf(uint8_t ch) {
+  return (ch < 16 && recPlayback[ch] <= REC_PLAY_RECORDED) ? recPlayback[ch]
+                                                           : REC_PLAY_GATE;
+}
+
+void seqRecPlaybackSet(uint8_t ch, uint8_t v) {
+  if (ch < 16)
+    recPlayback[ch] = (v <= REC_PLAY_RECORDED) ? v : REC_PLAY_GATE;
+}
+
+const char *seqRecPlaybackName(uint8_t v) {
+  static const char *const nm[2] = { "GATE", "RECORDED" };
+  return nm[(v == REC_PLAY_RECORDED) ? 1 : 0];
+}
+
+void seqRecOverdubAdjust(int16_t counts) {
+  recOverRes += counts;
+  int8_t step = 0;
+  while (recOverRes >= 4)  { recOverRes -= 4; step++; }
+  while (recOverRes <= -4) { recOverRes += 4; step--; }
+  if (!step) return;
+  int16_t v = (int16_t)recOverdub[seqEditCh] + step;
+  if (v < REC_OVER_OFF) v = REC_OVER_OFF;
+  if (v > REC_OVER_ON) v = REC_OVER_ON;    // no wrap
+  recOverdub[seqEditCh] = (uint8_t)v;
+}
+
+uint8_t seqRecOverdub() { return seqRecOverdubOf(seqEditCh); }
+
+uint8_t seqRecOverdubOf(uint8_t ch) {
+  return (ch < 16 && recOverdub[ch] <= REC_OVER_ON) ? recOverdub[ch]
+                                                    : REC_OVER_OFF;
+}
+
+void seqRecOverdubSet(uint8_t ch, uint8_t v) {
+  if (ch < 16)
+    recOverdub[ch] = (v <= REC_OVER_ON) ? v : REC_OVER_OFF;
+}
+
+const char *seqRecOverdubName(uint8_t v) {
+  static const char *const nm[2] = { "OFF", "ON" };
+  return nm[(v == REC_OVER_ON) ? 1 : 0];
+}
+
 // live record: the keyboard gesture lands on the step the playhead sits
 // on.  POLY/MONO = replace (the first note of a fresh gesture clears the
 // step and its attributes), DRUM = overdub (notes are added, never
@@ -598,6 +705,27 @@ bool handLive() {
   if (s >= SEQ_CH_COUNT) return false;
   return seqTrackOf(s) == SEQ_TRACK_POLY &&
          seqPolyTypeOf(s) == SEQ_POLY_HAND;
+}
+
+// the keyboard channel reaches a DRUM sequence: its pads are drum notes, so
+// the KEY/SCALE must not filter or color them (a drum track has no pitch)
+bool keyDrumTrack() {
+  uint8_t s = (uint8_t)(keyCh - 1);
+  if (s >= SEQ_CH_COUNT) return false;
+  return seqTrackOf(s) == SEQ_TRACK_DRUM;
+}
+
+// a drum track's pads are kit notes (C1 = 36 = octave 1), so the keyboard
+// defaults to octave 1 the moment it lands on one - edge triggered, so the
+// octave knob still transposes the row afterwards (loop context: called by
+// seqPoll beside keyMonoPoll)
+static bool drumOctWas = false;
+
+void keyDrumOctPoll() {
+  bool d = keyDrumTrack();
+  if (d && !drumOctWas && keyOctave() != KEY_DRUM_OCT)
+    setOctave(KEY_DRUM_OCT);
+  drumOctWas = d;
 }
 
 // the 7 white keys are the strummed strings: C..B -> 0..6, black keys -1
@@ -877,6 +1005,10 @@ int keyPadPress(uint8_t idx) {
   // is suppressed in HAND: a strum gesture is captured note by note with
   // its timing (handRecPluck), so the stored step replays as performed
   bool hand = handLive();
+  // DRUM track: the pads are drum notes, so the scale filter and the chord
+  // engines (KEYMODE2 / KEYMODE4) stay out of the way - every pad plays its
+  // own chromatic note (C..B) whatever the KEY / SCALE say
+  bool drum = keyDrumTrack();
   // HAND: the 5 black keys are the silent strum-option toggles (Le Strum
   // GUITAR / GTR2 / ADDS / SUS / SUSCOMMON) - tap flips the bit, the
   // header says on/off, nothing is written to the pattern and no chord
@@ -914,7 +1046,7 @@ int keyPadPress(uint8_t idx) {
   // KEYMODE2: the chord engine owns the gesture (quality/diatonic chords,
   // latch, KeyLock) - it sends its own notes and feeds the pending chord
   // (muted while the mono voice or HAND is engaged; the state still builds)
-  if (keyBehaviorVariant() == 2) {
+  if (!drum && keyBehaviorVariant() == 2) {
     uint8_t dyn = noteFor(idx, octave);
     if (plucked) handPluck(idx, pnote);
     else {
@@ -931,7 +1063,7 @@ int keyPadPress(uint8_t idx) {
   // untracked (rank -1), a proposed one sounds its whole chord.  In HAND
   // the pluck still sounds on any white key - the proposal only steers the
   // chord behind it
-  if (keyBehaviorVariant() == 4) {
+  if (!drum && keyBehaviorVariant() == 4) {
     if (plucked) handPluck(idx, pnote);
     int r = k4KeyOn((uint8_t)idx);
     if (r < 0) return plucked ? pnote : -1;   // not proposed: no write/advance
@@ -957,8 +1089,14 @@ int keyPadPress(uint8_t idx) {
   if (hand) return -1;
   // scale filter: an out-of-scale key is silent and untracked (KeyLock
   // bypasses it); Chromatic (the default) has every key in scale = no change
-  if (keyScale() != 0 && !chordKeyLock() && !keyIsInScale(idx)) return -1;
+  if (!drum && keyScale() != 0 && !chordKeyLock() && !keyIsInScale(idx))
+    return -1;
   keyNote[idx] = noteFor(idx, octave);
+  // DRUM track: the pad doubles as a voice picker for the step edit - the
+  // direct form of hold M1 + step N (C1 = part 1, C# = part 2, .. D#2 =
+  // part 16), so the voice under the finger is the one the steps toggle
+  if (drum && keyNote[idx] >= 36 && keyNote[idx] <= 51)
+    drumPartSet((uint8_t)(keyNote[idx] - 36));
   // MONO track engaged: no raw note - the root/bass voice or the playhead
   // arp sounds instead (updatePending below re-voices it)
   if (!monoEng) {
@@ -1026,7 +1164,7 @@ int keyOctave() { return octave; }
 // nothing is held (or the held chord is empty), *out then undefined
 static uint8_t liveHeldChord(uint8_t s, const uint8_t **out) {
   if (keyCh == s + 1 || seqInCh[s] == keyCh) {
-  if (keyChordMode()) {
+  if (keyChordMode() && !keyDrumTrack()) {
     if (chordSounding()) {
       *out = chordNotes();
       return chordCount();
