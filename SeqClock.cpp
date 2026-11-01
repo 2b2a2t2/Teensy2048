@@ -164,8 +164,13 @@ void pollSeqClock() {
   bool sn = pendingStart;      pendingStart = false;
   interrupts();
   if (st) seqStepStop();             // transport stopped: let every note go
-  else if (sn) seqStepAdvance(true);       // start: every track back to its head
-  else if (sAdv != 255) seqStepAdvance(false);
+  else {
+    // due deferred (swung) off-steps run first, so a pass queued for an
+    // earlier instant keeps its time order against this tick
+    seqSwingPoll();
+    if (sn) seqStepAdvance(true);       // start: every track back to its head
+    else if (sAdv != 255) seqStepAdvance(false);
+  }
   keyMonoPoll();               // live MONO-track keyboard voice (TRACK/TYPE)
   seqGatePoll();               // track gate note-offs (MONO step-edit)
   seqStrumPoll();              // staggered strum note-ons (FX / TYPE=STRUM)
@@ -614,6 +619,47 @@ void seqPatLenAdjust(int16_t counts) {
                            // from this channel re-bake (deferred, loop pass)
 }
 
+// C# / D# presses: one shared write, so both keys get the same 0..64 clamp,
+// the same window fix-up and the same HARM mark as the ENC2 dial
+static void patLenApply(uint8_t ch, uint8_t v) {
+  if (ch >= 16) return;
+  if (v > 64) v = 64;
+  if (v == patLen[ch]) return;
+  patLen[ch] = v;
+  // the edit window follows the length down: a page past the new end would
+  // show 16 pads with nothing in them
+  if (v) {
+    uint8_t last = (uint8_t)((v - 1) / STEPS_COUNT);
+    if (last > 3) last = 3;
+    if (seqPage[ch] > last) seqPage[ch] = last;
+  }
+  harmFeederChanged(ch);   // same feeder-window mark as seqPatLenAdjust
+}
+
+uint8_t seqPatLenHalf() {
+  uint8_t ch = (uint8_t)(seqEditChannel() - 1);
+  if (ch >= 16) return 16;
+  if (patLen[ch] == 0) return 0;          // silent track: nothing to halve
+  uint8_t v = (uint8_t)(patLen[ch] / 2);
+  if (v < 1) v = 1;                        // never silences by accident
+  patLenApply(ch, v);
+  return patLen[ch];
+}
+
+uint8_t seqPatLenDouble() {
+  uint8_t ch = (uint8_t)(seqEditChannel() - 1);
+  if (ch >= 16) return 16;
+  uint8_t before = patLen[ch];
+  uint8_t v = before ? (uint8_t)(before * 2) : STEPS_COUNT;
+  patLenApply(ch, v);                     // 0 = silent track -> one bar
+  // the steps the doubling opened up are filled from the old pattern: 4
+  // chords on steps 1-4 of a 4-step pattern repeat on 5-8, a full bar
+  // becomes a two-bar loop.  A 0-length track has nothing to copy and a
+  // length already at the 64 ceiling does not grow, so neither copies
+  if (patLen[ch] > before) seqPatRepeatInto(ch, before);
+  return patLen[ch];
+}
+
 int seqPatLen() { return patLen[seqEditChannel() - 1]; }
 
 uint8_t seqPatLenOf(uint8_t ch) { return (ch < 16) ? patLen[ch] : 16; }
@@ -666,6 +712,92 @@ const char *seqSpeedName(uint8_t idx) {
 uint8_t seqSpeedNumOf(uint8_t ch) { return spdNum[seqSpeedIdxOf(ch)]; }
 uint8_t seqSpeedDenOf(uint8_t ch) { return spdDen[seqSpeedIdxOf(ch)]; }
 
+// --- per-track swing (SEQMODE 4 ENC1/ENC2) ---------------------------------
+// Style = a machine emulation: which grid it swings (pair = steps per swing
+// pair: 2 = 16th swing, every odd step late; 4 = 8th shuffle, only the "&"
+// late) and how deep the AMT knob can shove it (maxR = the ratio at amt
+// 100).  The effective ratio grows linearly from 50% (straight, amt 0) to
+// maxR (amt 100); seqSwingDepthOf turns it into the scheduler's delay in
+// permille of one pair period.  Boot defaults: style OFF, amt 50 (mid
+// character the moment a style is picked) - persisted per track in the SEQ
+// EEPROM block
+static const char *const swingNameT[SEQ_SWING_COUNT] = {
+  "OFF", "MPC60", "MPC3K", "SP1200", "LINN", "TR808", "TR909",
+  "SHUFFLE", "TRIPLET"
+};
+static const uint8_t swingPairT[SEQ_SWING_COUNT] = { 0, 2, 2, 2, 2, 2, 2, 4, 4 };
+static const uint8_t swingMaxRT[SEQ_SWING_COUNT]  = { 50, 75, 70, 72, 62,
+                                                      66, 64, 75, 67 };
+static uint8_t swingStyle[16] = {0};
+static uint8_t swingAmt[16] = { 50, 50, 50, 50, 50, 50, 50, 50,
+                                50, 50, 50, 50, 50, 50, 50, 50 };
+static int16_t swingRes = 0;               // leftover encoder counts (style)
+static int16_t swingAmtRes = 0;            // leftover encoder counts (amount)
+
+void seqSwingStyleAdjust(int16_t counts) {
+  swingRes += counts;
+  int8_t step = 0;
+  while (swingRes >= 4)  { swingRes -= 4;  step++; }
+  while (swingRes <= -4) { swingRes += 4;  step--; }
+  if (!step) return;
+  int16_t v = (int16_t)swingStyle[seqEditChannel() - 1] + step;
+  if (v < SEQ_SWING_OFF) v = SEQ_SWING_OFF;
+  if (v > SEQ_SWING_TRIPLET) v = SEQ_SWING_TRIPLET;   // no wrap
+  swingStyle[seqEditChannel() - 1] = (uint8_t)v;
+}
+
+uint8_t seqSwingStyle() { return seqSwingStyleOf(seqEditChannel() - 1); }
+
+uint8_t seqSwingStyleOf(uint8_t ch) {
+  return (ch < 16 && swingStyle[ch] <= SEQ_SWING_TRIPLET) ? swingStyle[ch]
+                                                          : SEQ_SWING_OFF;
+}
+
+void seqSwingStyleSet(uint8_t ch, uint8_t v) {
+  if (ch < 16)
+    swingStyle[ch] = (v <= SEQ_SWING_TRIPLET) ? v : SEQ_SWING_OFF;
+}
+
+const char *seqSwingStyleName(uint8_t v) {
+  return swingNameT[(v <= SEQ_SWING_TRIPLET) ? v : 0];
+}
+
+void seqSwingAmtAdjust(int16_t counts) {
+  int16_t step = encDrain(counts, &swingAmtRes);  // 0-100% knob: 1 count = 1
+  if (!step) return;
+  int16_t v = (int16_t)swingAmt[seqEditChannel() - 1] + step;
+  if (v < 0) v = 0;
+  if (v > 100) v = 100;
+  swingAmt[seqEditChannel() - 1] = (uint8_t)v;
+}
+
+uint8_t seqSwingAmt() { return seqSwingAmtOf(seqEditChannel() - 1); }
+
+uint8_t seqSwingAmtOf(uint8_t ch) { return (ch < 16) ? swingAmt[ch] : 50; }
+
+void seqSwingAmtSet(uint8_t ch, uint8_t v) {
+  if (ch < 16) swingAmt[ch] = (v > 100) ? 50 : v;
+}
+
+// effective swing ratio in percent (50 = straight): amt scales 50 .. maxR
+uint8_t seqSwingRatioOf(uint8_t ch) {
+  uint8_t st = seqSwingStyleOf(ch);
+  if (!st) return 50;
+  return (uint8_t)(50 + ((uint16_t)seqSwingAmtOf(ch) * (swingMaxRT[st] - 50)) / 100);
+}
+
+uint8_t seqSwingPairOf(uint8_t ch) {
+  return swingPairT[seqSwingStyleOf(ch)];   // 0 = no swing
+}
+
+// delay of the off-step, in permille of one pair period: the ratio sits
+// r = depth/1000 into the pair, so the off-step is late by depth/1000 of
+// the whole pair (max 250 = ratio 75%, i.e. one pair-step of delay)
+uint16_t seqSwingDepthOf(uint8_t ch) {
+  return (uint16_t)(seqSwingRatioOf(ch) - 50) * 10;
+}
+
+
 void seqPlayRange(uint8_t ch, uint8_t *lo, uint8_t *hi) {
   if (ch >= 16) { *lo = 0; *hi = STEPS_COUNT; return; }
   if (loopOn[ch]) {                        // a looped bar plays by itself
@@ -702,6 +834,28 @@ void seqStepViewFollow(uint8_t step) {
 }
 
 uint8_t seqStepPage() { return seqPage[seqEditChannel() - 1]; }
+
+// SEQMODE3 G#: bar follow - that track's edit window chases its own
+// playhead instead of staying on the bar you picked, so the pads show the
+// bar that is sounding ("the bar moves with the green dot").  RAM only
+// like every other view detail; the playhead advance calls the sync
+static bool viewChase[16] = {false};
+
+bool seqStepViewChaseGet() { return viewChase[seqEditChannel() - 1]; }
+
+bool seqStepViewChaseToggle() {
+  uint8_t ch = (uint8_t)(seqEditChannel() - 1);
+  if (ch >= 16) return false;
+  viewChase[ch] = !viewChase[ch];
+  return viewChase[ch];
+}
+
+void seqStepViewChaseSync(uint8_t ch, uint8_t step) {
+  if (ch >= 16 || !viewChase[ch]) return;
+  uint8_t pg = (uint8_t)(step / STEPS_COUNT);
+  if (pg > 3) return;
+  seqPage[ch] = pg;
+}
 
 bool seqBarLooped(uint8_t page) {
   uint8_t ch = seqEditChannel() - 1;

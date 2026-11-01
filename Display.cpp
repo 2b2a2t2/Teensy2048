@@ -440,9 +440,19 @@ void refreshMainScreen() {
         snprintf(val, sizeof(val), "%u%%",
                  (unsigned)drumLaneMot((uint8_t)c));
       }
-    } else if (modeBase == MODE_SEQ && c == 0 &&
+    } else if (modeBase == MODE_SEQ && c == 0 && !compP &&
                !(arpP && arpSlotAt(arpOptionSel(), 0) >= 0)) {
-      snprintf(val, sizeof(val), "%d", seqOctaveShift()); // ENC1 = octave shift
+      if (modeVariant == 4) {
+        // variant 4 is the timing screen: ENC1 = the per-track swing style
+        snprintf(val, sizeof(val), "%s", seqSwingStyleName(seqSwingStyle()));
+      } else {
+        snprintf(val, sizeof(val), "%d", seqOctaveShift()); // ENC1 = octave shift
+      }
+    } else if (modeBase == MODE_SEQ && c == 1 && modeVariant == 4 && !genP &&
+               !leadP && !harmP && !compP && !skankP && !drumP &&
+               !(arpP && arpSlotAt(arpOptionSel(), 1) >= 0)) {
+      // variant 4 timing screen: ENC2 = the swing amount (0..100)
+      snprintf(val, sizeof(val), "%u%%", seqSwingAmt());
     } else if (genP && c == 1) {
       snprintf(val, sizeof(val), "%u%%", seqGenFillOf(genSeq));   // ENC2
     } else if (genP && c == 2) {

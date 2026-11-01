@@ -161,6 +161,16 @@ void seqPatLenAdjust(int16_t counts);    // edit channel; 4 counts = 1 step
 int  seqPatLen(void);                    // length of the edit sequence
 uint8_t seqPatLenOf(uint8_t ch);         // length of sequence ch 0..15
 void    seqPatLenSetOf(uint8_t ch, uint8_t len);  // restore (seqCfgLoad)
+
+// SEQMODE3 C# / D# (the black keys of the bar octave): halve / double the
+// edit track's pattern length in one press - the same 0..64 range ENC2
+// dials, and the 16-step edit window follows the length down so the pads
+// never sit on a bar that no longer exists.  A silent track (length 0)
+// doubles to 16 - there is nothing to halve - and a halve stops at 1 step,
+// so a press can never silence a track by accident.  Both return the
+// track's new length
+uint8_t seqPatLenHalf(void);
+uint8_t seqPatLenDouble(void);
 // SEQMODE3 ENC4: per-track pattern SPEED - that sequence's step rate
 // relative to the master clock.  Ladder of 9, index 6 = normal (one step
 // per 16th note, the boot default): 1/64, 1/32, 1/16, 1/8, 1/4, 1/2, 1, 2, 4
@@ -170,6 +180,47 @@ void        seqSpeedSetOf(uint8_t ch, uint8_t idx);   // restore (seqCfgLoad)
 const char *seqSpeedName(uint8_t idx);       // "1/64" ... "4" for the OLED
 uint8_t     seqSpeedNumOf(uint8_t ch);       // sub-steps per master tick
 uint8_t     seqSpeedDenOf(uint8_t ch);       // master ticks per sub-step
+
+// --- per-track swing (SEQMODE 4: ENC1 = style, ENC2 = amount) --------------
+// The groove of the WHOLE track shifts: the late half of every swing pair
+// (counted on the track's own step grid, so it follows its pattern length,
+// bar loop and speed) plays LATE by a style-shaped fraction of the pair -
+// the classic drum-machine feel, independent per track.  Each style is an
+// emulation with two properties: the GRID it swings (pair = how many of the
+// track's own steps one swing pair spans - 2 = 16th swing, every odd step
+// is late; 4 = 8th shuffle, only the "&" is late) and the deepest ratio
+// rMax (percent of the pair) the AMT knob can reach.  AMT 0 = straight,
+// AMT 100 = the machine's full shove; the effective ratio is
+// 50% + amt/100 x (rMax - 50), e.g. MPC60 at amt 50 = 62%, TRIPLET at 100
+// = 67% (hard triplets).  Boot: style OFF, amt 50; persisted per track in
+// the SEQ EEPROM block.  The scheduler (seqSwingPoll in Keyboard.cpp)
+// defers the off-step's whole pass - release and note-on slide together
+// and the playhead LED follows the sound
+enum SeqSwingStyle : uint8_t {
+  SEQ_SWING_OFF = 0,     // straight (no deferral)
+  SEQ_SWING_MPC60,       // 16th swing, the reference Linn groove, deep (75)
+  SEQ_SWING_MPC3K,       // 16th swing, smoother MPC3000 feel (70)
+  SEQ_SWING_SP1200,      // 16th swing, E-mu SP-1200 shove (72)
+  SEQ_SWING_LINN,        // 16th swing, tight LinnDrum (62)
+  SEQ_SWING_TR808,       // 16th swing, 808 shuffle (66)
+  SEQ_SWING_TR909,       // 16th swing, 909 house swing (64)
+  SEQ_SWING_SHUFFLE,     // 8th blues shuffle, triplet at amt ~66 (75)
+  SEQ_SWING_TRIPLET,     // 8th hard triplet feel (67)
+  SEQ_SWING_COUNT
+};
+void        seqSwingStyleAdjust(int16_t counts);  // edit track; 4 counts = 1, no wrap
+uint8_t     seqSwingStyle();                      // edit track (OLED)
+uint8_t     seqSwingStyleOf(uint8_t ch);          // per track (0 = straight)
+void        seqSwingStyleSet(uint8_t ch, uint8_t v); // EEPROM load (bad -> OFF)
+const char *seqSwingStyleName(uint8_t v);         // "MPC60" ... (<= 7 chars)
+void        seqSwingAmtAdjust(int16_t counts);    // edit track; encDrain, 0..100
+uint8_t     seqSwingAmt();                        // edit track (OLED)
+uint8_t     seqSwingAmtOf(uint8_t ch);            // per track
+void        seqSwingAmtSet(uint8_t ch, uint8_t v); // EEPROM load (bad -> 50)
+uint8_t     seqSwingRatioOf(uint8_t ch);          // effective ratio 50..75 (%)
+uint8_t     seqSwingPairOf(uint8_t ch);           // pair span in steps, 0 = off
+uint16_t    seqSwingDepthOf(uint8_t ch);          // delay permille of the pair
+
 void seqPlayRange(uint8_t ch, uint8_t *lo, uint8_t *hi);  // playback window
 bool seqLoopOn(uint8_t ch);           // that track's bar loop is armed
 uint8_t seqBarPress(uint8_t bar);        // 0 = page set, 1 = loop on, 2 = off
@@ -177,6 +228,13 @@ uint8_t seqStepViewBase(void);           // first step of the edit window
 void    seqStepViewFollow(uint8_t step); // move the edit window onto that step
                                          // (KEYMODE4 focus; no loop side effect)
 uint8_t seqStepPage(void);               // edit window 0..3
+// SEQMODE3 G#: the 16-step edit window CHASES the playhead - the bar (the
+// window, not the playback) moves with the green dot, so the pads always
+// show the bar that is sounding.  Per track like the window itself, RAM
+// only; seqStepViewChaseSync is called from the playhead advance
+bool    seqStepViewChaseGet(void);
+bool    seqStepViewChaseToggle(void);    // returns the new state
+void    seqStepViewChaseSync(uint8_t ch, uint8_t step);  // chase if enabled
 bool seqBarLooped(uint8_t page);         // bar of the edit sequence looping
 bool seqFollow();                        // ENC3: edit track follows its feeder
                                          //  (true for ON or FREEZE - both are

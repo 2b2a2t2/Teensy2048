@@ -118,6 +118,23 @@ void seqMuteToggle(uint8_t seq);      // step pad press
 void seqErase(uint8_t seq);           // sequence index 0..15
 void seqEraseAll();
 
+// --- whole-pattern clipboard (SEQMODE3 F# copy / A# paste) -----------------
+// One RAM slot for the WHOLE step table of one track: notes and chord
+// lengths, the attribute byte (incl. the POLY step-TYPE override), the FX
+// byte, the KEYMODE4 embellishment params, the per-step modifiers
+// (OCT / BRW / PROB / TRANS), the HAND strum onsets, the DRUM per-voice
+// accent and probability masks and the SKANK locks.  A paste writes all 64
+// steps and leaves the destination's TRACK settings alone (length,
+// FILL/MOT, genre, kit map, TRANS, swing, channel) - only step data moves.
+// seqPatCopy returns the active steps copied (0 = empty track), seqPatPaste
+// the steps written (-1 = nothing copied yet); both act on the edit track
+int  seqPatCopy(void);
+int  seqPatPaste(void);
+// SEQMODE3 D#: the steps a doubling opens up are filled with a copy of the
+// pattern as it was - nothing to copy from a track at length 0
+void        seqPatRepeatInto(uint8_t ch, uint8_t oldLen);
+bool seqPatClipHas(void);
+
 // --- SEQMODE step-edit for MONO tracks (radio M1/F1-F4) ---------------------
 // per-step attributes: TIE sustains the note through the next step (no
 // retrigger, chains, works over empty steps), GLIDE overlaps the note-on
@@ -191,7 +208,8 @@ void    handRingCut(uint8_t c);
 
 // SEQMODE4 + REC: persist all SEQ settings to EEPROM - track type, mono
 // type, octave, input channel, velocity, accent velocity, gate, mutes,
-// probability, pattern length, FOLLOW, edit channel.  NOTE PATTERNS ARE
+// probability, pattern length, FOLLOW, edit channel, per-track swing
+// (style + amount).  NOTE PATTERNS ARE
 // NOT STORED: the steps, their contents and the tie/glide/accent/prob
 // attributes stay RAM only.
 // seqCfgLoad() restores them at boot (before the first draw); a blank or
@@ -208,6 +226,9 @@ void seqAccentVelocityAdjust(int16_t counts); // ENC6 + F3 held: accent vel
 int  seqAccentVelocity();             // edit track's accented-step velocity
 void seqSetAccentVelocity(uint8_t seq, uint8_t v); // EEPROM load, clamped
 void seqGatePoll();                   // fire gate note-offs (loop context)
+void seqSwingPoll();                  // drain deferred (swung) off-step
+                                      // passes, due time reached (loop
+                                      // context, beside seqGatePoll)
 void seqStrumPoll();                  // drain staggered strum note-ons
                                       // (loop context, beside seqGatePoll)
 void compPoll();                      // drain COMP stab queue (loop context,

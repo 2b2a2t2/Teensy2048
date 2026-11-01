@@ -328,6 +328,29 @@ static CRGB modeLedHook(uint8_t pad, bool isTouched, CRGB defaultColor) {
                    (led == 27) ? 2 : (led == 28) ? 3 : -1;
       if (bar < 0) return CRGB::Black;
       uint8_t s = sin8((uint32_t)millis() * 256UL / PULSE_PERIOD_MS);
+
+      // the black keys of the bar octave are the track verbs, so they read
+      // as a second row: the length pair pulses LIGHT BLUE (C# dim, D# bright
+      // - one colour, two intensities, the way the pair works together),
+      // copy / paste sit dim MediumSeaGreen, and follow is dim green that
+      // breathes - still dim - while it is ON, so its state shows at a glance
+      if (led >= 37 && led <= 41) {
+        if (led == 37 || led == 38) {
+          CRGB b = CRGB(140, 200, 255);            // light blue
+          uint8_t hi = (led == 38) ? 216 : 88;     // D# bright, C# dim
+          b.nscale8((uint8_t)(24 + scale8(s, hi)));
+          return b;
+        }
+        if (led == 40) {                           // G#: bar follow
+          CRGB g = CRGB::Green;
+          g.nscale8(seqStepViewChaseGet() ? (uint8_t)(32 + scale8(s, 96))
+                                          : (uint8_t)48);
+          return g;
+        }
+        CRGB m = CRGB(60, 179, 113);               // F# / A#: copy / paste
+        m.nscale8(96);
+        return m;
+      }
       if (seqBarLooped((uint8_t)bar)) {
         CRGB g = CRGB::Green;         // looping bar: breathing green
         g.nscale8((uint8_t)(48 + scale8(s, 192)));

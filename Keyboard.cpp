@@ -1520,6 +1520,8 @@ static int8_t  snapOctB[STEP_MAX];      // GNR8 per-step mods
 static uint8_t snapBrwB[STEP_MAX];
 static uint8_t snapModP[STEP_MAX];
 static int8_t  snapTrB[STEP_MAX];       // per-step TRANS
+static uint8_t snapSkankB[STEP_MAX][7]; // SKANK locks (a paste must undo
+                                        // losslessly, like generate)
 static uint8_t snapCh = 0;
 static bool    snapValid = false;
 
@@ -1538,6 +1540,8 @@ void stepSnapshotTake() {
     snapBrwB[st] = stepBrwM[ch][st];
     snapModP[st] = stepModP[ch][st];
     snapTrB[st] = stepTrM[ch][st];
+    for (uint8_t i = 0; i < 7; i++)
+      snapSkankB[st][i] = stepSkankM[ch][st][i];
     for (uint8_t i = 0; i < CHORD_MAX; i++) {
       snapChord[st][i] = stepChord[ch][st][i];
       snapStrumB[st][i] = stepStrumDt[ch][st][i];
@@ -1563,6 +1567,8 @@ int stepSnapshotRestore() {
     stepBrwM[ch][st] = snapBrwB[st];
     stepModP[ch][st] = snapModP[st];
     stepTrM[ch][st] = snapTrB[st];
+    for (uint8_t i = 0; i < 7; i++)
+      stepSkankM[ch][st][i] = snapSkankB[st][i];
     for (uint8_t i = 0; i < CHORD_MAX; i++) {
       stepChord[ch][st][i] = snapChord[st][i];
       stepStrumDt[ch][st][i] = snapStrumB[st][i];
@@ -2905,6 +2911,7 @@ static void seqAdvanceOnce(bool start, const bool *go,
     }
     loopWasOn[c] = lp;                    // remember for next tick
     chInRng[c] = inRng[c] = headSounds(c, chStep[c]);
+    seqStepViewChaseSync(c, chStep[c]);   // G# bar follow: window chases head
   }
   // live record: one pass over the edit track's play range - armed waits
   // for its range head (the pattern's 1st bar, or the looped bar's head),
@@ -3489,6 +3496,47 @@ static void seqAdvanceOnce(bool start, const bool *go,
   }
 }
 
+// --- per-track swing: deferred off-steps ----------------------------------
+// A swung track's off-step (the late half of its swing pair, see SeqClock.h)
+// does not run with the master tick that reaches it: the whole pass is
+// queued and drained `delay` ms later by seqSwingPoll - the WHOLE pass, so
+// the previous step's release and the new note-on slide together and the
+// playhead LED follows the sound.  One entry per deferred pass; a full
+// queue runs the pass straight on its tick instead of losing the step.
+// Transport (re)start and stop drop the queue, so a deferred note can never
+// fire after a stop
+#define SWING_Q 16
+static struct { uint8_t ch; uint16_t stepDur; uint32_t due; } swingQ[SWING_Q];
+static uint8_t swingQN = 0;
+
+static bool swingQueue(uint8_t ch, uint32_t due, uint32_t stepDur) {
+  if (swingQN >= SWING_Q) return false;
+  swingQ[swingQN].ch = ch;
+  swingQ[swingQN].stepDur = (stepDur > 2000) ? 2000 : (uint16_t)stepDur;
+  swingQ[swingQN].due = due;
+  swingQN++;
+  return true;
+}
+
+// drain the deferred passes whose moment has come (loop context).  Entries
+// are not sorted (each carries its own delay), so every due one runs - in
+// queue order, which is the order they were scheduled in
+void seqSwingPoll() {
+  if (!swingQN) return;
+  uint32_t now = millis();
+  for (uint8_t i = 0; i < swingQN; ) {
+    if ((int32_t)(now - swingQ[i].due) < 0) { i++; continue; }
+    uint8_t ch = swingQ[i].ch;
+    uint32_t sd = swingQ[i].stepDur;
+    swingQ[i] = swingQ[--swingQN];     // drop BEFORE running (no reentry)
+    bool go[SEQ_CH_COUNT];
+    for (uint8_t c = 0; c < SEQ_CH_COUNT; c++) go[c] = false;
+    go[ch] = true;
+    seqAdvanceOnce(false, go, now, sd);
+    now = millis();
+  }
+}
+
 // transport tick: the clock hands us ONE master step (a 16th note at the
 // current tempo).  Every track converts that into its own sub-steps from
 // its pattern speed (SEQMODE3 ENC4): a slow track skips ticks until its
@@ -3510,6 +3558,8 @@ void seqStepAdvance(bool start) {
 
   bool go[SEQ_CH_COUNT];
   if (start) {
+    swingQN = 0;                      // no deferred (swung) step survives a
+                                      // transport (re)start
     for (uint8_t c = 0; c < SEQ_CH_COUNT; c++) {
       spdAcc[c] = 0;
       spdGo[c] = 0;
@@ -3531,13 +3581,38 @@ void seqStepAdvance(bool start) {
     bool any = false;
     for (uint8_t c = 0; c < SEQ_CH_COUNT; c++) {
       go[c] = (spdGo[c] > 0);
-      if (go[c]) { spdGo[c]--; any = true; }
+      if (go[c]) {
+        spdGo[c]--;
+        // swing: the head walks sequentially, so this sub-step advances TO
+        // the late half of the track's swing pair exactly when the CURRENT
+        // position sits one step before the off slot - (pos + 1 - lo) lands
+        // on pair/2 (parity survives a wrap: 256 is a multiple of 2 and 4).
+        // Queue the pass with its swing delay instead of running it now; a
+        // full queue keeps it on the tick (straight, never a lost step)
+        uint8_t P = seqSwingPairOf(c);
+        if (P) {
+          uint8_t lo, hi;
+          seqPlayRange(c, &lo, &hi);
+          if ((uint8_t)((chStep[c] + 1 - lo) % P) == (uint8_t)(P / 2)) {
+            uint32_t sd = stepDur;
+            if (sd) {
+              sd = (sd * seqSpeedDenOf(c)) / seqSpeedNumOf(c);  // own step ms
+              if (!sd) sd = 1;
+            }
+            uint32_t delay = ((uint32_t)seqSwingDepthOf(c) * P * sd) / 1000;
+            if (delay && swingQueue(c, now + delay, stepDur)) go[c] = false;
+          }
+        }
+      }
+      if (go[c]) any = true;
     }
     if (any) seqAdvanceOnce(false, go, now, stepDur);
   }
 }
 
 void seqStepStop() {
+  swingQN = 0;                        // deferred (swung) passes die with the
+                                      // transport - never a note after stop
   seqRelease();
   for (uint8_t c = 0; c < SEQ_CH_COUNT; c++) {
     advPrev[c] = 0xFF;               // no carry-over into the next run
@@ -3955,6 +4030,141 @@ void seqEraseAll() {
   for (uint8_t s = 0; s < SEQ_CH_COUNT; s++) seqErase(s);
 }
 
+// --- whole-pattern clipboard (SEQMODE3 F# copy / A# paste) -----------------
+// One RAM slot holding the WHOLE step table of one track: notes and chord
+// lengths, the attribute byte (incl. the POLY step-TYPE override), the FX
+// byte, the KEYMODE4 embellishment params, the per-step modifiers (OCT /
+// BRW / PROB / TRANS), the HAND strum onsets, the DRUM per-voice accent and
+// probability masks and the SKANK locks - i.e. exactly the fields
+// stepAttClear wipes, so a pasted pattern sounds like its source.  The
+// destination keeps its own TRACK settings (length, FILL/MOT, genre, kit
+// map, TRANS, swing, channel): only the step data moves.  Patterns are RAM
+// only, so the clipboard is too - it dies with power like what it holds
+static struct SeqPatClip {
+  bool     valid;
+  uint8_t  len[STEP_MAX];
+  uint8_t  att[STEP_MAX];
+  uint8_t  fx[STEP_MAX];
+  uint8_t  emb[STEP_MAX][4];
+  uint8_t  octM[STEP_MAX];      // stored as the raw int8 pattern
+  uint8_t  brwM[STEP_MAX];
+  uint8_t  modP[STEP_MAX];
+  int8_t   trM[STEP_MAX];
+  uint8_t  skankM[STEP_MAX][7];
+  uint8_t  chord[STEP_MAX][CHORD_MAX];
+  uint16_t strumDt[STEP_MAX][CHORD_MAX];
+  uint16_t drumA[STEP_MAX];
+  uint16_t drumP[STEP_MAX];
+} patClip;
+
+bool seqPatClipHas() { return patClip.valid; }
+
+// SEQMODE3 F#: copy the edit track's pattern.  Returns the number of ACTIVE
+// steps copied (0 = the track is empty, -1 = no such track) and changes
+// nothing on the track itself
+int seqPatCopy() {
+  uint8_t ch = seqEditCh;
+  if (ch >= SEQ_CH_COUNT) return -1;
+  uint8_t active = 0;
+  for (uint8_t st = 0; st < STEP_MAX; st++) {
+    patClip.len[st] = stepChordLen[ch][st];
+    patClip.att[st] = stepAtt[ch][st];
+    patClip.fx[st] = stepFx[ch][st];
+    for (uint8_t i = 0; i < 4; i++) patClip.emb[st][i] = stepEmb[ch][st][i];
+    patClip.octM[st] = (uint8_t)stepOctM[ch][st];
+    patClip.brwM[st] = stepBrwM[ch][st];
+    patClip.modP[st] = stepModP[ch][st];
+    patClip.trM[st] = stepTrM[ch][st];
+    for (uint8_t i = 0; i < 7; i++) patClip.skankM[st][i] = stepSkankM[ch][st][i];
+    for (uint8_t i = 0; i < CHORD_MAX; i++) {
+      patClip.chord[st][i] = stepChord[ch][st][i];
+      patClip.strumDt[st][i] = stepStrumDt[ch][st][i];
+    }
+    patClip.drumA[st] = drumAccent[ch][st];
+    patClip.drumP[st] = drumProbOn[ch][st];
+    if (stepChordLen[ch][st]) active++;
+  }
+  patClip.valid = true;
+  return (int)active;
+}
+
+// SEQMODE3 A#: paste over the edit track.  Claims the one-level undo slot
+// first (M3 hold brings the replaced pattern back), cuts whatever is
+// sounding so no old note hangs, writes all 64 steps and lets the followers
+// / HARM tracks re-derive from the new content.  -1 = nothing copied yet
+int seqPatPaste() {
+  if (!patClip.valid) return -1;
+  uint8_t ch = seqEditCh;
+  if (ch >= SEQ_CH_COUNT) return -1;
+  stepSnapshotTake();
+  seqEraseNotes(ch);
+  gateOffAt[ch] = 0;
+  uint8_t active = 0;
+  for (uint8_t st = 0; st < STEP_MAX; st++) {
+    stepChordLen[ch][st] = patClip.len[st];
+    stepAtt[ch][st] = patClip.att[st];
+    stepFx[ch][st] = patClip.fx[st];
+    for (uint8_t i = 0; i < 4; i++) stepEmb[ch][st][i] = patClip.emb[st][i];
+    stepOctM[ch][st] = (int8_t)patClip.octM[st];
+    stepBrwM[ch][st] = patClip.brwM[st];
+    stepModP[ch][st] = patClip.modP[st];
+    stepTrM[ch][st] = patClip.trM[st];
+    for (uint8_t i = 0; i < 7; i++) stepSkankM[ch][st][i] = patClip.skankM[st][i];
+    histLen[ch][st] = 0;          // the recording chains must not resurrect
+    for (uint8_t i = 0; i < CHORD_MAX; i++) {
+      stepChord[ch][st][i] = patClip.chord[st][i];
+      stepStrumDt[ch][st][i] = patClip.strumDt[st][i];
+    }
+    drumAccent[ch][st] = patClip.drumA[st];
+    drumProbOn[ch][st] = patClip.drumP[st];
+    if (patClip.len[st]) active++;
+  }
+  seqOctClamp(ch);              // content changed: the shift range re-derives
+  stepSyncFrom(ch);             // listeners / HARM tracks follow the new data
+  return (int)active;
+}
+
+// SEQMODE3 D# helper: the steps a doubling adds start out as a copy of the
+// old pattern.  With 4 chords on steps 1-4 of a 4-step pattern the press
+// yields 8 steps and those chords also sit on 5-8; a full bar repeats as the
+// second bar.  Only the steps that still fit are copied (an old length of 40
+// doubles to the 64 ceiling, so 24 steps of copy), the old span itself is
+// left alone, and the undo slot is claimed first, exactly like a paste.
+// Nothing is cut: the source notes keep sounding and the copies land past
+// the end the track was playing
+void seqPatRepeatInto(uint8_t ch, uint8_t oldLen) {
+  if (ch >= SEQ_CH_COUNT || oldLen < 1 || oldLen >= STEP_MAX) return;
+  uint8_t n = oldLen;
+  uint8_t room = (uint8_t)(STEP_MAX - oldLen);
+  if (n > room) n = room;
+  if (!n) return;
+  stepSnapshotTake();
+  for (uint8_t i = 0; i < n; i++) {
+    uint8_t src = i;
+    uint8_t dst = (uint8_t)(oldLen + i);
+    stepChordLen[ch][dst] = stepChordLen[ch][src];
+    stepAtt[ch][dst] = stepAtt[ch][src];
+    stepFx[ch][dst] = stepFx[ch][src];
+    for (uint8_t k = 0; k < 4; k++) stepEmb[ch][dst][k] = stepEmb[ch][src][k];
+    stepOctM[ch][dst] = stepOctM[ch][src];
+    stepBrwM[ch][dst] = stepBrwM[ch][src];
+    stepModP[ch][dst] = stepModP[ch][src];
+    stepTrM[ch][dst] = stepTrM[ch][src];
+    for (uint8_t k = 0; k < 7; k++)
+      stepSkankM[ch][dst][k] = stepSkankM[ch][src][k];
+    histLen[ch][dst] = histLen[ch][src];    // the editing chain travels too
+    for (uint8_t k = 0; k < CHORD_MAX; k++) {
+      stepChord[ch][dst][k] = stepChord[ch][src][k];
+      stepStrumDt[ch][dst][k] = stepStrumDt[ch][src][k];
+      histChord[ch][dst][k] = histChord[ch][src][k];
+    }
+    drumAccent[ch][dst] = drumAccent[ch][src];
+    drumProbOn[ch][dst] = drumProbOn[ch][src];
+  }
+  seqOctClamp(ch);              // copies may extend the shift range
+  stepSyncFrom(ch);             // listeners / HARM tracks re-derive
+}
+
 // --- EEPROM persistence (SEQMODE4 + REC saves, boot loads) ----------------
 // Settings only - the note patterns, their contents (steps, tie/glide/
 // accent/probability attributes) and the transport state stay RAM.  Layout
@@ -3967,15 +4177,17 @@ void seqEraseAll() {
 // encLink | keyLink | keyModeMem[16] | encBankMem[16] | encM3Mem[16] |
 // leadCtBlend[16] | leadGdDepth[16] | klock[16] | speedLadderVersion |
 // drumGenre[16] | drumVar[16] | drumLine[64] | drumFill[64] | drumMot[64] |
-// drumFillMaster[16] | drumMotMaster[16] | drumMap[16] |
-// checksum = 940 bytes; blank or
+// drumFillMaster[16] | drumMotMaster[16] | drumMap[16] | arpP params |
+// arpParamsMark | swingStyle[16] | swingAmt[16] | swingMark |
+// checksum = 1296 bytes; blank or
 // corrupt keeps the defaults.  A block written by an older build
-// (666/665/649/616/567/564/532/436/420/404/388/260 bytes) still loads: the
-// core fields are at the same offsets and the newer params keep their
-// defaults - saved config survives the upgrade
+// (1262/940/923/666/665/649/616/567/564/532/436/420/404/388/260 bytes) still
+// loads: the core fields are at the same offsets and the newer params keep
+// their defaults - saved config survives the upgrade
 static const uint8_t  SEQ_EE_MAGIC = 0x53;
 static const uint16_t SEQ_EE_ADDR = 160;
-static const uint16_t SEQ_EE_LEN = 1262;      // + ARP F sub-page params
+static const uint16_t SEQ_EE_LEN = 1296;      // + per-track swing (SEQMODE 4)
+static const uint16_t SEQ_EE_LEN_SWING = 1262; // previous: ARP F sub-page params
 static const uint16_t SEQ_EE_LEN_ARP = 940;   // previous: DRUM kit mapping
 static const uint16_t SEQ_EE_LEN_DRUM2 = 923; // previous: DRUM page params
 static const uint16_t SEQ_EE_LEN_DRUM = 666;  // previous: before the DRUM page
@@ -3989,6 +4201,7 @@ static const uint16_t SEQ_EE_LEN_KLOCK = 649; // previous: LEAD CT/GD knobs
 // pose as the new layout on a lucky checksum
 static const uint8_t  SEQ_SPD_MARK = 2;
 static const uint8_t  SEQ_ARP_MARK = 1;   // ARP sub-page params present (b[1260])
+static const uint8_t  SEQ_SWING_MARK = 1; // per-track swing present (b[1294])
 static const uint16_t SEQ_EE_LEN_LEAD2 = 616; // previous: mode/page mem
 static const uint16_t SEQ_EE_LEN_MODE = 567;  // previous: link flags only
 static const uint16_t SEQ_EE_LEN_SKANK2 = 564; // previous: SKANK knobs[128]
@@ -4071,6 +4284,12 @@ void seqCfgSave() {
     for (uint8_t p = 0; p < ARP_P_COUNT; p++)
       b[940 + i * ARP_P_COUNT + p] = seqArpPOf(i, p);
   b[1260] = SEQ_ARP_MARK;            // ARP params present
+  b[1261] = 0;                       // reserved (was the old checksum byte)
+  for (uint8_t i = 0; i < SEQ_CH_COUNT; i++) {  // per-track swing (SEQMODE 4)
+    b[1262 + i] = seqSwingStyleOf(i);           // style 0..8 (0 = straight)
+    b[1278 + i] = seqSwingAmtOf(i);             // amount 0..100
+  }
+  b[1294] = SEQ_SWING_MARK;           // swing params present
   uint8_t sum = 0;
   for (uint16_t i = 0; i < SEQ_EE_LEN - 1; i++) sum += b[i];
   b[SEQ_EE_LEN - 1] = sum;
@@ -4081,10 +4300,10 @@ void seqCfgLoad() {
   uint8_t b[SEQ_EE_LEN];
   EEPROM.get(SEQ_EE_ADDR, b);
   // pick the NEWEST block length whose magic + checksum validate, so an
-  // older save (665 = 7-rung speed ladder, 616 = mode/page mem only, 567 =
-  // link flags, 564 = first link-less SKANK block, 532 = first SKANK block,
-  // 436 = TRANS, 404 = LEAD, 388 = GNR8, 260 = legacy) still restores its
-  // fields and the newer ones keep their defaults
+  // older save (1262 = pre-swing, 940 = pre-ARP, 923 = pre-kit-map, 666 =
+  // before the DRUM page, 665 = 7-rung speed ladder, ... down to 260 =
+  // legacy) still restores its fields and the newer ones keep their
+  // defaults
   uint16_t len = 0;
   for (uint16_t L = SEQ_EE_LEN;;) {
     uint8_t sum = 0;
@@ -4093,11 +4312,13 @@ void seqCfgLoad() {
     // trailing checksum happens to match the sum cannot pose as a new one
     if (b[0] == SEQ_EE_MAGIC && sum == b[L - 1] &&
         (L < SEQ_EE_LEN ||
-         (b[664] == SEQ_SPD_MARK && b[1260] == SEQ_ARP_MARK))) {
+         (b[664] == SEQ_SPD_MARK && b[1260] == SEQ_ARP_MARK &&
+          b[1294] == SEQ_SWING_MARK))) {
       len = L;
       break;
     }
-    if (L == SEQ_EE_LEN) L = SEQ_EE_LEN_ARP;
+    if (L == SEQ_EE_LEN) L = SEQ_EE_LEN_SWING;
+    else if (L == SEQ_EE_LEN_SWING) L = SEQ_EE_LEN_ARP;
     else if (L == SEQ_EE_LEN_ARP) L = SEQ_EE_LEN_DRUM2;
     else if (L == SEQ_EE_LEN_DRUM2) L = SEQ_EE_LEN_DRUM;
     else if (L == SEQ_EE_LEN_DRUM) L = SEQ_EE_LEN_SPD;
@@ -4127,7 +4348,8 @@ void seqCfgLoad() {
   bool extSp = (len >= SEQ_EE_LEN_DRUM); // 9-rung speed ladder (666)
   bool extDR = (len >= SEQ_EE_LEN_DRUM2); // DRUM page params (923)
   bool extDM = (len >= SEQ_EE_LEN_ARP);  // DRUM kit mapping (940)
-  bool extA  = (len >= SEQ_EE_LEN);      // ARP sub-page params (1262)
+  bool extA  = (len >= SEQ_EE_LEN_SWING); // ARP sub-page params (1262)
+  bool extSw = (len >= SEQ_EE_LEN);      // per-track swing (1296)
   for (uint8_t i = 0; i < SEQ_CH_COUNT; i++) {
     int v = (int8_t)b[3 + i];            // octave: keep the cast signed
     if (v < -60) v = -60;
@@ -4177,6 +4399,12 @@ void seqCfgLoad() {
     for (uint8_t i = 0; i < SEQ_CH_COUNT; i++)
       for (uint8_t p = 0; p < ARP_P_COUNT; p++)
         seqArpPSet(i, p, b[940 + i * ARP_P_COUNT + p]);
+  }
+  if (extSw) {                           // per-track swing (newest block only)
+    for (uint8_t i = 0; i < SEQ_CH_COUNT; i++) {
+      seqSwingStyleSet(i, b[1262 + i]);  // clamped inside (bad -> OFF)
+      seqSwingAmtSet(i, b[1278 + i]);    // (bad -> 50)
+    }
   }
   if (extG) {                            // GNR8 params (new-format block;
     for (uint8_t i = 0; i < SEQ_CH_COUNT; i++) {   // legacy blocks keep the

@@ -1749,12 +1749,21 @@ void handleButtonEvents() {
     // and press the selected bar again to loop it - swallowed presses are
     // remembered so the matching release never sends a stray note-off
     if (kidx != 255) {
-      static uint8_t barHeld = 0;          // kidx bits eaten as pattern bars
+      static uint16_t barHeld = 0;         // kidx bits eaten as pattern bars /
+                                           // track verbs - uint16 because
+                                           // G# and A# sit at kidx 8 and 10
       bool isBar = (ev == EV_PRESSED && modeBase == MODE_SEQ &&
                     modeVariant == 3 && kl >= 25 && kl <= 28);
+      // ...and the five BLACK keys of the same octave carry the track
+      // verbs: C# = pattern length / 2, D# = pattern length x 2, F# = copy
+      // the pattern, G# = the edit window follows the playhead (the bar
+      // moves with the green dot), A# = paste the clipboard.  Swallowed
+      // exactly like the bar keys, so the release sends no stray note
+      bool isSeq3Fn = (ev == EV_PRESSED && modeBase == MODE_SEQ &&
+                       modeVariant == 3 && kl >= 37 && kl <= 41);
       if (isBar) {
         uint8_t bar = (uint8_t)(kl - 25);  // 25,26,27,28 -> bar 0..3
-        barHeld |= (uint8_t)(1 << kidx);
+        barHeld |= (uint16_t)(1u << kidx);
         uint8_t r = seqBarPress(bar);
         char bb[20];
         if (r == 0)
@@ -1769,6 +1778,46 @@ void handleButtonEvents() {
           Serial.print("  bar ");
           Serial.println(bb);
         }
+      } else if (isSeq3Fn) {
+        barHeld |= (uint16_t)(1u << kidx);      // swallow the matching release
+        char fb[24];
+        if (kl == 37) {                       // C#: pattern length / 2
+          snprintf(fb, sizeof(fb), "Pattern %u Steps",
+                   (unsigned)seqPatLenHalf());
+          refreshAllLeds();
+          refreshMainScreen();
+        } else if (kl == 38) {                // D#: pattern length x 2
+          snprintf(fb, sizeof(fb), "Pattern %u Steps",
+                   (unsigned)seqPatLenDouble());
+          refreshAllLeds();
+          refreshMainScreen();
+        } else if (kl == 39) {                // F#: copy the pattern
+          int n = seqPatCopy();
+          if (n <= 0) snprintf(fb, sizeof(fb), "Nothing to Copy");
+          else snprintf(fb, sizeof(fb), "Copied %d Steps", n);
+        } else if (kl == 41) {                // A#: paste into the edit track
+          int n = seqPatPaste();
+          if (n < 0) {
+            snprintf(fb, sizeof(fb), "Clipboard Empty");
+          } else {
+            snprintf(fb, sizeof(fb), "Pasted %d Steps", n);
+            refreshAllLeds();                 // the pads show the new pattern
+            refreshMainScreen();
+          }
+        } else {                              // G#: bar follow on / off
+          bool on = seqStepViewChaseToggle();
+          if (on) {
+            uint8_t pb = seqPlayBar();        // jump onto the sounding bar now
+            if (pb <= 3) seqStepViewFollow((uint8_t)(pb * 16));
+          }
+          snprintf(fb, sizeof(fb), "Bar Follow %s", on ? "On" : "Off");
+          refreshMainScreen();
+        }
+        headerShow(fb);
+        if (logRoom(48)) {
+          Serial.print("  ");
+          Serial.println(fb);
+        }
       } else if (ev == EV_PRESSED) {
         int n = keyPadPress(kidx);
         if (n >= 0 && logRoom(48)) {
@@ -1779,7 +1828,7 @@ void handleButtonEvents() {
         if (n >= 0 && keyChordMode() && chordName()[0])
           headerShow(chordName());
       } else if (ev == EV_RELEASED) {
-        if (barHeld & (1 << kidx)) barHeld &= (uint8_t)~(1 << kidx);
+        if (barHeld & (1u << kidx)) barHeld &= (uint16_t)~(1u << kidx);
         else keyPadRelease(kidx);
       }
       refreshAllLeds();   // first assign key can activate the held step's LED
@@ -2434,13 +2483,44 @@ void handleEncoderEvents() {
           }
         }
         any = true;
-      } else if (ei == 0 && ed != 0 && !harmPageActive() && !compPageActive() &&
-                 !skankPageActive() && !drumPageActive() &&
+      } else if (modeVariant == 4 && ed != 0 && !harmPageActive() &&
+                 !compPageActive() && !skankPageActive() && !drumPageActive() &&
+                 !(arpPageActive() && arpSlotAt(arpOptionSel(), 0) >= 0) &&
+                 (ei == 0 ||
+                  (ei == 1 && !genPageActive() && !leadPageActive() &&
+                   !(arpPageActive() && arpSlotAt(arpOptionSel(), 1) >= 0)))) {
+        // SEQMODE 4 is the timing screen: ENC1 = the per-track swing STYLE
+        // (a machine emulation - which grid it swings and how deep it can
+        // shove the off-steps), ENC2 = the AMT (0 = straight .. 100 = the
+        // machine's full swing, 1 count = 1%; the header names the
+        // EFFECTIVE ratio).  Variants 1/2 keep ENC1 = OCTAVE / ENC2 idle;
+        // a page that owns the slot keeps it here too (the guard list above
+        // mirrors the plain-row ownership)
+        if (ei == 0) {
+          seqSwingStyleAdjust(ed);
+          headerAnnounce("Swing", seqSwingStyleName(seqSwingStyle()));
+          if (logRoom(48)) {
+            Serial.print("  swing ");
+            Serial.println(seqSwingStyleName(seqSwingStyle()));
+          }
+        } else {
+          seqSwingAmtAdjust(ed);
+          headerAnnounceInt("Swing", seqSwingRatioOf(seqEditChannel() - 1), "%");
+          if (logRoom(48)) {
+            Serial.print("  swing amt ");
+            Serial.println(seqSwingRatioOf(seqEditChannel() - 1));
+          }
+        }
+        any = true;
+      } else if (ei == 0 && ed != 0 && modeVariant != 4 && !harmPageActive() &&
+                 !compPageActive() && !skankPageActive() && !drumPageActive() &&
                  arpSlotAt(arpOptionSel(), 0) < 0) {
         seqOctaveShiftAdjust(ed);           // octave shift of the edit seq
-        // (the open HARM page takes ENC1 for its GENRE, the COMP page for
-        //  its HITS, the SKANK page for its TES and an armed ARP sub-page
-        //  that owns ENC1 for its own knob - handled below)
+        // (SEQMODE 4 moves ENC1 to the swing style - its octave stays on
+        //  variants 1/2/3; the open HARM page takes ENC1 for its GENRE, the
+        //  COMP page for its HITS, the SKANK page for its TES and an armed
+        //  ARP sub-page that owns ENC1 for its own knob - handled below; the
+        //  table row is 1=OCT, 2=--, 4=SWING)
         headerAnnounceInt("Octave Shift", seqOctaveShift());
         if (logRoom(48)) {
           Serial.print("  octshift ");
