@@ -2867,6 +2867,20 @@ void seqFollowFreezeClear(uint8_t ch) {
   if (ch < SEQ_CH_COUNT) frzN[ch] = 0;
 }
 
+// EXT IN = LIVE: is sequence s's live gesture currently HELD?  External
+// notes held on its input (extHeld), or the keyboard engine sounding on a
+// channel the sequence listens to - the same gate updatePending() uses to
+// feed it.  pending[] itself survives a release by design (it is the
+// record buffer), so it cannot say "held" - release = LIVE rests again
+static bool liveGestureHeld(uint8_t s) {
+  if (extHeldLen[s] > 0) return true;
+  if (keyCh != (uint8_t)(s + 1) && seqInCh[s] != keyCh) return false;
+  if (chordSounding()) return true;
+  for (uint8_t i = 0; i < 12; i++)
+    if (keyActive[i]) return true;
+  return false;
+}
+
 static void seqAdvanceOnce(bool start, const bool *go,
                            uint32_t now, uint32_t stepDur) {
   // position of every track for this tick: it walks its own pattern toward
@@ -3088,6 +3102,21 @@ static void seqAdvanceOnce(bool start, const bool *go,
     // a muted track still PLAYS here (internal communication: follow
     // chains, arp index, the HARM live follow) - seqOutOn/seqOutOff
     // suppress the wire traffic at the send
+    // EXT IN = LIVE (MONO/POLY): an EMPTY own step (unassigned or
+    // disabled - both are len 0) plays the track's live gesture - the
+    // pending chord while its source is HELD - through the normal engine
+    // below, so a DAW chord arpeggiates without being recorded first.
+    // Stored steps keep their chords, FOLLOW listeners keep reading the
+    // feeder, DRUM has no chord to play.  Gesture must be held: release
+    // rests these steps again (checked separately - pending survives a
+    // release for the record workflow)
+    bool liveIn = false;
+    if (!follow && len == 0 && !drumTrack && pendingLen[c] > 0 &&
+        seqExtInModeOf((uint8_t)c) == SEQ_EXTIN_LIVE &&
+        liveGestureHeld((uint8_t)c)) {
+      len = pendingLen[c];
+      liveIn = true;
+    }
     bool plays = (len > 0);
     // probability gate (MONO/POLY): the track's own %, read live so ENC8
     // moves every armed step at once; a miss silences the step this pass
@@ -3110,7 +3139,7 @@ static void seqAdvanceOnce(bool start, const bool *go,
     // live step
     uint8_t *ch = (follow && frz && frzN[c]) ? frzCh[c]
                  : follow ? stepChord[seqInCh[c] - 1][fstp]
-                          : stepChord[c][stp];
+                          : liveIn ? pending[c] : stepChord[c][stp];
     // LIVE HARM follow: with FOLLOW on the chord is re-derived from the
     // feeder's SOUNDING note this tick (post-probability) instead of the
     // stored step chord - prob rolls and arp walks re-harmonize every
@@ -3922,13 +3951,113 @@ void seqInputChannelAdjust(int16_t counts) {
   for (uint8_t st = 0; st < STEP_MAX; st++) histLen[seqEditCh][st] = 0;
 }
 
+// --- per-track external input (SEQMODE 4 ENC3/ENC4) ------------------------
+// Boot defaults ON + USB = the behavior every build had before this knob:
+// external notes feed a sequence when its input channel matches.  A mode
+// or source change clears that track's held-note bookkeeping so a release
+// arriving after the change (or from a now-excluded port) cannot leave a
+// stale note held forever
+static uint8_t extInMode[16] = { 1, 1, 1, 1, 1, 1, 1, 1,
+                                 1, 1, 1, 1, 1, 1, 1, 1 };  // SEQ_EXTIN_ON
+static uint8_t extInSrc[16]  = { 0, 0, 0, 0, 0, 0, 0, 0,
+                                 0, 0, 0, 0, 0, 0, 0, 0 };  // SEQ_EXTIN_USB
+static int16_t extInRes = 0;               // leftover encoder counts (mode)
+static int16_t extSrcRes = 0;              // leftover encoder counts (source)
+
+// does this track listen to notes arriving on this physical input?
+static bool extSrcAllows(uint8_t s, uint8_t port) {
+  uint8_t src = extInSrc[s];
+  if (src == SEQ_EXTIN_BOTH) return true;
+  if (src == SEQ_EXTIN_DIN) return port == EXT_PORT_DIN;
+  return port == EXT_PORT_USB;
+}
+
+void seqExtInModeAdjust(int16_t counts) {
+  extInRes += counts;
+  int8_t step = 0;
+  while (extInRes >= 4)  { extInRes -= 4; step++; }
+  while (extInRes <= -4) { extInRes += 4; step--; }
+  if (!step) return;
+  int16_t v = (int16_t)extInMode[seqEditCh] + step;
+  if (v < SEQ_EXTIN_OFF) v = SEQ_EXTIN_OFF;
+  if (v > SEQ_EXTIN_LIVE) v = SEQ_EXTIN_LIVE;     // no wrap
+  if ((uint8_t)v == extInMode[seqEditCh]) return;
+  // leaving THRU: release the notes it already forwarded, or the host
+  // hangs on them (the release below clears the hold either way)
+  if (extInMode[seqEditCh] == SEQ_EXTIN_THRU)
+    for (uint8_t i = 0; i < extHeldLen[seqEditCh]; i++)
+      usbMIDI.sendNoteOff(extHeld[seqEditCh][i], 0, (uint8_t)(seqEditCh + 1));
+  extInMode[seqEditCh] = (uint8_t)v;
+  extHeldLen[seqEditCh] = 0;   // stale hold from before the change
+}
+
+uint8_t seqExtInMode() { return seqExtInModeOf(seqEditCh); }
+
+uint8_t seqExtInModeOf(uint8_t ch) {
+  return (ch < 16 && extInMode[ch] < SEQ_EXTIN_COUNT) ? extInMode[ch]
+                                                      : SEQ_EXTIN_ON;
+}
+
+void seqExtInModeSet(uint8_t ch, uint8_t v) {
+  if (ch < 16)
+    extInMode[ch] = (v < SEQ_EXTIN_COUNT) ? v : SEQ_EXTIN_ON;
+}
+
+const char *seqExtInModeName(uint8_t v) {
+  static const char *const nm[SEQ_EXTIN_COUNT] = { "OFF", "ON", "THRU", "LIVE" };
+  return nm[(v < SEQ_EXTIN_COUNT) ? v : SEQ_EXTIN_ON];
+}
+
+void seqExtInSrcAdjust(int16_t counts) {
+  extSrcRes += counts;
+  int8_t step = 0;
+  while (extSrcRes >= 4)  { extSrcRes -= 4; step++; }
+  while (extSrcRes <= -4) { extSrcRes += 4; step--; }
+  if (!step) return;
+  int16_t v = (int16_t)extInSrc[seqEditCh] + step;
+  if (v < SEQ_EXTIN_USB) v = SEQ_EXTIN_USB;
+  if (v > SEQ_EXTIN_BOTH) v = SEQ_EXTIN_BOTH;    // no wrap
+  if ((uint8_t)v == extInSrc[seqEditCh]) return;
+  // leaving a source that carried THRU notes: release them first (see
+  // seqExtInModeAdjust), then drop the hold - its release goes to the
+  // old port and must not leave a stale note
+  if (extInMode[seqEditCh] == SEQ_EXTIN_THRU)
+    for (uint8_t i = 0; i < extHeldLen[seqEditCh]; i++)
+      usbMIDI.sendNoteOff(extHeld[seqEditCh][i], 0, (uint8_t)(seqEditCh + 1));
+  extInSrc[seqEditCh] = (uint8_t)v;
+  extHeldLen[seqEditCh] = 0;   // held on the old port: release goes there
+}
+
+uint8_t seqExtInSrc() { return seqExtInSrcOf(seqEditCh); }
+
+uint8_t seqExtInSrcOf(uint8_t ch) {
+  return (ch < 16 && extInSrc[ch] < SEQ_EXTINSRC_COUNT) ? extInSrc[ch]
+                                                        : SEQ_EXTIN_USB;
+}
+
+void seqExtInSrcSet(uint8_t ch, uint8_t v) {
+  if (ch < 16)
+    extInSrc[ch] = (v < SEQ_EXTINSRC_COUNT) ? v : SEQ_EXTIN_USB;
+}
+
+const char *seqExtInSrcName(uint8_t v) {
+  static const char *const nm[SEQ_EXTINSRC_COUNT] = { "USB", "DIN", "BOTH" };
+  return nm[(v < SEQ_EXTINSRC_COUNT) ? v : SEQ_EXTIN_USB];
+}
+
 // external MIDI input: a note feeds EVERY sequence whose input channel
-// matches, independently of the edit focus - so setting ch3's input to ch2
-// makes ch3 receive exactly what ch2 receives (identical pending chords ->
-// activating the same steps stores the same sequence in both)
-void extNoteOn(uint8_t ch, uint8_t note) {
+// matches AND whose SRC allows the port it arrived on, independently of
+// the edit focus - so setting ch3's input to ch2 makes ch3 receive exactly
+// what ch2 receives (identical pending chords -> activating the same steps
+// stores the same sequence in both).  A THRU sequence additionally
+// forwards the note on its output channel (channel-filtered thru over USB)
+void extNoteOn(uint8_t port, uint8_t ch, uint8_t note, uint8_t vel) {
   for (uint8_t s = 0; s < SEQ_CH_COUNT; s++) {
     if (seqInCh[s] != ch) continue;
+    if (!extSrcAllows(s, port)) continue;
+    if (extInMode[s] == SEQ_EXTIN_THRU)
+      usbMIDI.sendNoteOn(note, vel, (uint8_t)(s + 1));   // track out channel
+    if (extInMode[s] == SEQ_EXTIN_OFF) continue;
     bool held = false;
     for (uint8_t i = 0; i < extHeldLen[s]; i++)
       if (extHeld[s][i] == note) held = true;
@@ -3951,11 +4080,16 @@ void extNoteOn(uint8_t ch, uint8_t note) {
   }
 }
 
-void extNoteOff(uint8_t ch, uint8_t note) {
+void extNoteOff(uint8_t port, uint8_t ch, uint8_t note) {
   (void)ch;
-  // release bookkeeping for every sequence (matched by note, robust against
-  // input-channel changes while held); pending chords are kept after release
+  // release bookkeeping for every sequence that listens to this port
+  // (matched by note, robust against input-channel changes while held);
+  // pending chords are kept after release.  A sequence on another source
+  // never received the note-on from here, so this off must not release it
   for (uint8_t s = 0; s < SEQ_CH_COUNT; s++) {
+    if (!extSrcAllows(s, port)) continue;
+    if (extInMode[s] == SEQ_EXTIN_THRU)
+      usbMIDI.sendNoteOff(note, 0, (uint8_t)(s + 1));  // undo its forward
     for (uint8_t i = 0; i < extHeldLen[s]; i++) {
       if (extHeld[s][i] != note) continue;
       extHeldLen[s]--;
@@ -4179,14 +4313,16 @@ void seqPatRepeatInto(uint8_t ch, uint8_t oldLen) {
 // drumGenre[16] | drumVar[16] | drumLine[64] | drumFill[64] | drumMot[64] |
 // drumFillMaster[16] | drumMotMaster[16] | drumMap[16] | arpP params |
 // arpParamsMark | swingStyle[16] | swingAmt[16] | swingMark |
-// checksum = 1296 bytes; blank or
+// extInMode[16] | extInSrc[16] | extInMark |
+// checksum = 1330 bytes; blank or
 // corrupt keeps the defaults.  A block written by an older build
-// (1262/940/923/666/665/649/616/567/564/532/436/420/404/388/260 bytes) still
+// (1296/1262/940/923/666/665/649/616/567/564/532/436/420/404/388/260 bytes) still
 // loads: the core fields are at the same offsets and the newer params keep
 // their defaults - saved config survives the upgrade
 static const uint8_t  SEQ_EE_MAGIC = 0x53;
 static const uint16_t SEQ_EE_ADDR = 160;
-static const uint16_t SEQ_EE_LEN = 1296;      // + per-track swing (SEQMODE 4)
+static const uint16_t SEQ_EE_LEN = 1330;      // + per-track EXT IN (SEQMODE 4)
+static const uint16_t SEQ_EE_LEN_EXTIN = 1296; // previous: per-track swing
 static const uint16_t SEQ_EE_LEN_SWING = 1262; // previous: ARP F sub-page params
 static const uint16_t SEQ_EE_LEN_ARP = 940;   // previous: DRUM kit mapping
 static const uint16_t SEQ_EE_LEN_DRUM2 = 923; // previous: DRUM page params
@@ -4202,6 +4338,7 @@ static const uint16_t SEQ_EE_LEN_KLOCK = 649; // previous: LEAD CT/GD knobs
 static const uint8_t  SEQ_SPD_MARK = 2;
 static const uint8_t  SEQ_ARP_MARK = 1;   // ARP sub-page params present (b[1260])
 static const uint8_t  SEQ_SWING_MARK = 1; // per-track swing present (b[1294])
+static const uint8_t  SEQ_EXTIN_MARK = 1; // per-track EXT IN present (b[1328])
 static const uint16_t SEQ_EE_LEN_LEAD2 = 616; // previous: mode/page mem
 static const uint16_t SEQ_EE_LEN_MODE = 567;  // previous: link flags only
 static const uint16_t SEQ_EE_LEN_SKANK2 = 564; // previous: SKANK knobs[128]
@@ -4290,6 +4427,11 @@ void seqCfgSave() {
     b[1278 + i] = seqSwingAmtOf(i);             // amount 0..100
   }
   b[1294] = SEQ_SWING_MARK;           // swing params present
+  for (uint8_t i = 0; i < SEQ_CH_COUNT; i++) {  // per-track EXT IN (SEQMODE 4)
+    b[1296 + i] = seqExtInModeOf(i);            // OFF / ON / THRU
+    b[1312 + i] = seqExtInSrcOf(i);             // USB / DIN / BOTH
+  }
+  b[1328] = SEQ_EXTIN_MARK;           // ext-in params present
   uint8_t sum = 0;
   for (uint16_t i = 0; i < SEQ_EE_LEN - 1; i++) sum += b[i];
   b[SEQ_EE_LEN - 1] = sum;
@@ -4300,10 +4442,10 @@ void seqCfgLoad() {
   uint8_t b[SEQ_EE_LEN];
   EEPROM.get(SEQ_EE_ADDR, b);
   // pick the NEWEST block length whose magic + checksum validate, so an
-  // older save (1262 = pre-swing, 940 = pre-ARP, 923 = pre-kit-map, 666 =
-  // before the DRUM page, 665 = 7-rung speed ladder, ... down to 260 =
-  // legacy) still restores its fields and the newer ones keep their
-  // defaults
+  // older save (1296 = pre-EXT-IN, 1262 = pre-swing, 940 = pre-ARP, 923 =
+  // pre-kit-map, 666 = before the DRUM page, 665 = 7-rung speed ladder,
+  // ... down to 260 = legacy) still restores its fields and the newer ones
+  // keep their defaults
   uint16_t len = 0;
   for (uint16_t L = SEQ_EE_LEN;;) {
     uint8_t sum = 0;
@@ -4313,11 +4455,12 @@ void seqCfgLoad() {
     if (b[0] == SEQ_EE_MAGIC && sum == b[L - 1] &&
         (L < SEQ_EE_LEN ||
          (b[664] == SEQ_SPD_MARK && b[1260] == SEQ_ARP_MARK &&
-          b[1294] == SEQ_SWING_MARK))) {
+          b[1294] == SEQ_SWING_MARK && b[1328] == SEQ_EXTIN_MARK))) {
       len = L;
       break;
     }
-    if (L == SEQ_EE_LEN) L = SEQ_EE_LEN_SWING;
+    if (L == SEQ_EE_LEN) L = SEQ_EE_LEN_EXTIN;
+    else if (L == SEQ_EE_LEN_EXTIN) L = SEQ_EE_LEN_SWING;
     else if (L == SEQ_EE_LEN_SWING) L = SEQ_EE_LEN_ARP;
     else if (L == SEQ_EE_LEN_ARP) L = SEQ_EE_LEN_DRUM2;
     else if (L == SEQ_EE_LEN_DRUM2) L = SEQ_EE_LEN_DRUM;
@@ -4349,7 +4492,8 @@ void seqCfgLoad() {
   bool extDR = (len >= SEQ_EE_LEN_DRUM2); // DRUM page params (923)
   bool extDM = (len >= SEQ_EE_LEN_ARP);  // DRUM kit mapping (940)
   bool extA  = (len >= SEQ_EE_LEN_SWING); // ARP sub-page params (1262)
-  bool extSw = (len >= SEQ_EE_LEN);      // per-track swing (1296)
+  bool extSw = (len >= SEQ_EE_LEN_EXTIN); // per-track swing (1296)
+  bool extXi = (len >= SEQ_EE_LEN);      // per-track EXT IN (1330)
   for (uint8_t i = 0; i < SEQ_CH_COUNT; i++) {
     int v = (int8_t)b[3 + i];            // octave: keep the cast signed
     if (v < -60) v = -60;
@@ -4404,6 +4548,12 @@ void seqCfgLoad() {
     for (uint8_t i = 0; i < SEQ_CH_COUNT; i++) {
       seqSwingStyleSet(i, b[1262 + i]);  // clamped inside (bad -> OFF)
       seqSwingAmtSet(i, b[1278 + i]);    // (bad -> 50)
+    }
+  }
+  if (extXi) {                           // per-track EXT IN (newest block only)
+    for (uint8_t i = 0; i < SEQ_CH_COUNT; i++) {
+      seqExtInModeSet(i, b[1296 + i]);   // clamped inside (bad -> ON)
+      seqExtInSrcSet(i, b[1312 + i]);    // (bad -> USB)
     }
   }
   if (extG) {                            // GNR8 params (new-format block;

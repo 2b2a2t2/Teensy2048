@@ -56,6 +56,7 @@ The hardware has 48 touch pads but only 42 LEDs. The mapping (`padToLedList` in 
 - **Adafruit_MPR121** — Capacitive touch controllers
 - **uClock** — MIDI clock/transport (24 PPQN external, 96 PPQN internal)
 - **Teensyduino USB MIDI** — USB-MIDI device (note on/off, CC, clock, start/stop/continue)
+- **MIDI Library** (FortySevenEffects, bundled with Teensyduino) — the 5-pin DIN note input on Serial2
 
 ### Module Overview
 
@@ -156,13 +157,15 @@ Each mode/variant combination selects an `EncSet`, `CtrlSet`, `StepSet`, `KeySet
 
 **Playhead** advances on MIDI clock (24 PPQN external or internal master at tempo). 16 steps per sequence, 16 sequences (one per MIDI channel 1–16).
 
-#### Swing (SEQMODE 4 — the timing screen)
-- **SEQMODE 4** is the timing screen: **ENC1 = SWING** picks the per-track swing **style** (a machine emulation), **ENC2 = AMT** sets how much. Variants 1/2 keep **ENC1 = OCT** / ENC2 idle, and an open page (GNR8/ARP/LEAD/HARM/COMP/SKANK/DRUM, or a step-edit sub-page that owns the slot) keeps its own knob — the swing row only lives on the plain track view.
-- **Per track**: each of the 16 tracks carries its own **style** and **amount**, edited for the current SEQ edit channel and saved with SEQMODE4+REC.
+#### Swing + External In (SEQMODE 4 — the timing & input screen)
+- **SEQMODE 4** is the timing & input screen: **ENC1 = SWING** picks the per-track swing **style** (a machine emulation), **ENC2 = AMT** sets how much, **ENC3 = EXT IN** (OFF/ON/THRU) sets whether the track listens to external incoming MIDI, and **ENC4 = SRC** (USB/DIN/BOTH) picks which physical input it listens to. Variants 1/2 keep **ENC1 = OCT** / ENC2 idle, and an open page (GNR8/ARP/LEAD/HARM/COMP/SKANK/DRUM, or a step-edit sub-page that owns the slot) keeps its own knob — the swing/input row only lives on the plain track view.
+- **Per track**: each of the 16 tracks carries its own **style**, **amount**, **EXT IN mode** and **source**, edited for the current SEQ edit channel and saved with SEQMODE4+REC.
 - **Styles** (each pairs the off-beats of a 16th or 8th grid and caps how deep the swing can shove them): **OFF** (straight) · **MPC60** (16th, up to 75%) · **MPC3K** (16th, 70%) · **SP1200** (16th, 72%) · **LINN** (16th, 62%) · **TR808** (16th, 66%) · **TR909** (16th, 64%) · **SHUFFLE** (8th pairs, up to 75%) · **TRIPLET** (8th pairs, up to 67%).
 - **Effective ratio** = 50% + (AMT/100) × (style's max − 50): AMT 0 = straight, 100 = the machine's full swing. ENC1's header reads `Swing <STYLE>`, ENC2's reads the **effective ratio** (`Swing 62%`). Both knobs are **clamped, no wrap**.
 - **Scheduling**: the off-steps of a swung track are **deferred** by the swing depth and played late (the on-steps stay on the grid), so the two halves of the pair straddle the beat the way the machine does. The queue is cleared on transport start/stop so a swung track never leaks a stray step into a fresh run.
-- Saved/restored with SEQMODE4+REC (the per-track **style** and **amount** are fields of the extended **(1296-byte)** SEQ EEPROM block — cascade 1296→1262→…; a save from an older build still loads and keeps the defaults: style = OFF, AMT = 50).
+- **EXT IN (ENC3)** — the per-track gate on external MIDI (**clamped, no wrap**; header `Ext In OFF/ON/THRU/LIVE`): **OFF** = the track ignores external notes, **ON** = the track listens (external notes feed its pending chord / recording / step-assign, exactly as every track always did when its **input channel** matched), **THRU** = the track listens **and forwards** the notes it receives — still filtered by its input channel — out on its **output channel** over USB, a per-track MIDI thru box, **LIVE** = the track listens **and plays the incoming chord through its own engine while the transport runs**: every step **without stored content** plays the current pending chord while its source is **held** — a MONO/ARP track walks it (a live external arpeggiator: chord in from the DAW → arpeggio out, no recording), a POLY track replays the chord — and release rests those steps again (the gesture must be *held*; pending itself survives a release for the record workflow). Stored steps keep their chords, a FOLLOW listener keeps reading its feeder, and DRUM ignores LIVE. An empty step includes a **disabled** one (both are stored as "no content"). The arp stays locked to the transport, so start it on the device or let the DAW drive it with **SYNC = EXT**.
+- **SRC (ENC4)** = which physical input the track listens to (**clamped, no wrap**; header `Ext Source USB/DIN/BOTH`): **USB** (the default — the behavior every build had before this knob), **DIN** (the **5-pin MIDI input on Serial2, pin 7 RX / pin 8 TX** — notes only; clock/transport stays USB-only so two clock sources can never double-advance the sequencer), or **BOTH**. A note-off only releases tracks whose SRC allows the port it arrived on, and changing the mode or source releases anything the track had forwarded and drops its held-note bookkeeping, so nothing hangs at the host.
+- Saved/restored with SEQMODE4+REC (the per-track **style**, **amount**, **EXT IN mode** and **source** are fields of the extended **(1330-byte)** SEQ EEPROM block — cascade 1330→1296→1262→…; a save from an older build still loads and keeps the defaults: style = OFF, AMT = 50, EXT IN = ON + USB).
 
 #### Step Recording
 - **Press unassigned step** → silently records current *pending chord* into that step
@@ -429,9 +432,10 @@ When a track's step chords are written, all MONO/POLY sequences **listening to t
 
 ### 6. MIDI I/O
 - **USB-MIDI Device**: Notes, CC, Clock, Start/Stop/Continue
+- **5-pin DIN MIDI input** (Serial2, pin 7 RX / pin 8 TX): **notes only** — clock/transport deliberately stays USB-only so two clock sources can never double-advance the sequencer; per track gated by SEQMODE4 **EXT IN / SRC** (see [Swing + External In](#swing--external-in-seqmode-4--the-timing--input-screen))
 - **Keyboard output channel**: Default ch2 (ch1 reserved for DRUM)
 - **Sequencer output**: Each sequence plays on its own MIDI channel (1–16)
-- **External MIDI In**: `extNoteOn/Off` feeds pending chords of sequences whose input channel matches
+- **External MIDI In**: `extNoteOn/Off` feeds pending chords of sequences whose input channel matches **and whose SRC (USB/DIN/BOTH) allows the port the note arrived on**; a THRU track forwards them to its output channel
 
 ## Display
 

@@ -453,6 +453,15 @@ void refreshMainScreen() {
                !(arpP && arpSlotAt(arpOptionSel(), 1) >= 0)) {
       // variant 4 timing screen: ENC2 = the swing amount (0..100)
       snprintf(val, sizeof(val), "%u%%", seqSwingAmt());
+    } else if (modeBase == MODE_SEQ && (c == 2 || c == 3) && modeVariant == 4 &&
+               !genP && !leadP && !harmP && !compP && !skankP && !drumP &&
+               !arpP) {
+      // variant 4 input row: ENC3 = EXT IN mode, ENC4 = source (every page
+      // owns these slots when open, so the guard mirrors the plain row)
+      if (c == 2)
+        snprintf(val, sizeof(val), "%s", seqExtInModeName(seqExtInMode()));
+      else
+        snprintf(val, sizeof(val), "%s", seqExtInSrcName(seqExtInSrc()));
     } else if (genP && c == 1) {
       snprintf(val, sizeof(val), "%u%%", seqGenFillOf(genSeq));   // ENC2
     } else if (genP && c == 2) {

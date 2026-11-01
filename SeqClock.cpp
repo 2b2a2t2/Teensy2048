@@ -5,6 +5,12 @@
 #include "Events.h"     // encCcIncoming - DAW CC feedback syncs ENCMODE knobs
 #include "Encoders.h"   // encDrain - accelerated 0-100% knobs
 #include <uClock.h>
+#include <MIDI.h>       // 5-pin DIN input (Serial2, pin 7 RX) - Teensyduino bundle
+
+// DIN MIDI in on Serial2 (RX = pin 7, TX = pin 8): notes only, gated per
+// track by the SEQMODE4 SRC knob - clock/transport stays USB-only so two
+// clock sources can never double-advance uClock
+MIDI_CREATE_INSTANCE(HardwareSerial, Serial2, DIN_MIDI);
 
 #define STEPS_COUNT 16
 
@@ -68,14 +74,24 @@ static void midiStart() { if (!syncInternal) uClock.start(); }
 static void midiStop()  { if (!syncInternal) uClock.stop(); }
 static void midiContinue() { if (!syncInternal) uClock.start(); }
 
-// incoming notes feed the record workflow (loop context via seqPumpMidi)
+// incoming notes feed the record workflow (loop context via seqPumpMidi);
+// the port argument tells the per-track SRC gate which physical input the
+// note arrived on (USB vs the Serial2 DIN input)
 static void midiNoteOn(uint8_t ch, uint8_t note, uint8_t vel) {
-  if (vel) extNoteOn(ch, note);
-  else extNoteOff(ch, note);      // velocity 0 = note off
+  if (vel) extNoteOn(EXT_PORT_USB, ch, note, vel);
+  else extNoteOff(EXT_PORT_USB, ch, note);   // velocity 0 = note off
 }
 static void midiNoteOff(uint8_t ch, uint8_t note, uint8_t vel) {
   (void)vel;
-  extNoteOff(ch, note);
+  extNoteOff(EXT_PORT_USB, ch, note);
+}
+static void dinNoteOn(uint8_t ch, uint8_t note, uint8_t vel) {
+  if (vel) extNoteOn(EXT_PORT_DIN, ch, note, vel);
+  else extNoteOff(EXT_PORT_DIN, ch, note);   // velocity 0 = note off
+}
+static void dinNoteOff(uint8_t ch, uint8_t note, uint8_t vel) {
+  (void)vel;
+  extNoteOff(EXT_PORT_DIN, ch, note);
 }
 
 // incoming CC feedback (loop context via seqPumpMidi): keeps the ENCMODE
@@ -146,11 +162,18 @@ void initSeqClock() {
   usbMIDI.setHandleNoteOn(midiNoteOn);
   usbMIDI.setHandleNoteOff(midiNoteOff);
   usbMIDI.setHandleControlChange(midiControlChange);
+
+  // DIN input (Serial2): notes only - no clock/transport handlers on purpose
+  DIN_MIDI.begin(MIDI_CHANNEL_OMNI);
+  DIN_MIDI.setHandleNoteOn(dinNoteOn);
+  DIN_MIDI.setHandleNoteOff(dinNoteOff);
 }
 
 void seqPumpMidi() {
   uint8_t n = 0;
   while (n < 64 && usbMIDI.read()) n++;   // bounded; 64 covers catch-up bursts
+  n = 0;
+  while (n < 64 && DIN_MIDI.read()) n++;  // same bound for the DIN input
 }
 
 void pollSeqClock() {

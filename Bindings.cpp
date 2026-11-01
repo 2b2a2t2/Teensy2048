@@ -35,7 +35,7 @@ static const char* encLabels[ENC_SET_COUNT][8] = {
   /* ENC_SEQ          */ { "OCT", "--", "--", "--", "GATE", "VEL", "--", "PROB" },
   /* ENC_SEQ2         */ { "OCT", "--", "--", "--", "GATE", "VEL", "--", "PROB" },
   /* ENC_SEQ3         */ { "OCT", "LEN", "FOLLOW", "SPEED", "INCH", "TRACK", "TYPE", "BPM" },
-  /* ENC_SEQ4         */ { "SWING", "AMT", "--", "--", "GATE", "VEL", "--", "PROB" },
+  /* ENC_SEQ4         */ { "SWING", "AMT", "EXT IN", "SRC", "GATE", "VEL", "--", "PROB" },
   /* ENC_ENC          */ { "CC17", "CC18", "CC19", "CC20", "CC1", "CC2", "CC3", "CC4" },
   /* ENC_ENC2         */ { "CC17", "CC18", "CC19", "CC20", "CC1", "CC2", "CC3", "CC4" },
   /* ENC_ENC3         */ { "CC17", "CC18", "CC19", "CC20", "CC1", "CC2", "CC3", "CC4" },

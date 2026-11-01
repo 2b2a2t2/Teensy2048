@@ -66,10 +66,55 @@ uint8_t seqInputChannel();
 void seqOctaveShiftAdjust(int16_t counts);
 int  seqOctaveShift();                // edit sequence's shift (for the OLED)
 
-// incoming USB-MIDI notes -> feed the pending chord of every sequence
-// whose input channel matches, and the step held in assign mode
-void extNoteOn(uint8_t ch, uint8_t note);
-void extNoteOff(uint8_t ch, uint8_t note);
+// --- external MIDI input (per track, SEQMODE 4 ENC3/ENC4) ------------------
+// Every sequence has always listened to external notes whose channel
+// matched its input channel; these two knobs steer that per track:
+//   EXT IN (ENC3): OFF = ignore external MIDI, ON = listen (feed the
+//             pending chord / record / assign), THRU = listen AND forward
+//             the notes it receives (still input-channel filtered) out on
+//             the track's output channel over USB - a per-track MIDI thru
+//             over USB, LIVE = listen AND play the pending chord through
+//             the track's own engine on EMPTY steps while the transport
+//             runs (a DAW chord arpeggiates without recording it; stored
+//             steps keep their chords; release = rest again)
+//   SRC    (ENC4): USB / DIN / BOTH - which physical input the track
+//             listens to (DIN = the 5-pin input on Serial2, pin 7; notes
+//             only - clock/transport stays USB-only)
+// Both clamped, no wrap; persisted per track in the SEQ EEPROM block.
+// Boot: ON + USB = the behavior every build had before this knob
+enum SeqExtInMode : uint8_t {
+  SEQ_EXTIN_OFF = 0,   // ignore external MIDI
+  SEQ_EXTIN_ON,        // listen (pending chord / record / assign)
+  SEQ_EXTIN_THRU,      // listen + forward to the track's output channel
+  SEQ_EXTIN_LIVE,      // listen + play the pending chord live (MONO/POLY)
+  SEQ_EXTIN_COUNT
+};
+enum SeqExtInSrc : uint8_t {
+  SEQ_EXTIN_USB = 0,   // only notes arriving over USB
+  SEQ_EXTIN_DIN,       // only notes arriving on the DIN input (Serial2)
+  SEQ_EXTIN_BOTH,      // either input
+  SEQ_EXTINSRC_COUNT
+};
+// which physical input a note arrived on (port arg of extNoteOn/Off)
+enum ExtInPort : uint8_t { EXT_PORT_USB = 0, EXT_PORT_DIN };
+
+void        seqExtInModeAdjust(int16_t counts); // edit track; 4 counts = 1, no wrap
+uint8_t     seqExtInMode();                     // edit track (OLED)
+uint8_t     seqExtInModeOf(uint8_t ch);         // per track
+void        seqExtInModeSet(uint8_t ch, uint8_t v); // EEPROM load (bad -> ON)
+const char *seqExtInModeName(uint8_t v);        // "OFF" / "ON" / "THRU" / "LIVE"
+void        seqExtInSrcAdjust(int16_t counts);  // edit track; 4 counts = 1, no wrap
+uint8_t     seqExtInSrc();                      // edit track (OLED)
+uint8_t     seqExtInSrcOf(uint8_t ch);          // per track
+void        seqExtInSrcSet(uint8_t ch, uint8_t v); // EEPROM load (bad -> USB)
+const char *seqExtInSrcName(uint8_t v);         // "USB" / "DIN" / "BOTH"
+
+// incoming MIDI notes (port = the physical input they arrived on) feed
+// EVERY sequence whose input channel matches AND whose SRC allows that
+// port, independently of the edit focus, plus the step held in assign
+// mode; a THRU track also forwards them to its output channel
+void extNoteOn(uint8_t port, uint8_t ch, uint8_t note, uint8_t vel);
+void extNoteOff(uint8_t port, uint8_t ch, uint8_t note);
 
 // DRUM track: per-voice sequencing.  Parts = 16 drum notes C1(36)..D#2(51);
 // part-select overlay pad N = note 36+N (pad0 = C1, the GM kick).  Press M1
@@ -209,7 +254,7 @@ void    handRingCut(uint8_t c);
 // SEQMODE4 + REC: persist all SEQ settings to EEPROM - track type, mono
 // type, octave, input channel, velocity, accent velocity, gate, mutes,
 // probability, pattern length, FOLLOW, edit channel, per-track swing
-// (style + amount).  NOTE PATTERNS ARE
+// (style + amount) and per-track EXT IN (mode + source).  NOTE PATTERNS ARE
 // NOT STORED: the steps, their contents and the tie/glide/accent/prob
 // attributes stay RAM only.
 // seqCfgLoad() restores them at boot (before the first draw); a blank or

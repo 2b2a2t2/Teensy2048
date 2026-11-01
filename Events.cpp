@@ -2512,6 +2512,33 @@ void handleEncoderEvents() {
           }
         }
         any = true;
+      } else if (modeVariant == 4 && ed != 0 && (ei == 2 || ei == 3) &&
+                 !genPageActive() && !leadPageActive() && !harmPageActive() &&
+                 !compPageActive() && !skankPageActive() &&
+                 !drumPageActive() && !arpPageActive()) {
+        // SEQMODE 4 input row: ENC3 = EXT IN mode (OFF/ON/THRU, clamped,
+        // no wrap) - whether the edit track listens to external incoming
+        // MIDI; ENC4 = SRC (USB/DIN/BOTH) - which physical input it listens
+        // to (DIN = the Serial2 5-pin input).  THRU also forwards the notes
+        // it receives (input-channel filtered) out on the track's output
+        // channel over USB.  Every page owns ENC3/4 when open, so the guard
+        // list above mirrors the plain-row ownership
+        if (ei == 2) {
+          seqExtInModeAdjust(ed);
+          headerAnnounce("Ext In", seqExtInModeName(seqExtInMode()));
+          if (logRoom(48)) {
+            Serial.print("  extin ");
+            Serial.println(seqExtInModeName(seqExtInMode()));
+          }
+        } else {
+          seqExtInSrcAdjust(ed);
+          headerAnnounce("Ext Source", seqExtInSrcName(seqExtInSrc()));
+          if (logRoom(48)) {
+            Serial.print("  extsrc ");
+            Serial.println(seqExtInSrcName(seqExtInSrc()));
+          }
+        }
+        any = true;
       } else if (ei == 0 && ed != 0 && modeVariant != 4 && !harmPageActive() &&
                  !compPageActive() && !skankPageActive() && !drumPageActive() &&
                  arpSlotAt(arpOptionSel(), 0) < 0) {
