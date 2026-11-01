@@ -7,7 +7,7 @@
 // diatonic auto-chords, voicing/bass/spread/density, latch, KeyLock.
 // The keyboard (Keyboard.cpp) owns the pads; this module owns the sound.
 
-#define KEY_SCALE_COUNT 39
+#define KEY_SCALE_COUNT 54
 
 // momentary quality buttons (M1/M2/M3/NEXT) - CHORD_Q_NONE on release
 #define CHORD_Q_NONE 0

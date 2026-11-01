@@ -5,7 +5,7 @@
 #define CHORD_N     8      // notes sounding at once
 #define CHORD_ENC   4      // encoder counts per param step
 
-// 39 scales; patterns are 12-bit masks rooted at C (bit0 = C) so the
+// 54 scales; patterns are 12-bit masks rooted at C (bit0 = C) so the
 // keyRoot rotation lands on the right pitch classes
 static const char* const kScaleName[KEY_SCALE_COUNT] = {
   // diatonic modes
@@ -17,27 +17,39 @@ static const char* const kScaleName[KEY_SCALE_COUNT] = {
   "WhoTone", "DimHW", "DimWH", "DbHarm", "PhrDom", "HunMin", "Mishbrk",
   "LydDom", "Altered", "BebopD", "BebopM", "LydAug", "Mixb6", "LocN2",
   "Dor#4", "Lyd#2", "Ultra", "Persian", "NeaMin", "NeaMaj", "Augmnt",
-  "Promth", "Enigm", "Insen", "Yo", "Hirajo"
+  "Promth", "Enigm", "Insen", "Yo", "Hirajo",
+  // harmonic major
+  "HarmMaj",
+  // Messiaen modes of limited transposition 3..7
+  "Mesia3", "Mesia4", "Mesia5", "Mesia6", "Mesia7",
+  // maqam / gamelan
+  "Span8", "Saba", "Iwato", "Kumoi", "PelogS", "PelogT",
+  // maqam (12-TET renderings; the jins half-flats are rounded)
+  "Rast", "Bayati", "Hijaz"
 };
 // one-word mood shown in the header when a scale is selected
 static const char* const kScaleMood[KEY_SCALE_COUNT] = {
   "All Notes", "Happy", "Sad", "Exotic", "Dramatic", "Jazzy", "Spanish",
   "Dreamy", "Groovy", "Tense",
   "Open", "Soulful", "Bluesy",
-  "Floating", "Spooky", "Unstable", "Majestic", "Fiery", "Wild", "Lively",
+  "Floating", "Spooky", "Unstable", "Arabic", "Flamenco", "Gypsy", "Klezmer",
   "Bluesy", "Restless", "Swinging", "Breezy", "Shimmer", "Moody", "Eerie",
   "Mystic", "Bright", "Bizarre", "Mystical", "Lament", "Cinematic",
-  "Surreal", "Airy", "Cryptic", "Haunting", "Gentle", "Tranquil"
+  "Surreal", "Airy", "Cryptic", "Haunting", "Gentle", "Tranquil",
+  "Grand",
+  "Hypnotic", "Alien", "Ritual", "Spectral", "Cluster",
+  "Spanish", "Mourning", "Bleak", "Koto", "Gamelan", "Bronze",
+  "Noble", "Intimate", "Yearning"
 };
 static const uint16_t kScalePat[KEY_SCALE_COUNT] = {
   0xFFF,  // Chr       {0..11}
   0xAB5,  // Major     {0,2,4,5,7,9,11}
   0x5AD,  // Minor     {0,2,3,5,7,8,10}
   0x9AD,  // HarmMin   {0,2,3,5,7,8,11}
-  0xABD,  // MelMin    {0,2,3,5,7,9,11}
+  0xAAD,  // MelMin    {0,2,3,5,7,9,11}
   0x6AD,  // Dorian    {0,2,3,5,7,9,10}
   0x5AB,  // Phryg     {0,1,3,5,7,8,10}
-  0xAE5,  // Lydian    {0,2,4,6,7,9,11}
+  0xAD5,  // Lydian    {0,2,4,6,7,9,11}
   0x6B5,  // Mixoly    {0,2,4,5,7,9,10}
   0x56B,  // Locrian   {0,1,3,5,6,8,10}
   0x295,  // MajPent   {0,2,4,7,9}
@@ -46,10 +58,10 @@ static const uint16_t kScalePat[KEY_SCALE_COUNT] = {
   0x555,  // WhoTone   {0,2,4,6,8,10}
   0x6DB,  // DimHW     {0,1,3,4,6,7,9,10}
   0xB6D,  // DimWH     {0,2,3,5,6,8,9,11}
-  0xB13,  // DbHarm    {0,1,4,5,7,8,11}
+  0x9B3,  // DbHarm    {0,1,4,5,7,8,11}
   0x5B3,  // PhrDom    {0,1,4,5,7,8,10}
-  0xB2D,  // HunMin    {0,2,3,6,7,8,11}
-  0x6F1,  // Mishbrk   {0,4,5,6,7,9,10}
+  0x9CD,  // HunMin    {0,2,3,6,7,8,11}
+  0x5CD,  // Mishbrk   {0,2,3,6,7,8,10} (Misheberakh = 4th mode of harmonic minor)
   0x6D5,  // LydDom    {0,2,4,6,7,9,10}
   0x55B,  // Altered   {0,1,3,4,6,8,10}
   0xEB5,  // BebopD    {0,2,4,5,7,9,10,11}
@@ -58,17 +70,32 @@ static const uint16_t kScalePat[KEY_SCALE_COUNT] = {
   0x5B5,  // Mixb6     {0,2,4,5,7,8,10}
   0x56D,  // LocN2     {0,2,3,5,6,8,10}
   0x6CD,  // Dor#4     {0,2,3,6,7,9,10}
-  0xAE9,  // Lyd#2     {0,3,4,6,7,9,11}
+  0xAD9,  // Lyd#2     {0,3,4,6,7,9,11}
   0x2DB,  // Ultra     {0,1,3,4,6,7,9}
   0x973,  // Persian   {0,1,4,5,6,8,11}
   0x9AB,  // NeaMin    {0,1,3,5,7,8,11}
-  0xABB,  // NeaMaj    {0,1,3,5,7,9,11}
+  0xAAB,  // NeaMaj    {0,1,3,5,7,9,11}
   0x999,  // Augmnt    {0,3,4,7,8,11}
   0x655,  // Promth    {0,2,4,6,9,10}
   0xD53,  // Enigm     {0,1,4,6,8,10,11}
   0x4A3,  // Insen     {0,1,5,7,10}
   0x4A9,  // Yo        {0,3,5,7,10} (as listed)
   0x1A3,  // Hirajo    {0,1,5,7,8}
+  0x9B5,  // HarmMaj   {0,2,4,5,7,8,11}
+  0xDDD,  // Mesia3    {0,2,3,4,6,7,8,10,11} (2-1-1 x3)
+  0x9E7,  // Mesia4    {0,1,2,5,6,7,8,11}
+  0x8E3,  // Mesia5    {0,1,5,6,7,11}
+  0xD75,  // Mesia6    {0,2,4,5,6,8,10,11}
+  0xBEF,  // Mesia7    {0,1,2,3,5,6,7,8,9,11}
+  0x57B,  // Span8     {0,1,3,4,5,6,8,10}
+  0x5DB,  // Saba      {0,1,3,4,6,7,8,10}
+  0x463,  // Iwato     {0,1,5,6,10}
+  0x28D,  // Kumoi     {0,2,3,7,9}
+  0x18B,  // PelogS    {0,1,3,7,8}
+  0x18D,  // PelogT    {0,2,3,7,8}
+  0x6AD,  // Rast      {0,2,3,5,7,9,10} (= Dorian; jins Rast, E half-flat rounded)
+  0x6AB,  // Bayati    {0,1,3,5,7,9,10} (jins Bayati, 1.5-1.5-2 off the 2nd)
+  0x5B3,  // Hijaz     {0,1,4,5,7,8,10} (= PhrDom; jins Hijaz)
 };
 static const char* const kRootName[12] = {
   "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"

@@ -112,7 +112,7 @@ Each mode/variant combination selects an `EncSet`, `CtrlSet`, `StepSet`, `KeySet
 ### 1. Keyboard Playing (Any Mode)
 - **12 chromatic pads** (C–B) send MIDI notes on `keyChannel` (default ch2; a KEYMODE3 **KBOARD lock** links it to the SEQ edit channel — see below)
 - **ENC1** (KEYMODE): Octave –2..+8 (4 counts = 1 octave, clamped)
-- **ENC2** (KEYMODE): Scale select (39 scales, Chromatic = no filter)
+- **ENC2** (KEYMODE): Scale select (54 scales, Chromatic = no filter)
 - **KEYMODE2**: Chord engine active
   - M1/M2/M3/NEXT = quality (Maj/Min/Dim/Sus) — momentary, beats **KeyLock**'s diatonic triad (root still snapped to the scale); **with KeyLock ON, a held quality button wins over the scale's triad for that press**
   - F1–F4 = extensions (6, m7, M7, 9) — toggle
@@ -506,7 +506,7 @@ SEQ_CH_COUNT = 16     // sequences = MIDI channels 1..16
 CHORD_VEL    = 100
 CHORD_N      = 8      // max simultaneous notes
 CHORD_ENC    = 4      // encoder counts per param step
-KEY_SCALE_COUNT = 39  // scale table size
+KEY_SCALE_COUNT = 54  // scale table size
 
 // Touch (TouchChips.h)
 TOUCH_THRESH = 50     // press threshold
