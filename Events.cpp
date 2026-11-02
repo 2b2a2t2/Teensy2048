@@ -513,13 +513,12 @@ void handleButtonEvents() {
     //  hold    -> assign mode: play keys to replace this step's chord
     //  release -> note-off
     if (sidx != 255) {
-      // variant-3 channel overlays: steps select a MIDI channel
+      // channel overlays: steps select a MIDI channel
       // (KEY = keyboard output, SEQ = sequencer edit, ENC = encoder CCs).
       // SEQ3's selector is gone once an encoder moved - the pads are back
-      // on the sequencer until SEQ is held into SEQMODE3 again
-      bool chOverlay = (modeVariant == 3 &&
-                        (modeBase == MODE_KEY || modeBase == MODE_ENC ||
-                         (modeBase == MODE_SEQ && seq3ChSelActive())));
+      // on the sequencer until SEQ is held into SEQMODE3 again.  ENCMODE4
+      // is the locked form: the picker is simply what that variant is
+      bool chOverlay = chSelOverlay();
       // DRUM track: step press = toggle the selected part (voice)
       bool drum = (modeBase == MODE_SEQ && modeVariant != 3 &&
                    seqTrack() == SEQ_TRACK_DRUM);
@@ -570,6 +569,7 @@ void handleButtonEvents() {
           // the hub and the other locked families
           if (modeBase == MODE_KEY) {
             keySetChannel(sidx + 1);
+            seq3KbRelease();     // the keyboard's track was picked: instrument
             channelLinkPropagate(0);
           } else if (modeBase == MODE_SEQ) {
             seqEditChannelLand(sidx + 1);
@@ -1752,17 +1752,18 @@ void handleButtonEvents() {
       static uint16_t barHeld = 0;         // kidx bits eaten as pattern bars /
                                            // track verbs - uint16 because
                                            // G# and A# sit at kidx 8 and 10
-      bool isBar = (ev == EV_PRESSED && modeBase == MODE_SEQ &&
-                    modeVariant == 3 && kl >= 25 && kl <= 28);
+      bool isBar = (ev == EV_PRESSED && seq3KbRole() &&
+                    kl >= 25 && kl <= 28);
       // ...and the five BLACK keys of the same octave carry the track
       // verbs: C# = pattern length / 2, D# = pattern length x 2, F# = copy
       // the pattern, G# = the edit window follows the playhead (the bar
       // moves with the green dot), A# = paste the clipboard.  Swallowed
       // exactly like the bar keys, so the release sends no stray note
-      bool isSeq3Fn = (ev == EV_PRESSED && modeBase == MODE_SEQ &&
-                       modeVariant == 3 && kl >= 37 && kl <= 41);
+      bool isSeq3Fn = (ev == EV_PRESSED && seq3KbRole() &&
+                       kl >= 37 && kl <= 41);
       if (isBar) {
         uint8_t bar = (uint8_t)(kl - 25);  // 25,26,27,28 -> bar 0..3
+        seq3KbLatch(seqEditChannel());     // the keys stay on this track's row
         barHeld |= (uint16_t)(1u << kidx);
         uint8_t r = seqBarPress(bar);
         char bb[20];
@@ -1779,6 +1780,7 @@ void handleButtonEvents() {
           Serial.println(bb);
         }
       } else if (isSeq3Fn) {
+        seq3KbLatch(seqEditChannel());     // a verb commits the row as well
         barHeld |= (uint16_t)(1u << kidx);      // swallow the matching release
         char fb[24];
         if (kl == 37) {                       // C#: pattern length / 2

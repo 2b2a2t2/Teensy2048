@@ -18,6 +18,8 @@ static uint8_t heldPrevVariant = 0;
 static bool heldActive = false;
 static uint8_t heldPad = 255;        // which mode button is being held
 static bool seq3ChSel = true;        // SEQ3 step-pad channel overlay up
+static uint8_t seq3KbCh = 0;         // keyboard latched to a track's SEQ3 row
+                                     // (0 = not latched)
 
 static const uint8_t modeLeds[3] = { 32, 33, 34 };  // ENC, SEQ, KEY
 static const ModeBase modeOfLed[3] = { MODE_ENC, MODE_SEQ, MODE_KEY };
@@ -220,14 +222,12 @@ static CRGB modeLedHook(uint8_t pad, bool isTouched, CRGB defaultColor) {
       if (!drumVoiceMuted((uint8_t)(36 + led))) c.nscale8(32);
       return c;
     }
-    // variant-3 channel overlays: the 16 steps become the MIDI channel
-    // selector - dimmed yellow background, selected channel in bright yellow
+    // channel overlays: the 16 steps become the MIDI channel selector -
+    // dimmed yellow background, selected channel in bright yellow
     // (KEY = keyboard output, SEQ = sequencer edit, ENC = encoder CCs).
-    // SEQ3 only until an encoder moves: the pads then show the sequencer
-    bool chOv = (modeVariant == 3) &&
-                (modeBase == MODE_KEY || modeBase == MODE_ENC ||
-                 (modeBase == MODE_SEQ && seq3ChSelActive()));
-    if (chOv) {
+    // SEQ3 only until an encoder moves: the pads then show the sequencer.
+    // ENCMODE4 keeps it up for the whole variant (locked picker)
+    if (chSelOverlay()) {
       uint8_t sel = (modeBase == MODE_KEY) ? keyChannel() :
                      (modeBase == MODE_SEQ) ? seqEditChannel() : encChannel();
       if (led == (int8_t)(sel - 1)) return CRGB::Yellow;
@@ -335,7 +335,7 @@ static CRGB modeLedHook(uint8_t pad, bool isTouched, CRGB defaultColor) {
     // with the EDITED bar bright; the bar the playhead reads breathes
     // white (follows playback across bars, patterns > 16 steps only) and a
     // looping bar breathes green - the keys still play, just invisible
-    if (modeBase == MODE_SEQ && modeVariant == 3) {
+    if (seq3KbRole()) {
       if (isTouched) return CRGB::White;
       // one pulse phase for the whole row (verbs below, bars after)
       uint8_t s = sin8((uint32_t)millis() * 256UL / PULSE_PERIOD_MS);
@@ -795,7 +795,7 @@ void pollModeLeds() {
   // the played / looping bars breathe (edge restores static colors)
   static bool barActive = false;
   static unsigned long barFlip = 0;
-  bool barNow = (modeBase == MODE_SEQ && modeVariant == 3);
+  bool barNow = seq3KbRole();
   if (barNow != barActive) {
     barActive = barNow;
     refreshAllLeds();
@@ -951,6 +951,32 @@ bool seq3ChSelDismiss() {
   return true;
 }
 
+// the channel picker owns the step pads: variant 3 (momentary, all three
+// families) and ENCMODE4 (the locked one - no button to hold)
+bool chSelOverlay() {
+  if (modeBase == MODE_ENC && modeVariant == 4) return true;
+  return modeVariant == 3 &&
+         (modeBase == MODE_KEY || modeBase == MODE_ENC ||
+          (modeBase == MODE_SEQ && seq3ChSelActive()));
+}
+
+// Does the keyboard owe its pads to the SEQ3 bar / verb row right now?  True
+// while SEQ3 is actually held, and true afterwards for the track a bar or a
+// verb was pressed on: touching the row COMMITS it, because picking a bar and
+// then releasing SEQ only to press the next one is the whole workflow.  The
+// keys stay on duty in every mode until KEYMODE3 picks the keyboard's track
+// (that gesture means "be an instrument again"), see seq3KbRelease
+bool seq3KbRole() {
+  if (modeBase == MODE_SEQ && modeVariant == 3) return true;
+  return seq3KbCh != 0;
+}
+
+void seq3KbLatch(uint8_t ch) {
+  if (ch >= 1 && ch <= 16) seq3KbCh = ch;
+}
+
+void seq3KbRelease() { seq3KbCh = 0; }
+
 void modeOnEvent(uint8_t pad, uint8_t ev) {
   if (ev != EV_CLICKED && ev != EV_HOLD && ev != EV_DOUBLE && ev != EV_RELEASED) return;
 
@@ -1084,9 +1110,7 @@ const char* modeName() {
 const char* modeHeaderLabel() {
   static char name[20];
   if (modeBase == MODE_NONE || modeVariant == 0) return "---";
-  if (modeVariant == 3 &&
-      (modeBase != MODE_SEQ || seq3ChSelActive()))
-    return "CHANNEL SELECT";
+  if (chSelOverlay()) return "CHANNEL SELECT";
   if (modeVariant == 1) return fullNames[modeBase];
   snprintf(name, sizeof(name), "%s %u", fullNames[modeBase], modeVariant);
   return name;

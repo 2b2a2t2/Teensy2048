@@ -104,13 +104,11 @@ static void midiControlChange(uint8_t ch, uint8_t cc, uint8_t val) {
 // green playhead in every mode (SEQMODE owns it, all modes inherit);
 // active (recorded) steps = dimmed green, empty steps = dimmed dark blue
 static void drawSteps() {
-  // variant-3 channel overlays (KEY3/SEQ3/ENC3) own the step LEDs (hook
-  // repaints them on mode change), the playhead must not paint over them.
-  // SEQ3 gives them back to the sequencer as soon as an encoder moves
-  if (modeVariant == 3 &&
-      (modeBase == MODE_KEY || modeBase == MODE_ENC ||
-       (modeBase == MODE_SEQ && seq3ChSelActive())))
-    return;
+  // channel overlays (KEY3/SEQ3/ENC3, and the locked ENCMODE4) own the step
+  // LEDs (hook repaints them on mode change), the playhead must not paint
+  // over them.  SEQ3 gives them back to the sequencer as soon as an encoder
+  // moves; ENC4 keeps them until the mode changes
+  if (chSelOverlay()) return;
   // DRUM part-select overlay (hold M1) also owns the step LEDs
   if (modeBase == MODE_SEQ && modeVariant != 3 &&
       drumPartSelectActive() && seqTrack() == SEQ_TRACK_DRUM)
@@ -659,6 +657,10 @@ static void patLenApply(uint8_t ch, uint8_t v) {
   }
   harmFeederChanged(ch);   // same feeder-window mark as seqPatLenAdjust
 }
+
+// public form for the clipboard (paste / undo): the same 0..64 clamp, the
+// same window fix-up and the same HARM mark the C# / D# keys get
+void seqPatLenApplyOf(uint8_t ch, uint8_t v) { patLenApply(ch, v); }
 
 uint8_t seqPatLenHalf() {
   uint8_t ch = (uint8_t)(seqEditChannel() - 1);

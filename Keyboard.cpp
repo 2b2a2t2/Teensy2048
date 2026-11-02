@@ -641,11 +641,23 @@ const char *seqRecOverdubName(uint8_t v) {
 // onsets (dt, ms since the gesture's first touch; block presses pass 0 =
 // no timing -> the fixed even spread).  MONO keeps the classic behavior
 // (each press lands on the current step, so legato runs walk the pattern).
-// Returns true when a note was written
-static bool liveRecAppend(const uint8_t *notes, uint8_t n, uint16_t dt = 0) {
+// Two per-track options steer this (M1 step-edit row, see Keyboard.h):
+// LISTEN = NOTE routes the write to the arp capture hooks (fromArp) and
+// silences keyboard gesture edges on a MONO track; OVERDUB = ON never
+// clears the step - notes stack onto its content (each fromArp note is
+// its own "fresh" write, so a pass re-prints cleanly or stacks, per the
+// knob).  Returns true when a note was written
+static bool liveRecAppend(const uint8_t *notes, uint8_t n, uint16_t dt = 0,
+                          bool fromArp = false) {
   if (recState != 2 || n == 0) return false;
   if (assignStep >= 0) return false;               // a held step pad owns the write
   if (keyCh != (uint8_t)(recCh + 1)) return false; // defensive (disarm on switch)
+  // LISTEN = NOTE: the arp output owns the record write - keyboard gesture
+  // edges do not record (inert outside MONO: POLY records its gestures,
+  // DRUM its per-voice notes, and neither has an arp output to capture)
+  if (!fromArp && recListen[recCh] == REC_LISTEN_NOTE &&
+      seqTrackOf(recCh) == SEQ_TRACK_MONO)
+    return false;
   bool drum = (seqTrackOf(recCh) == SEQ_TRACK_DRUM);
   bool poly = (seqTrackOf(recCh) == SEQ_TRACK_POLY);
   uint8_t st = chStep[recCh];
@@ -654,11 +666,16 @@ static bool liveRecAppend(const uint8_t *notes, uint8_t n, uint16_t dt = 0) {
     else recGestStep = st;
   }
   if (st >= STEP_MAX) return false;
-  if (!drum && !recStarted) {
+  // a fresh gesture replaces the stored chord (OVERDUB = OFF); an OVERDUB
+  // track never clears - new notes stack onto the step's content.  Every
+  // captured arp note counts as fresh (each owns its step), a gesture
+  // counts once (its first write)
+  bool fresh = fromArp || !recStarted;
+  if (!drum && fresh && !recOverdub[recCh]) {
     stepChordLen[recCh][st] = 0;   // fresh gesture replaces the stored chord
     stepAttClear(recCh, st);       // ...and starts attribute/timing-free
-    recStarted = true;
   }
+  if (fresh && !drum) recStarted = true;
   int pre = -12 * (int)seqOct[recCh];
   bool wrote = false;
   for (uint8_t i = 0; i < n && stepChordLen[recCh][st] < CHORD_MAX; i++) {
@@ -1660,6 +1677,8 @@ static uint8_t snapModP[STEP_MAX];
 static int8_t  snapTrB[STEP_MAX];       // per-step TRANS
 static uint8_t snapSkankB[STEP_MAX][7]; // SKANK locks (a paste must undo
                                         // losslessly, like generate)
+static uint8_t snapPatLenB = 16;      // a paste carries length + speed, so
+static uint8_t snapSpdIdxB = 6;       // the undo slot has to hold them too
 static uint8_t snapCh = 0;
 static bool    snapValid = false;
 
@@ -1667,6 +1686,8 @@ void stepSnapshotTake() {
   uint8_t ch = seqEditCh;
   if (ch >= SEQ_CH_COUNT) return;
   snapCh = ch;
+  snapPatLenB = seqPatLenOf(ch);
+  snapSpdIdxB = seqSpeedIdxOf(ch);
   for (uint8_t st = 0; st < STEP_MAX; st++) {
     snapLen[st] = stepChordLen[ch][st];
     snapAttB[st] = stepAtt[ch][st];
@@ -1694,6 +1715,8 @@ int stepSnapshotRestore() {
   if (snapCh >= SEQ_CH_COUNT) return -1;
   if (seqEditCh != snapCh) seqSetEditChannel((uint8_t)(snapCh + 1));
   uint8_t ch = snapCh;
+  seqPatLenApplyOf(ch, snapPatLenB);   // undo a paste's length / speed too
+  seqSpeedSetOf(ch, snapSpdIdxB);
   for (uint8_t st = 0; st < STEP_MAX; st++) {
     stepChordLen[ch][st] = snapLen[st];
     stepAtt[ch][st] = snapAttB[st];
@@ -3369,7 +3392,16 @@ static void seqAdvanceOnce(bool start, const bool *go,
     // FX reshape and the FScale snap (order and dt survive).  All-zero dts
     // (block-written chord) fall back to the even 8..40 ms spread below
     bool handTimed = (handStep && !follow && stepStrumTimed(c, stp));
-    uint8_t fxm = (drumTrack || mono || handTimed) ? 0 : stepFx[c][stp];
+    // PLAYBACK = RECORDED: the step's notes replay VERBATIM, all at once -
+    // no step FX reshape, no FScale snap, no strum/HAND/COMP performance
+    // shaping below (a recorded line replays exactly as stored).  Octave +
+    // per-step OCT/TRANS still apply: they finish every playback and the
+    // record path is pre-compensated for the octave.  MONO reads the same
+    // flag in its single-note pick (`stack` there)
+    bool recVerbatim = !drumTrack &&
+                       seqRecPlaybackOf((uint8_t)c) == REC_PLAY_RECORDED;
+    uint8_t fxm = (drumTrack || mono || handTimed || recVerbatim)
+                    ? 0 : stepFx[c][stp];
     if (fxm) {
       len = chordFxApply(ch, len, fxm, mapped, &nCore);
       ch = mapped;
@@ -3381,7 +3413,7 @@ static void seqAdvanceOnce(bool start, const bool *go,
     // DRUM steps keep their raw note numbers (they are drum-map ids), timed
     // HAND steps keep their literal pitch (that is what was performed).  The
     // FX color tail (i >= nCore) bypasses the snap and dedups like the rest
-    if (fxm || (chordFScale() && !drumTrack && !handTimed)) {
+    if (!recVerbatim && (fxm || (chordFScale() && !drumTrack && !handTimed))) {
       bool snap = chordFScale();
       uint8_t m = 0;
       uint8_t coreOut = 0;
@@ -3418,9 +3450,11 @@ static void seqAdvanceOnce(bool start, const bool *go,
     // HAND POLY buffers instead of sounding: the step's chord (post-FX,
     // post-FScale = what WOULD have sounded) becomes the keyboard's string
     // buffer, the rhythm still gates WHEN it refreshes.  Only an explicit
-    // recorded gesture (stored u16 dts) still auto-replays note by note
-    if (handStep) handBufStore(c, ch, len);
-    if (handStep && !handTimed) continue;
+    // recorded gesture (stored u16 dts) still auto-replays note by note.
+    // RECORDED playback is a plain chord - the HAND ring is a performance
+    // feature of the GATE engine, so it steps aside
+    if (handStep && !recVerbatim) handBufStore(c, ch, len);
+    if (handStep && !handTimed && !recVerbatim) continue;
     int8_t sh = seqOct[c];
     int8_t tr = seqTransOf(c);       // per-track semitone TRANS (0 on DRUM)
     if (mono) {
@@ -3659,6 +3693,14 @@ static void seqAdvanceOnce(bool start, const bool *go,
       usbMIDI.sendNoteOn(note, KEY_VEL, keyCh);
       monoNote = note;
       monoOn = true;
+      // LISTEN = NOTE: this arp note is what live record stores - it lands
+      // on the step the playhead just advanced to, so a record pass prints
+      // the arp line one note per step.  Only the GESTURE's arp counts
+      // here; the track's own stored-step playback never feeds the
+      // recorder (a pass cannot re-record itself)
+      if (recState == 2 && recCh == kc &&
+          recListen[recCh] == REC_LISTEN_NOTE)
+        liveRecAppend(&note, 1, 0, true);
     }
   }
 }
@@ -4314,6 +4356,8 @@ void seqEraseAll() {
 // only, so the clipboard is too - it dies with power like what it holds
 static struct SeqPatClip {
   bool     valid;
+  uint8_t  patLen;              // the track's own pattern length travels with
+  uint8_t  spdIdx;              // the steps, and so does its speed rung
   uint8_t  len[STEP_MAX];
   uint8_t  att[STEP_MAX];
   uint8_t  fx[STEP_MAX];
@@ -4337,6 +4381,8 @@ bool seqPatClipHas() { return patClip.valid; }
 int seqPatCopy() {
   uint8_t ch = seqEditCh;
   if (ch >= SEQ_CH_COUNT) return -1;
+  patClip.patLen = seqPatLenOf(ch);      // a pasted pattern should loop at
+  patClip.spdIdx = seqSpeedIdxOf(ch);    // the tempo it was built at
   uint8_t active = 0;
   for (uint8_t st = 0; st < STEP_MAX; st++) {
     patClip.len[st] = stepChordLen[ch][st];
@@ -4391,6 +4437,8 @@ int seqPatPaste() {
     drumProbOn[ch][st] = patClip.drumP[st];
     if (patClip.len[st]) active++;
   }
+  seqPatLenApplyOf(ch, patClip.patLen);  // the length came with the steps
+  seqSpeedSetOf(ch, patClip.spdIdx);     // ...and so did the speed rung
   seqOctClamp(ch);              // content changed: the shift range re-derives
   stepSyncFrom(ch);             // listeners / HARM tracks follow the new data
   return (int)active;

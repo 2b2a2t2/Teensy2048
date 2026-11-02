@@ -161,6 +161,7 @@ void seqPatLenAdjust(int16_t counts);    // edit channel; 4 counts = 1 step
 int  seqPatLen(void);                    // length of the edit sequence
 uint8_t seqPatLenOf(uint8_t ch);         // length of sequence ch 0..15
 void    seqPatLenSetOf(uint8_t ch, uint8_t len);  // restore (seqCfgLoad)
+void    seqPatLenApplyOf(uint8_t ch, uint8_t v);  // clamped + window
 
 // SEQMODE3 C# / D# (the black keys of the bar octave): halve / double the
 // edit track's pattern length in one press - the same 0..64 range ENC2
