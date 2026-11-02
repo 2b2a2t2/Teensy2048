@@ -170,6 +170,12 @@ from the Backlog while this section has open items** (unless overridden).
 - Harmonic rhythm control — chord-change rate independent of step rate
 
 ## ✅ Done (ticked items; prune occasionally)
+
+- [x] **KEYMODE3 `ENCOD` / `KBOARD` boot `locked`** (2026-11-02, user request): the
+  link flags defaulted to free, so the encoder and keyboard channels only followed
+  the SEQ edit channel after a turn. Both now boot locked; the loader tests for an
+  explicit `2` (free chosen on the knob), so a save written under the old default
+  (byte 0, no choice) boots locked too, and there is no EEPROM layout change.
 - [x] **Documentation restructure (2026-11-02)** — the 103,568-character `README.md` (599 lines, one H1, no table of contents) split into a one-page landing plus a `docs/` tree by subject (`modes/`, `generators/`, `reference/`, `recipes/`, `adr/`); existing prose moved **verbatim**, with new pages for the glossary, cheat sheet, panel map, feature status, concepts, limitations, FAQ, style guide and bindings reference. `AGENTS.md` now points at `docs/` (ADR 0008). No firmware change.
 
 - [x] **Chord-gen: phrase templates + cadence goal** (user design 2026-11-02 —

@@ -23,7 +23,7 @@ A blank means the feature predates the initial import or cannot be attributed to
 | Chromatic pads, in-scale LEDs, octave/scale/key | KEY 1 | Stable | 2026-09-25 | MIDI 24 = C0; pads outside the scale stay dark |
 | Chord engine, bass, spread, density, latch | KEY 2 | Stable | 2026-09-26 | 8-note maximum |
 | Force-to-scale on inbound notes | KEY 2 | Stable | 2026-09-28 | `FScale` |
-| Channel select + ENCOD/KBOARD links | KEY 3 | Stable | 2026-09-30 | Momentary; restores the previous base and variant |
+| Channel select + ENCOD/KBOARD links | KEY 3 | Stable | 2026-09-30 | Momentary; restores the previous base and variant; both links boot **locked** |
 | Progression engine, 18 genres | KEY 4 | **Beta** | 2026-10-06 | The progression itself is not persisted — it is rebuilt from the knobs; phrase templates and the cadence band selector are new — compiled, not yet auditioned on hardware |
 
 ## Sequencer

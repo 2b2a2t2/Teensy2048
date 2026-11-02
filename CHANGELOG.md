@@ -21,6 +21,12 @@ de-facto version marker is the size of the saved-settings block (see
   while the knob moved, which read as a dead knob. Its continuous value still scales the
   cadence terms.
 
+- **KEY 3 `ENCOD` / `KBOARD` boot `locked`** — the encoder channel and the keyboard
+  channel follow the SEQ edit channel (the hub) from power-up, instead of each keeping
+  its own channel until you turn the link on. Turn the knob CCW to go back to `free`.
+  A save written before this change holds no explicit choice, so it boots locked too;
+  the first turn of the knob records yours.
+
 ### Documentation
 
 - `README.md` split into a one-page landing page and a `docs/` tree — the old page was

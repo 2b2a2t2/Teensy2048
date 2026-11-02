@@ -3907,9 +3907,12 @@ void seqSetEditChannel(uint8_t ch) {
 }
 
 // KEYMODE3 ENC3/ENC4 channel link: ENCOD / KBOARD free or locked (the SEQ
-// edit channel is the hub both lock against - see Keyboard.h)
-static uint8_t chanEncLink = 0;   // ENCOD: 0 = free, 1 = locked
-static uint8_t chanKeyLink = 0;   // KBOARD: 0 = free, 1 = locked
+// edit channel is the hub both lock against - see Keyboard.h).  Both boot
+// LOCKED.  The saved byte is 1 = locked, 2 = free chosen on the knob, 0 =
+// a save from before the default flipped (it really did boot free, so a
+// stored 0 is not a user choice) - hence the loader tests for 2, not 1
+static uint8_t chanEncLink = 1;   // ENCOD: 0 = free, 1 = locked
+static uint8_t chanKeyLink = 1;   // KBOARD: 0 = free, 1 = locked
 
 bool chanEncLocked() { return chanEncLink != 0; }
 bool chanKeyLocked() { return chanKeyLink != 0; }
@@ -4540,6 +4543,14 @@ static const uint16_t SEQ_EE_LEN_LEAD = 404;  // previous: LEAD contour[16]
 static const uint16_t SEQ_EE_LEN_GNR8 = 388;  // previous: GNR8 params (b[259..386])
 static const uint16_t SEQ_EE_LEN_OLD = 260;   // legacy: before GNR8
 
+// a LOCKED family takes the hub channel at boot (its own saved channel is
+// stale by definition once the link is on); runs for a loaded block AND for
+// a blank one, because both links now boot locked
+static void chanLinkBootApply() {
+  if (chanEncLocked()) encSetChannel(seqEditChannel());
+  if (chanKeyLocked()) keyChannelForce(seqEditChannel());
+}
+
 void seqCfgSave() {
   uint8_t b[SEQ_EE_LEN];
   b[0] = SEQ_EE_MAGIC;
@@ -4577,8 +4588,9 @@ void seqCfgSave() {
     for (uint8_t p = 0; p < 8; p++)
       b[435 + i * 8 + p] = skankPrmOf(i, p); // SKANK knobs TES..NOT% (0..100)
   }
-  b[564] = chanEncLocked() ? 1 : 0;  // KEYMODE3 ENCOD lock (0 = free)
-  b[565] = chanKeyLocked() ? 1 : 0;  // KEYMODE3 KBOARD lock
+  b[564] = chanEncLocked() ? 1 : 2;  // KEYMODE3 ENCOD lock (1 lock / 2 free;
+                                      // 0 in an old save = default, now lock)
+  b[565] = chanKeyLocked() ? 1 : 2;  // KEYMODE3 KBOARD lock (same encoding)
   for (uint8_t i = 0; i < 16; i++) { // per-channel KEYMODE + enc page
     b[567 + i] = keyModeMemOf(i + 1);
     b[583 + i] = encBankMemOf(i + 1);
@@ -4663,7 +4675,10 @@ void seqCfgLoad() {
     else if (L == SEQ_EE_LEN_GNR8) L = SEQ_EE_LEN_OLD;
     else break;
   }
-  if (!len) return;
+  if (!len) {                          // blank/corrupt: defaults apply - but
+    chanLinkBootApply();               // a default LOCKED link still needs the
+    return;                            // hub channel before setup() goes live
+  }
   bool extG = (len >= SEQ_EE_LEN_GNR8);   // GNR8 params present
   bool extL = (len >= SEQ_EE_LEN_LEAD);   // LEAD contour present
   bool extC = (len >= SEQ_EE_LEN_COMP);   // COMP hits present
@@ -4720,9 +4735,9 @@ void seqCfgLoad() {
     seqOctClamp(i);                      // content bounds (empty = convention)
   }
   seqSetEditChannel(b[1]);               // validates 1..16, keeps focus sane
-  if (extK) {                            // KEYMODE3 channel-link flags
-    chanEncLinkSet(b[564] != 0);
-    chanKeyLinkSet(b[565] != 0);
+  if (extK) {                            // KEYMODE3 channel-link flags: only
+    chanEncLinkSet(b[564] != 2);         // an explicit 2 (free) is honour-
+    chanKeyLinkSet(b[565] != 2);         // ed; 0 = pre-default-flip save
   }
   seqMapSet(b[2]);                       // GNR8/LEAD mapping (bad -> NEAR)
   if (extA) {                            // ARP F sub-page params (1262)
@@ -4816,8 +4831,7 @@ void seqCfgLoad() {
   // channel is stale by definition once the link is on); then the boot
   // channel takes its own KEYMODE variant + encoder page (encCcLoad ran
   // first with default memories, so re-apply now that they are loaded)
-  if (chanEncLocked()) encSetChannel(seqEditChannel());
-  if (chanKeyLocked()) keyChannelForce(seqEditChannel());
+  chanLinkBootApply();
   keyModeRecall();
   encPageRecall();
 }

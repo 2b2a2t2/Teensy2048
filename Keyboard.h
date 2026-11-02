@@ -39,8 +39,9 @@ uint8_t seqEditChannel();
 // The SEQ edit channel is the hub - a LOCKED family moves with it (and a
 // change in a locked family drives the hub, so the other locked family
 // follows too); free stays independent (each mode's own channel, as
-// always).  Flags persist in the SEQ EEPROM block; at boot the locked
-// families take the hub channel
+// always).  Both links boot LOCKED; the choice persists in the SEQ EEPROM
+// block (a save from before that default carries no choice and boots
+// locked too) and at boot the locked families take the hub channel
 bool chanEncLocked();
 bool chanKeyLocked();
 void chanEncLinkSet(uint8_t on);
