@@ -11,16 +11,18 @@ the groups are what make the instrument legible.
 **Variant** — one of four sub-behaviours inside a family. `SEQ 3` is "sequencer, variant 3".
 Variants are independent: each family numbers its own 1–4.
 
-**Momentary variant** — variant 3 everywhere. You enter it by holding the mode pad and
-leave it by releasing, which restores the previous base **and** variant. It is a look, not
-a place.
+**Momentary variant** — variant 3 everywhere. You enter it by **holding** the mode pad and
+leave it by releasing. `KEY 3` restores the previous family *and* variant; `ENC 3` / `SEQ 3`
+come back into their own family, on the variant the hold started from — or variant 1 if the
+hold began in another family. It is a look, not a place.
 
 **Locked variant** — `ENC 4`, the channel picker. It stays until you leave it with a click.
 
 **Track** — one of 16 sequencer lanes, each bound to its own MIDI channel (1–16). A track
 has a type, a length, a pattern and its own settings.
 
-**Sequence** — the 16-step pattern a track plays. "Track" is the lane, "sequence" is its
+**Sequence** — the pattern a track plays: up to **64 steps** (four 16-step bars, `LEN` per
+track), edited one 16-step window at a time. "Track" is the lane, "sequence" is its
 content; the docs say "track" when they mean the whole lane.
 
 **Track type** — `DRUM`, `MONO` or `POLY`. MONO and POLY carry a sub-type (the "transform"
@@ -88,15 +90,17 @@ expands that pool.
 **Comp** — re-strike a step's chord several times inside the step (`HITS`, 0–8).
 
 **Accent** — a per-step velocity lift, stamped by the ACCENT target and by the drum page's
-`MOT` mask. Accent velocity is a global setting.
+`MOT` mask. The accent velocity is **per track** (`seqAccVel[16]`, boot 101), not a global
+setting.
 
 ## Time and persistence
 
 **Swing ratio** — `50 + (AMT/100) × (max − 50)`, where `max` comes from the selected style
 table (MPC60, MPC3K, SP1200, LINN, TR808, TR909, SHUFFLE, TRIPLET).
 
-**EXT IN** — `OFF` / `ON` / `THRU` / `LIVE`: whether external notes are ignored, played,
-forwarded or recorded live.
+**EXT IN** — `OFF` / `ON` / `THRU` / `LIVE`: external notes ignored; fed to the pending chord
+(what `REC` captures); forwarded out on the track's channel; or **played live through the
+track's engine** while the chord is held. `LIVE` does not record.
 
 **SRC** — `USB` / `DIN` / `BOTH`: which ports a track accepts external notes from.
 

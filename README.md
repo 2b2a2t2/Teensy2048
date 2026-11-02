@@ -34,8 +34,10 @@ Pins, the pad→LED order and the pad map: [docs/hardware.md](docs/hardware.md).
 
 ## The three mode families
 
-`MODE` (mode pad) cycles **ENCODER → SEQUENCER → KEYBOARD**; each family has **four
-variants**, selected by tapping the lit mode pad again.
+The three mode pads — **ENC**, **SEQ**, **KEY** — pick the family, and a family you return to
+recalls the variant it was last left on. Each family has **four variants**: a tap on the lit
+pad toggles **1 ↔ 2**, a **double-tap** selects **4**, and a **hold** enters the momentary
+**3**.
 
 | Family | Variant 1 | Variant 2 | Variant 3 | Variant 4 |
 |---|---|---|---|---|

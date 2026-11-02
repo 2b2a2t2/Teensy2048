@@ -27,7 +27,7 @@ under it.
 
 ## Variations
 
-- **F2**: tap a step, then **ENC2** transposes that step −2…+2 octaves. **ENC2/ENC3 = MAP**
+- **F2**: tap a step, then **ENC2** transposes that step −2…+2 octaves. **ENC3 = MAP**
   chooses how FOLLOW maps notes (`near` · `root` · `deg` · `ivl` · `ct` · `gd`).
 - **F3**: tap a step, **ENC3 = BRW** borrows tone 1–8 of the incoming chord for that step.
 - **F4**: tap a step, **ENC4 = PROB** sets the chance that step's OCT/BRW modifier applies.

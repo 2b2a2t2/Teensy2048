@@ -51,7 +51,8 @@ as "this is when it appeared", not as a release note.
 | Date | Commit subject | Surface |
 |---|---|---|
 | 2026-09-25 | `first up` | 48-pad MPR121 scan, OLED, sequencer skeleton, USB-MIDI |
-| 2026-09-28 | `scales update` | scale table and the swing style tables |
+| 2026-09-28 | `scales update` | scale table and the chord engine (`Chords.cpp`) |
+| 2026-11-01 | `Swing, pattern edit` | per-track swing style and amount |
 | 2026-09-30 | `mono channel implementation` | per-channel step edit; the channel variants (`SEQ 3`/`4`, `ENC 3`/`4`) |
 | 2026-10-03 | `64 steps` | 64-step patterns, bar loop, follow |
 | 2026-10-06 | `chord progressions` | KEY 4 progression engine, 18 genre tables |
@@ -72,14 +73,23 @@ block size tells you which build wrote it.
 
 | SEQ block | Added |
 |---|---|
-| 260 bytes | earliest saved layout |
-| … 388 / 404 / 420 | intermediate additions (defaults on older saves) |
-| 436 | COMP `HITS` per track |
-| 567 | the eight SKANK knobs |
+| 260 | earliest saved layout |
+| 388 | GNR8 page parameters |
+| 404 | LEAD contour |
+| 420 | COMP `HITS` per track |
+| 436 | TRANS offset |
+| 532 | SKANK knobs `TES`…`SUB` |
+| 564 | SKANK randomizers `TES%` / `NOT%` |
+| 567 | KEY 3 `ENCOD` / `KBOARD` link flags |
 | 616 | per-channel mode memory (KEY variant, F bank + page group) |
-| 649 | LEAD contour, CT blend, GD depth |
+| 649 | LEAD CT blend, GD depth |
+| 665 | per-track `Klock` (7-rung speed ladder) |
+| 666 | 9-rung speed ladder marker |
 | 923 | DRUM page state: genre, VAR, lane lines, per-lane FILL/MOT |
-| 1330 | swing style, amount, `EXT IN`, `SRC` per track |
+| 940 | DRUM kit map |
+| 1262 | ARP sub-page parameters |
+| 1296 | per-track swing style and amount |
+| 1330 | per-track `EXT IN` and `SRC` |
 | 1380 | **pending** — live-record options on the M1 step-edit row (`TODO.md`) |
 
 `ENC 4 + REC` is the exception: an older block is **ignored** and defaults stay, because a

@@ -35,7 +35,8 @@ More: [Keyboard modes](modes/keymode.md).
 ## Path B — sequence a beat (5 minutes)
 
 1. Tap **MODE** until the header reads `SEQUENCER 1`.
-2. Tap the lit mode pad again → `SEQUENCER 3`, the track-config screen.
+2. **Hold** the **SEQ** pad to reach `SEQUENCER 3`, the track-config screen (letting go
+   returns you to `SEQUENCER 1`).
 3. **ENC6 = TRACK** selects the track, **ENC7 = TYPE** its type — pick `DRUM`.
 4. Back to `SEQUENCER 1`. On a DRUM track, **hold M1** to get the orange part-select
    overlay, tap a step pad to choose the drum part, then tap steps to place it.

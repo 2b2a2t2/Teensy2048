@@ -15,8 +15,9 @@ whole control row.
 ## Decision
 
 Mode is the product of two small numbers: a **family** (`ENC`, `SEQ`, `KEY`) and a
-**variant** (1–4). The family is chosen by the three mode pads; the variant by tapping the
-lit pad again. Twelve combinations come from three pads.
+**variant** (1–4). The family is chosen by the three mode pads — a family returned to recalls its last
+variant. Inside a family the lit pad toggles 1 ↔ 2 on a tap, jumps to 4 on a double-tap,
+and enters 3 while held. Twelve combinations come from three pads.
 
 Variant 3 is **momentary**: it is entered by holding the mode pad and left by releasing it,
 which restores the previous family and variant.

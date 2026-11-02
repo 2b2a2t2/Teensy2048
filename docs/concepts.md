@@ -11,7 +11,8 @@ live. Twelve combinations, one physical panel, no menus. See [Modes](modes/READM
 
 ## 2. Variant 3 is a place you visit, not a place you live
 
-Holding the mode pad enters variant 3 and releasing restores what you had. This exists so
+Holding the mode pad enters variant 3; releasing it leaves the momentary screen — `ENC 3` and
+`SEQ 3` back into their own family, `KEY 3` back to whatever family it came from. This exists so
 a rarely used screen (channel select, track config) never costs you your working state.
 Everything else is sticky. `ENC 4` is the exception: it is a locked picker because its
 whole job is to be left open while you address 16 channels.

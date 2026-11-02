@@ -26,7 +26,8 @@ bar is reproduced rather than quantised into a rake.
 
 - A step's **TYPE** can be overridden per step (M1 radio → `F2 TYPE`, then tap the step):
   `STEP` block chord, `STRUM` fixed rake, `HAND` buffered gesture.
-- **COMP** stabs ride the derived voicing too: `HITS` re-strikes what the walk produced.
+- **SKANK** is where COMP stabs pay off: on a SKANK track `HITS` re-strikes what the walk
+  produced. A HAND step keeps its own strum.
 
 ## Traps
 

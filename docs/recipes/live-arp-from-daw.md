@@ -8,7 +8,7 @@ channel.
 ## Steps
 
 1. `SEQUENCER 3`: **ENC6 = TRACK** to the ARP track, **ENC7 = TYPE** → `MONO`, transform
-   → `ARP`. **ENC5 = INCH`** to the channel the DAW sends on.
+   → `ARP`. **ENC5 = INCH** to the channel the DAW sends on.
 2. `SEQUENCER 4`: **ENC3 = EXT IN** → `LIVE`, **ENC4 = SRC** → `USB`.
 3. Leave the ARP track's steps **empty** — LIVE only fills steps that have no stored
    content, so a programmed step keeps its own chord.

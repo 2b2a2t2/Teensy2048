@@ -24,7 +24,7 @@ than the first: several "missing" features are load-bearing decisions.
 | Encoders | 8 | Some pages use `---` placeholders rather than a ninth knob |
 | Tracks | 16, one per MIDI channel | A track cannot be moved to a second channel |
 | Steps per track | 16 base, up to 64 (4 bars) | Longer phrases require bar loop |
-| Notes per chord | 8 | `CHORD_MAX` / `CHORD_N` |
+| Notes per chord | 8 | `CHORD_MAX` |
 | OLED header | 21 characters | Longer messages are pinned left, not truncated mid-word |
 | Scale table | 54 entries | — |
 | CC storage | 36 CC × 16 channels | Knob positions are per channel, not global |

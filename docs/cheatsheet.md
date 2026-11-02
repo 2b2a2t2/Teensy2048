@@ -4,9 +4,10 @@ One page. Print it. Everything here is expanded in [Bindings](reference/bindings
 
 ## Mode families
 
-Tap **MODE** to cycle `ENCODER → SEQUENCER → KEYBOARD`; tap the lit mode pad again to
-advance the variant (`1 → 2 → 3 → 4 → 1`). The header shows the family and variant in
-words: `SEQUENCER 3`.
+Tap **ENC**, **SEQ** or **KEY** to pick the family; tapping a family you are not in recalls
+the variant it was last left on. Inside a family the lit pad **toggles `1 ↔ 2`** (and
+`4 → 1`), a **double-tap** selects `4`, and **holding** it enters `3`. The header shows the
+family and variant in words: `SEQUENCER 3`.
 
 | | 1 | 2 | 3 | 4 |
 |---|---|---|---|---|
@@ -14,8 +15,10 @@ words: `SEQUENCER 3`.
 | **SEQ** | track + steps | FX / step row | track config, POLY type | swing, external in, save |
 | **KEY** | chromatic | chords + latch | channel select + links | genre progression |
 
-**Variant 3 is momentary**: hold the mode pad, and releasing it restores the previous base
-and variant. The other variants are sticky.
+**Variant 3 is momentary**: hold the mode pad to enter it, release to leave. `KEY 3` returns
+to the previous family and variant; `ENC 3` / `SEQ 3` always return into their own family,
+on the variant the hold started from (or variant 1 if it began elsewhere). The other
+variants are sticky.
 
 ## Encoder rows
 
@@ -46,7 +49,7 @@ alive under its page or radio).
 | **Step held**, POLY + SKANK | TES · MOT · SHP · THN · EXT · SUB · TES% · TRANS |
 | **PREV held**, KEY 2 | OCT · SCALE · KEY · LATCH · KLOCK · PERF · -- · -- |
 | **PREV held**, KEY 4 | OCT · SCALE · KEY · FSCALE · SUB · INV · PAS · COL |
-| **EMB menu**, KEY 4 | EMB · PLACE · -- · -- · -- · -- · -- · -- |
+| **EMB menu**, KEY 4 | EMB · PLACE · PHRASE · -- · -- · -- · -- · -- |
 | **Step held**, KEY 4 | OCT · DEG · INV · VOICE · -- · -- · -- · -- |
 
 ## Gestures
@@ -101,7 +104,8 @@ A message too wide is pinned to the left edge rather than running off-screen.
 
 ## Ten things that trip people up
 
-1. **Variant 3 is momentary** — let go and you are back where you were.
+1. **Variant 3 is momentary** — entered by *holding* the pad. A plain tap only toggles
+   1 ↔ 2, and variant 4 needs a double-tap.
 2. **The step-edit radio and an M2 page cannot be open together.**
 3. **Patterns are RAM only** — rotate, undo and generate all touch `seqNotes`, never EEPROM.
 4. **`SEQ 4 → SRC`** decides which port external notes are accepted from; USB only by default.
