@@ -2117,6 +2117,11 @@ void handleEncoderEvents() {
       k4Regenerate();       // the written progression follows the knobs
       refreshAllLeds();   // the keyboard repaints the re-ranked proposals
       k4Announce();       // ...and the header names them (I V vi IV)
+      // the two knobs whose value is a word say the word LAST, so the
+      // proposals line cannot scroll it away: "Mood MIXED", "Cadence
+      // DECEPTIVE" (the row keeps the short form: MIXED / V-vi)
+      if (ei == 1) headerAnnounce("Mood", k4MoodName());
+      else if (ei == 4) headerAnnounce("Cadence", k4CadenceName());
       any = true;
     }
 
@@ -2179,6 +2184,10 @@ void handleEncoderEvents() {
         k4EmbPlaceAdjust(ed);
         headerAnnounce("Embed Place", k4EmbPlaceName());
         if (logRoom(48)) { Serial.print("  place "); Serial.println(k4EmbPlaceName()); }
+      } else if (ei == 2) {
+        k4PhraseAdjust(ed);          // phrase template + cadence goal
+        headerAnnounce("Phrase", k4PhraseName());
+        if (logRoom(48)) { Serial.print("  phrase "); Serial.println(k4PhraseName()); }
       }
       any = true;
     }

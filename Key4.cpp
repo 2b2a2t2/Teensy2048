@@ -371,8 +371,108 @@ static bool phraseEnd(uint8_t pos) {
   return (int)pos >= L - 16;
 }
 
+// ---------------------------------------------------------------------------
+// PHRASE (design 2026-11-02): a goal for a causal chain
+// ---------------------------------------------------------------------------
+// scorePc ranks the locally best next chord and pickPc draws it once per
+// step: nothing looks ahead, so a generated pattern has no arc and no
+// ending.  This plans one.  The phrase-end cadence TYPE is rolled from the
+// CADENCE knob (AUTHENTIC V-I is the default and grows with the knob,
+// PLAGAL IV-I, DECEPTIVE V-vi, HALF ending on V), the degree it lands on is
+// the plan for the last bar, and every earlier bar end is walked BACKWARD
+// from it through the genre transition table (the degree that leads best
+// into the bar after it, with the cadence approach preferred one bar out).
+// The forward pass then scores those landings x8, so the chain serves the
+// goal instead of wandering - and the templates decide restatement.
+#define K4_PLAN_NONE 255
+
+static uint8_t sPhrase = 0;                 // 0 FREE .. 4 AABA
+static uint8_t sPlanDeg[4] = { K4_PLAN_NONE, K4_PLAN_NONE, K4_PLAN_NONE,
+                               K4_PLAN_NONE };   // landing per bar
+static uint8_t sPlanGoal = K4_PLAN_NONE;    // the phrase end planned
+static uint8_t sPlanLead = K4_PLAN_NONE;    // its approach (V / IV / ii)
+static uint8_t sPlanType = 0;               // 0 auth, 1 plagal, 2 decep, 3 half
+static uint8_t sDiagWho  = 0;               // 0 PLAN, 1 CAD, 2 GENR
+static bool    sPlanHit  = false;           // did the landing reach the goal
+
+static const char* const phraseNames[5] = { "FREE", "AABB", "ABAB",
+                                            "ABAC", "AABA" };
+
+// the four cadences: short form for the 4x6 value column, word for the header
+static const char* const cadPair[4] = { "V-I", "IV-I", "V-vi", "ii-V" };
+static const char* const cadName[4] = { "AUTHENTIC", "PLAGAL", "DECEPTIVE",
+                                        "HALF" };
+
+void k4PhraseAdjust(int16_t counts) {
+  int v = (int)sPhrase + (counts > 0 ? 1 : -1);
+  if (v < 0) v = 0;
+  if (v > 4) v = 4;
+  sPhrase = (uint8_t)v;
+  k4Refresh();
+}
+uint8_t     k4Phrase()        { return sPhrase; }
+const char* k4PhraseName()    { return phraseNames[sPhrase]; }
+bool        k4PhrasePlanHit() { return sPlanHit; }
+const char* k4PhrasePlanName() {
+  return (sPlanGoal == K4_PLAN_NONE) ? "--" : cadPair[sPlanType];
+}
+const char* k4PhraseDiagName() {
+  static const char* const t[3] = { "PLAN", "CAD", "GENR" };
+  return t[sDiagWho];
+}
+
+// the cadence the phrase aims at - and the one the row reports.  The knob
+// is a SELECTOR in four bands, weakest pull first (half needs no resolution
+// at all, then plagal, then the authentic default you boot on, then the
+// deceptive delay).  Its continuous value still scales the cadence terms in
+// scorePc, so one knob both aims and weights.  A seeded weighted roll was
+// tried first and dropped: it left the type unchanged while the knob moved,
+// which reads as a dead knob.
+static uint8_t planRollType() {
+  uint8_t cad = sKnob[3];
+  if (cad < 25) return 3;      // HALF      ii-V
+  if (cad < 50) return 1;      // PLAGAL    IV-I
+  if (cad < 75) return 0;      // AUTHENTIC V-I  (boot 50 sits here)
+  return 2;                    // DECEPTIVE V-vi
+}
+
+const char* k4CadencePair() { return cadPair[planRollType()]; }
+const char* k4CadenceName() { return cadName[planRollType()]; }
+
+// plan the phrase: the goal first (from the cadence type), then every
+// earlier bar end backward from the bar after it.  255 = no plan (FREE)
+static void planBuild(int L) {
+  for (uint8_t i = 0; i < 4; i++) sPlanDeg[i] = K4_PLAN_NONE;
+  sPlanGoal = K4_PLAN_NONE;
+  sPlanType = planRollType();   // the row reports the cadence even when FREE
+  if (sPhrase == 0 || L < 16) return;
+  buildFw();
+  static const uint8_t leadOf[4] = { 4, 3, 4, 1 };   // V, IV, V, ii
+  static const uint8_t goalOf[4] = { 0, 0, 5, 4 };   // I, I, vi, V
+  sPlanLead = leadOf[sPlanType];
+  sPlanGoal = goalOf[sPlanType];
+  int nb = L / 16;
+  if (nb < 1) nb = 1;
+  if (nb > 4) nb = 4;
+  sPlanDeg[nb - 1] = sPlanGoal;
+  for (int b = nb - 2; b >= 0; b--) {
+    uint8_t nxt = sPlanDeg[b + 1];
+    uint8_t best = K4_PLAN_NONE;
+    uint32_t bestSc = 0;
+    for (uint8_t d = 0; d < 7; d++) {
+      if (d == nxt) continue;                       // no repeat at a bar end
+      uint32_t sc = genreTable[sGenre].trans[d][nxt];
+      if (b == nb - 2 && d == sPlanLead) sc += 200u;  // the approach
+      if (b == 0 && d == 0) sc += 50u;                // open on the tonic
+      if (sc > bestSc) { bestSc = sc; best = d; }
+    }
+    sPlanDeg[b] = best;
+  }
+}
+
 static uint32_t scorePc(uint8_t prev, uint8_t pc, uint8_t pos,
-                        uint8_t prevRoot, uint8_t prevQ, uint8_t prevSd) {
+                        uint8_t prevRoot, uint8_t prevQ, uint8_t prevSd,
+                        uint8_t plan) {
   const GenreData *g = &genreTable[sGenre];
   bool in = fwHas(pc);
   uint8_t d = fwDeg(pc);
@@ -417,6 +517,10 @@ static uint32_t scorePc(uint8_t prev, uint8_t pc, uint8_t pos,
     else if (prev == 3 && d == 0)
       s = s * (100u + (uint32_t)cad / 4u) / 100u;    // plagal, softer
   }
+
+  // PHRASE plan: this bar end is supposed to land on `plan` - a hard pull,
+  // because the goal came from the backward pass and must actually win
+  if (plan != K4_PLAN_NONE && in && d == plan) s = s * 8u;
 
   // secondary-dominant resolution: the previous chord was a V/x - its
   // target degree gets pulled (scaled by SURP, the knob that opened the
@@ -584,11 +688,11 @@ static void deriveProposal(uint8_t prev, uint8_t pc, uint8_t prevBass,
 
 // weighted pick of the next root pc during generation (0xFF = nobody)
 static uint8_t pickPc(uint8_t prev, uint8_t pos, uint8_t prevRoot,
-                      uint8_t prevQ, uint8_t prevSd) {
+                      uint8_t prevQ, uint8_t prevSd, uint8_t plan) {
   uint32_t sc[12];
   uint32_t total = 0;
   for (uint8_t pc = 0; pc < 12; pc++) {
-    sc[pc] = scorePc(prev, pc, pos, prevRoot, prevQ, prevSd);
+    sc[pc] = scorePc(prev, pc, pos, prevRoot, prevQ, prevSd, plan);
     total += sc[pc];
   }
   if (total == 0) return 0xFF;
@@ -607,14 +711,25 @@ static uint8_t pickPc(uint8_t prev, uint8_t pos, uint8_t prevRoot,
 // ---------------------------------------------------------------------------
 void k4Refresh() {
   buildFw();
+  int L = seqPatLen();
+  planBuild(L);        // PHRASE: the proposals agree with the landing plan
   uint8_t prev, bass, r0, q0, sd0;
   prevContext(&prev, &bass, &r0, &q0, &sd0);
+
+  // a planned bar end proposes its landing first, exactly as M3 would write it
+  uint8_t fPlan = K4_PLAN_NONE;
+  if (sPlanGoal != K4_PLAN_NONE &&
+      ((sFocus % 16) == 15 || sFocus == (uint8_t)(L - 1))) {
+    int bar = sFocus / 16;
+    if (bar > 3) bar = 3;
+    fPlan = sPlanDeg[bar];
+  }
 
   uint32_t sc[12];
   uint8_t order[12];
   uint8_t n = 0;
   for (uint8_t pc = 0; pc < 12; pc++) {
-    sc[pc] = scorePc(prev, pc, sFocus, r0, q0, sd0);
+    sc[pc] = scorePc(prev, pc, sFocus, r0, q0, sd0, fPlan);
     sBorrow[pc] = !fwHas(pc);
     if (sc[pc] > 0) order[n++] = pc;
   }
@@ -673,6 +788,15 @@ void k4KnobAdjust(uint8_t idx, int16_t counts) {
 }
 
 uint8_t k4Knob(uint8_t idx) { return idx < 7 ? sKnob[idx] : 0; }
+
+// MOOD reads out as a word.  The knob stays a continuous bright/dark bias in
+// scorePc - these bands are a LABEL on the same 0..100 value, not a selector
+const char* k4MoodName() {
+  static const char* const t[5] = { "DARK", "COOL", "MIXED", "WARM", "LIGHT" };
+  uint8_t m = sKnob[0];
+  uint8_t b = (m >= 80) ? 4 : (m >= 60) ? 3 : (m >= 40) ? 2 : (m >= 20) ? 1 : 0;
+  return t[b];
+}
 
 // ---------------------------------------------------------------------------
 // embellish menu (NEXT tap opens it, the encoder row shows EMB / PLACE)
@@ -898,6 +1022,7 @@ static int k4ApplyBody() {
   if (L <= 0) return 0;
   sChain = false;                         // the pattern itself is the context
   buildFw();
+  planBuild(L);                           // PHRASE: goal + bar-end landings
   uint8_t prev = 0;                       // start: the tonic
   uint8_t prevBass = sFw[0];
   uint8_t prevRoot = sFw[0];              // voice-leading context
@@ -921,7 +1046,16 @@ static int k4ApplyBody() {
       }
       continue;
     }
-    uint8_t pc = pickPc(prev, st, prevRoot, prevQ, prevSd);
+    // PHRASE: a planned bar end pulls its landing (FREE = no plan at all)
+    uint8_t plan = K4_PLAN_NONE;
+    if (sPlanGoal != K4_PLAN_NONE &&
+        ((st % 16) == 15 || st == (uint8_t)(L - 1))) {
+      int bar = st / 16;
+      if (bar > 3) bar = 3;
+      plan = sPlanDeg[bar];
+    }
+    uint8_t pPrev = prev, pRoot = prevRoot, pQ = prevQ, pSd = prevSd;
+    uint8_t pc = pickPc(prev, st, prevRoot, prevQ, prevSd, plan);
     if (pc > 11) continue;
     if (sEmbMode == 2 && fwHas(pc)) {      // PASS+SUB: swap the degree,
       uint32_t h = hash32(sSeed ^ ((uint32_t)st << 8) ^     // rolled once
@@ -946,7 +1080,35 @@ static int k4ApplyBody() {
     prevRoot = pc;                        // the next step hears this chord
     prevQ = q;
     prevSd = sd;
+    // diagnostic (why did the phrase end land there?): redraw the same slot
+    // with the plan switched off - a different winner means the plan decided
+    // it; otherwise the grammar agreed, and reaching the goal means the
+    // cadence pair did the work
+    if (plan != K4_PLAN_NONE && (uint8_t)(st + 1) >= (uint8_t)L) {
+      uint8_t alt = pickPc(pPrev, st, pRoot, pQ, pSd, K4_PLAN_NONE);
+      sPlanHit = (mDeg[st] == sPlanGoal);
+      sDiagWho = (alt != pc) ? 0 : (mDeg[st] == sPlanGoal ? 1 : 2);
+    }
   }
+  // PHRASE restatement: AABB / ABAB / AABA replay the opening half into the
+  // second half (max 64 steps = two 2-bar units, so the templates differ
+  // only in whether the second half restates the first); ABAC leaves it new.
+  // Planned bar ends and locked steps are never overwritten - the cadence
+  // arc survives the repeat
+  if (sPhrase == 1 || sPhrase == 2 || sPhrase == 4) {
+    int half = L / 2;
+    if (half >= 16) {
+      for (int st = half; st < L; st++) {
+        if (k4Locked((uint8_t)st)) continue;
+        if ((st % 16) == 15 || st == L - 1) continue;   // the planned landing
+        uint8_t sn = 0;
+        const uint8_t *snt = stepChordAt((uint8_t)(st - half), &sn);
+        if (!snt || sn == 0) continue;
+        if (stepChordWrite((uint8_t)st, snt, sn) < 0) continue;
+      }
+    }
+  }
+
   // phase B (PASS/P+S): the odd steps become passing chords - a triad on
   // the scale degree one below the FOLLOWING main chord, quality and
   // inversion re-derived through the proposal scoring (genre + knobs +
@@ -975,6 +1137,15 @@ static int k4ApplyBody() {
       if (stepChordWrite(st, notes, n) < 0) continue;
       written++;
     }
+  }
+  if (sPhrase != 0 && sPlanGoal != K4_PLAN_NONE) {
+    char pb[24];
+    if (sPlanGoal == K4_PLAN_NONE)
+      snprintf(pb, sizeof(pb), "Cadence %s", k4CadencePair());   // FREE
+    else
+      snprintf(pb, sizeof(pb), "Plan %s %s", k4PhrasePlanName(),
+               k4PhraseDiagName());
+    headerShow(pb);
   }
   histRebuild();      // the context is the stored pattern again
   k4Refresh();
@@ -1111,7 +1282,8 @@ static int harmInferPath(uint8_t *path, bool *has) {
       int32_t bestPrev = -1;
       int8_t bestD = 0;
       for (uint8_t dp = 0; dp < 7; dp++) {
-        uint32_t tr = scorePc(dp, sFw[d], t, sFw[dp], fwQuality(dp), 255);
+        uint32_t tr = scorePc(dp, sFw[d], t, sFw[dp], fwQuality(dp), 255,
+                              K4_PLAN_NONE);
         int32_t cand = best[t - 1][dp] + (int32_t)tr;
         if (cand > bestPrev) { bestPrev = cand; bestD = (int8_t)dp; }
       }

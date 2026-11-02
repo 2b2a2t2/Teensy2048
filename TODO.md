@@ -107,10 +107,50 @@ from the Backlog while this section has open items** (unless overridden).
 
 ### Composition engine (`Key4.cpp` / `Gen.cpp` / `SeqClock.cpp`)
 
+- [ ] **Chord-gen: tension trajectory** (a curve, not a knob bias) — replace the
+  flat **TENS** bias with a positional target: **RISE** (build to bar 3–4) ·
+  **ARCH** (peak mid, resolve) · **FALL** · **FLAT**; each candidate's tension
+  is scored against the target *for that position* instead of against a fixed
+  value. Same curve as **Energy-arc automation**, which automates TENS/MOTION/
+  SURP per bar — one implementation, two surfaces
+- [ ] **Chord-gen: motivic repetition** — extract the opening 2-chord cell and
+  reuse it later, diatonically transposed or functionally (same degrees, other
+  voicing), with probability **REPEAT**. Human progressions are cells
+  (I–V | vi–IV | I–V | IV–I); a pure chain makes every chord novel and nothing
+  composes. The storage half is the **Motif capture** item below
+- [ ] **Chord-gen: positional SURP** — gate surprise by position: ≈0 at the
+  phrase head, rising through the phrase, highest just before the cadence
+  (where a deceptive move is musical), 0 on the final chord — replacing the
+  uniform hashed noise **SURP** adds today (`scorePc`'s `sp` block)
+- [ ] **Chord-gen: functional grammar filter** — hard rejects *before* ranking,
+  not down-scores: V→IV at a cadence (retrogression), two dominant-function
+  chords in a row, a predominant that never resolves, an unprepared borrowed
+  chord. Today such moves are only cheaper candidates (trans matrix × voice
+  leading), which is how the absurd ones still get picked
+- [ ] **Chord-gen: bass-line-first generation** — second engine beside the
+  chain: write the bass first (reuse the **Two-level contour** idea — ARCH/DESC
+  bar target + local walk), then harmonize each bass note from the genre matrix
+  restricted to the chords that contain it. Linear bass motion is the main thing
+  that makes harmony read as written rather than rolled
+- [ ] **Chord-gen: voice leading as a hard window** — forbid parallel
+  fifths/octaves outright (today a ×0.8 dent in `scorePc`), prefer common
+  tones, cap inner-voice leaps at a fifth, and track the **bass** as its own
+  line (stepwise/arpeggiated, no random octave jumps) — the difference between
+  a progression that sounds played and one that sounds assembled
+- [ ] **Chord-gen: "why this chord" diagnostic** — a readout on the proposal
+  screen naming the terms that dominated (e.g. `V→IV · SURP 80 > grammar`) so
+  the weights get tuned from evidence instead of guesswork. Debug-facing, but
+  it is what makes the rest tunable in one sitting rather than by ear-memory
+- [ ] **Chord-gen: corpus-derived transition weights** — replace the
+  hand-authored `genreTable` matrices with transition counts from a small
+  corpus (MIDI chord files or roman-numeral lists, ~50 tunes per genre); the
+  biggest quality jump available with no new hardware. Feeds / supersedes
+  **Per-genre substitution tables** below
+
 - [ ] **FOLLOW approach tones** — new per-step modifier (semitone/scale approach into the next chord tone), reusing the PROB/BRW machinery (`SeqClock.cpp` FOLLOW map + per-step attributes in `Keyboard.cpp`).
-- [ ] **Motif capture** — snapshot a 4-bar phrase as a motif; transpose/repeat per track with a "repeat every N bars" flag (new `Motif.h/cpp`; today: 16-step loop + one-level undo).
-- [ ] **Energy-arc automation** — per-bar envelope automating the KEYMODE4 TENS/MOTION/SURP knobs over the pattern length (build/drop).
-- [ ] **Per-genre substitution tables** — replace fixed `subSw[7]` (`Key4.cpp:689`) with per-genre tables like the transition data, gated by SURP + function state; add tritone sub and modal interchange (borrow from parallel minor) as first-class substitutions.
+- [ ] **Motif capture** — (storage half of *Chord-gen: motivic repetition*) snapshot a 4-bar phrase as a motif; transpose/repeat per track with a "repeat every N bars" flag (new `Motif.h/cpp`; today: 16-step loop + one-level undo).
+- [ ] **Energy-arc automation** — per-bar envelope automating the KEYMODE4 TENS/MOTION/SURP knobs over the pattern length (build/drop); the same curve as *Chord-gen: tension trajectory* — one implementation, two surfaces.
+- [ ] **Per-genre substitution tables** — (see *Chord-gen: corpus-derived transition weights* for deriving instead of authoring them) replace fixed `subSw[7]` (`Key4.cpp:689`) with per-genre tables like the transition data, gated by SURP + function state; add tritone sub and modal interchange (borrow from parallel minor) as first-class substitutions.
 
 ### General — display & workflow (`Display.cpp`)
 
@@ -130,6 +170,53 @@ from the Backlog while this section has open items** (unless overridden).
 - Harmonic rhythm control — chord-change rate independent of step rate
 
 ## ✅ Done (ticked items; prune occasionally)
+- [x] **Documentation restructure (2026-11-02)** — the 103,568-character `README.md` (599 lines, one H1, no table of contents) split into a one-page landing plus a `docs/` tree by subject (`modes/`, `generators/`, `reference/`, `recipes/`, `adr/`); existing prose moved **verbatim**, with new pages for the glossary, cheat sheet, panel map, feature status, concepts, limitations, FAQ, style guide and bindings reference. `AGENTS.md` now points at `docs/` (ADR 0008). No firmware change.
+
+- [x] **Chord-gen: phrase templates + cadence goal** (user design 2026-11-02 —
+  highest-impact of the ten below) — generate in 2/4-bar phrases instead of
+  slot-by-slot: **antecedent** ends open (V / ii / IV), **consequent** lands on
+  I and often restates the antecedent's opening. New **PHRASE** control cycles
+  AABB · ABAB · ABAC · AABA · FREE (today's behaviour). Code shape that decides
+  the work: generation is **one causal weighted draw per step** (`k4ApplyBody`
+  loop → `pickPc` → `scorePc`, `Key4.cpp:911/924`), and position only reaches
+  the scorer through the cadence terms (`barEnd` = pos%16 ≥ 12 or last step,
+  `phraseEnd` = last 16 steps) — the terms exist, so a phrase goal needs either
+  a lookahead term in `scorePc` or a **backward planning pass from the cadence
+  to the phrase head**; what is missing is *when* they fire and *what repeats*.
+  Pairs with **cadence types as goals** and **motivic repetition** below
+
+  **Built 2026-11-02 (first slice, freeze lifted by the user):** `planBuild()`
+  rolls the cadence type from the CADENCE knob, sets the phrase-end degree as
+  the last bar's plan and walks **backward** through `genreTable.trans` for
+  every earlier bar end; `scorePc` gained a `plan` argument that multiplies a
+  planned landing ×8 (and `pickPc`/`k4Refresh` thread it, so the proposals at
+  a planned bar end agree with what M3 writes); the restating templates replay
+  the opening half into the second half, keeping planned landings and locks.
+  Control: **EMB page ENC3 = PHRASE** (`ENC_KEY4_EMB`, no new page), clamped,
+  RAM only. Header after M3/F1: `Plan V-I PLAN|CAD|GENR` — the arc-level
+  diagnostic, **not** the full per-term attribution (that stays open in §9).
+
+  **Readout follow-up (2026-11-02, from the user):** the CADENCE knob was a
+  seeded weighted roll, so it left the type unchanged while the knob moved and
+  only ever showed a number - it is now a **band selector** (HALF `ii-V` under
+  25, PLAGAL `IV-I` under 50, AUTHENTIC `V-I` under 75, DECEPTIVE `V-vi`
+  above; the continuous value still scales the cadence terms). The ENC row
+  reads **MOOD** out as DARK/COOL/MIXED/WARM/LIGHT and **CAD** as the pair
+  (`V-vi`); turning either knob announces the word in the header last (after
+  the proposals line), and with PHRASE=FREE the header shows `Cadence V-vi`
+  instead of `Plan --`.
+
+- [x] **Chord-gen: cadence types as goals** — expose the target: **AUTHENTIC**
+  (V–I) · **PLAGAL** (IV–I) · **DECEPTIVE** (V–vi) · **HALF** (end on V) ·
+  **MIXED**, and plan **backward** from it so the ending is guaranteed strong.
+  The detector already exists (`barEnd`/`phraseEnd` pair terms in `scorePc`);
+  this turns it from a nudge into a destination
+
+  **Built with §1 (2026-11-02):** the four cadence types are the plan's goal
+  rollers (`AUTHENTIC` V–I default, `PLAGAL` IV–I, `DECEPTIVE` V–vi, `HALF`
+  ii–V), weighted by the CADENCE knob; the backward pass is what makes the
+  landing a destination rather than a nudge. `MIXED` needs no extra code — it
+  is what the knob-weighted roll already does.
 
 - [x] **ENCMODE4 = locked channel picker** (user request: *"we should make
   the encoder select channel overlay locked in ENCMODE4 (enter

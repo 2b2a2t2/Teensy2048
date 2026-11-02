@@ -34,6 +34,9 @@ const char* k4GenreShort();                  // <= 7 chars (OLED value column)
 
 void    k4KnobAdjust(uint8_t idx, int16_t counts);  // 0..6 = MOOD..SURP
 uint8_t k4Knob(uint8_t idx);
+const char* k4MoodName();        // DARK/COOL/MIXED/WARM/LIGHT (label on 0..100)
+const char* k4CadencePair();     // V-I / IV-I / V-vi / ii-V  (the CADENCE band)
+const char* k4CadenceName();     // AUTHENTIC / PLAGAL / DECEPTIVE / HALF
 
 // --- embellish menu (NEXT tap: sticky row = EMB / PLACE) -------------------
 // EMB shapes WHAT M3 writes: OFF = the plain generator, PASS = the odd
@@ -51,6 +54,25 @@ const char* k4EmbModeName();              // "OFF" / "PASS" / "P+S"
 void    k4EmbPlaceAdjust(int16_t counts); // CW = dist, CCW = odd
 uint8_t k4EmbPlace();                     // 0 odd, 1 distance
 const char* k4EmbPlaceName();             // "ODD" / "DIST"
+
+// --- PHRASE (EMB page ENC3: phrase template + cadence goal) ----------------
+// The chain is causal - one weighted draw per step - so it has no goal.  A
+// phrase template gives it one: the phrase-end cadence TYPE is chosen by the
+// CADENCE knob in four bands (HALF ii-V under 25, PLAGAL IV-I under 50,
+// AUTHENTIC V-I under 75 - the boot default, DECEPTIVE V-vi above; see
+// k4CadencePair), the degree it lands on becomes the plan for the
+// last bar, and every earlier bar end is walked BACKWARD from it through the
+// genre transition table.  The forward pass then scores those landings
+// heavily, so the chain serves the goal instead of wandering.  AABB / ABAB /
+// AABA also replay the opening half into the second half (restatement =
+// memory); ABAC leaves it new; FREE is the plain chain.  Clamped at both
+// ends, RAM only - a reboot starts FREE.
+void        k4PhraseAdjust(int16_t counts);
+uint8_t     k4Phrase();                  // 0 FREE .. 4 AABA
+const char* k4PhraseName();              // "FREE" / "AABB" / ... (<= 4 chars)
+const char* k4PhrasePlanName();          // "V-I" / "IV-I" / "V-vi" / "ii-V"
+const char* k4PhraseDiagName();          // "PLAN" / "CAD" / "GENR"
+bool        k4PhrasePlanHit();           // did the phrase end reach the goal?
 
 // --- HARM settings (POLY TYPE=HARM page: ENC1 = GENRE, ENC2 = SRC, ENC3 = HOLD)
 void    k4HarmInputAdjust(int16_t counts); // CW = arp, CCW = bass

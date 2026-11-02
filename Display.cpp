@@ -514,7 +514,7 @@ void refreshMainScreen() {
     } else if (key4 && c == 0) {
       snprintf(val, sizeof(val), "%s", k4GenreShort()); // ENC1 = genre
     } else if (key4 && c == 1) {
-      snprintf(val, sizeof(val), "%u", k4Knob(0));      // ENC2 = MOOD
+      snprintf(val, sizeof(val), "%s", k4MoodName());   // ENC2 = MOOD
     } else if (key4 && c == 2) {
       snprintf(val, sizeof(val), "%u", k4Knob(1));      // ENC3 = TENS
     } else if (key4 && c == 3) {
@@ -534,6 +534,8 @@ void refreshMainScreen() {
       snprintf(val, sizeof(val), "%s", k4EmbModeName());  // ENC1 = EMB
     } else if (key4Emb && c == 1) {
       snprintf(val, sizeof(val), "%s", k4EmbPlaceName()); // ENC2 = PLACE
+    } else if (key4Emb && c == 2) {
+      snprintf(val, sizeof(val), "%s", k4PhraseName());   // ENC3 = PHRASE
     } else if (key4Emb) {
       snprintf(val, sizeof(val), "");                   // ENC3..8 idle
     } else if (key4Step) {
@@ -743,7 +745,7 @@ void refreshMainScreen() {
     } else if (seqDrumGe && 4 + c == 7) {
       snprintf(val, sizeof(val), "%d%%", seqProbPct());  // ENC8 = track probability
     } else if (key4 && 4 + c == 4) {
-      snprintf(val, sizeof(val), "%u", k4Knob(3));          // CAD
+      snprintf(val, sizeof(val), "%s", k4CadencePair());    // CAD
     } else if (key4 && 4 + c == 5) {
       snprintf(val, sizeof(val), "%u", k4Knob(4));          // CPX
     } else if (key4 && 4 + c == 6) {

@@ -50,7 +50,7 @@ static const char* encLabels[ENC_SET_COUNT][8] = {
   /* ENC_SEQ_SKANK_STEP*/ { "TES", "MOT", "SHP", "THN", "EXT", "SUB", "TES%", "TRANS" },
   /* ENC_KEY2_PREV    */ { "OCT", "SCALE", "KEY", "LATCH", "KLOCK", "PERF", "--", "--" },
   /* ENC_KEY4_PREV    */ { "OCT", "SCALE", "KEY", "FSCALE", "SUB", "INV", "PAS", "COL" },
-  /* ENC_KEY4_EMB     */ { "EMB", "PLACE", "--", "--", "--", "--", "--", "--" },
+  /* ENC_KEY4_EMB     */ { "EMB", "PLACE", "PHRASE", "--", "--", "--", "--", "--" },
   /* ENC_KEY4_STEP    */ { "OCT", "DEG", "INV", "VOICE", "--", "--", "--", "--" },
 };
 

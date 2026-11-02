@@ -2,8 +2,8 @@
 
 Firmware for a Teensy 4.1 touch/encoder performance controller (pads, encoders,
 OLED, WS2812 LEDs, USB-MIDI). Architecture, modes and workflows are documented
-in `README.md` — treat it as the reference and keep it updated when behavior
-changes.
+in `docs/` (start at `docs/README.md`) — treat that tree as the reference and keep
+it updated when behavior changes. `README.md` is the one-page landing page.
 
 ## Backlog workflow (TODO.md)
 
@@ -73,9 +73,11 @@ from that exact commit and flash it with the Teensy Loader.
 ## Conventions
 
 - Modules are flat `.h/.cpp` pairs in the repo root; responsibilities are
-  listed in the README "Module Overview" table.
+  listed in `docs/architecture.md` ("Module Overview").
 - Mode/binding changes: `Bindings.cpp` table + `Events.cpp` dispatch + encoder
-  labels in `Display.cpp` (see README "Extending / Customizing").
+  labels in `Display.cpp` (see `docs/extending.md`).
 - EEPROM layout changes must stay backward-tolerant (blank `0xFF` = defaults),
   see the save blocks in `Keyboard.cpp` and `Events.cpp`.
-- Keep `README.md` in sync with user-visible changes.
+- Keep the docs in sync with user-visible changes: the page that describes the
+  behaviour, `docs/status.md`, `CHANGELOG.md`, and the map in `README.md` if a
+  page moved. Follow `docs/style-guide.md`.
