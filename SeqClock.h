@@ -83,7 +83,8 @@ uint8_t seqPolyTypeOf(uint8_t idx);      // sequence idx 0..15, clamped (stale 4
 // position instead of pausing it.  Everything is per track.
 enum SeqArpMode : uint8_t {
   SEQ_ARP_UP = 0, SEQ_ARP_DOWN, SEQ_ARP_UPDOWN,
-  SEQ_ARP_RANDOM, SEQ_ARP_RANDOM2
+  SEQ_ARP_RANDOM, SEQ_ARP_RANDOM2,
+  SEQ_ARP_OUTIN, SEQ_ARP_INOUT, SEQ_ARP_CONV, SEQ_ARP_DIV
 };
 enum SeqArpInst : uint8_t {
   SEQ_INST_OFF = 0, SEQ_INST_HI, SEQ_INST_LOW,
@@ -95,7 +96,7 @@ void        seqArpSpanSet(uint8_t idx, uint8_t v);
 void        seqArpModeAdjust(int16_t counts);  // edit channel; 4 counts = 1
 uint8_t     seqArpModeOf(uint8_t idx);
 void        seqArpModeSet(uint8_t idx, uint8_t v);
-const char *seqArpModeName(uint8_t v);         // "UP" ... "RANDOM2" (OLED)
+const char *seqArpModeName(uint8_t v);         // "UP" ... "DIV" (OLED)
 void        seqArpInstAdjust(int16_t counts);  // edit channel; 4 counts = 1
 uint8_t     seqArpInstOf(uint8_t idx);
 void        seqArpInstSet(uint8_t idx, uint8_t v);

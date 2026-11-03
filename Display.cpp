@@ -265,9 +265,11 @@ void refreshMainScreen() {
   bool genOv = (b.enc == ENC_SEQ_ROT_OV);
   // ...or a held step in SEQMODE (non-DRUM) arms the per-step TRANS overlay
   bool seqTrOv = (b.enc == ENC_SEQ_STEPOV);
+  // ...and in SEQMODE3 a held C D E F bar pad arms the bar OCT/TRANS row
+  bool barOv = (b.enc == ENC_SEQ_BAR_OV);
   // either SEQ-page overlay wins: suppress the M2-page label overrides so
   // SHIFT/TRANS (or the held-step TRANS / SKANK locks) keeps the row
-  bool seqOv = genOv || seqTrOv || skankStepOv;
+  bool seqOv = genOv || seqTrOv || skankStepOv || barOv;
   // ...or with an F radio armed the whole row is the option sub-page
   // (F1 = the full page: TONES/RNG/LOW/ALGO on ENC1-4; F2 = OCT on
   // ENC2 + MAP on ENC3, F3 = BRW on ENC3, F4 = PROB on ENC4 - the rest
@@ -339,6 +341,13 @@ void refreshMainScreen() {
       static const char *mPb[4] = { "---", "---", "---", "PROB" };
       l1 = (gSub == 1) ? mOc[c] : (gSub == 2) ? mBr[c] : mPb[c];
     }
+    // DRUM track: the row-1 record options do not exist - keep the idle
+    // "--" legend so the slot reads unbound (only the DRUM page or an
+    // overlay owns this row there, both guarded above)
+    if (modeBase == MODE_SEQ && (modeVariant == 1 || modeVariant == 2) &&
+        seqTrack() == SEQ_TRACK_DRUM && c >= 1 && c <= 3 &&
+        !seqOv && !drumP)
+      l1 = "--";
     u8g2.drawStr(x, 22, l1);
     if (genOv) {
       // SHIFT/TRANS row: ENC1 = the rotation position, ENC2 = the track's
@@ -365,6 +374,13 @@ void refreshMainScreen() {
       int16_t lk = (ss >= 0) ? stepSkankLockAt((uint8_t)ss, (uint8_t)c) : -1;
       if (lk < 0) snprintf(val, sizeof(val), "inherit");
       else snprintf(val, sizeof(val), "%d", lk);
+    } else if (barOv) {
+      // held-bar row: ENC1 = that bar's octave, ENC2 = its semitone TRANS
+      uint8_t bd = seqBarEditSel();
+      if (bd > 3) bd = 3;
+      if (c == 0) snprintf(val, sizeof(val), "%+d", (int)seqBarOctAt(bd));
+      else if (c == 1) snprintf(val, sizeof(val), "%+d", (int)seqBarTrAt(bd));
+      else snprintf(val, sizeof(val), "");
     } else if (gSub == 0) {
       // F1 full options page: ENC1 TONES, ENC2 RANGE, ENC3 LOW, ENC4 ALGO
       if (c == 0) {
@@ -503,6 +519,22 @@ void refreshMainScreen() {
       int h = seqCompHits();                                  // ENC1 = hits
       if (h <= 1) snprintf(val, sizeof(val), "off");
       else snprintf(val, sizeof(val), "%d", h);
+    } else if (modeBase == MODE_SEQ &&
+               (modeVariant == 1 || modeVariant == 2) &&
+               c >= 1 && c <= 3 &&
+               seqTrack() != SEQ_TRACK_DRUM &&
+               !genP && !leadP && !harmP && !compP && !skankP && !drumP &&
+               !arpP) {
+      // M1 step-edit row, variants 1/2: ENC2 = LISTEN (CHORD/NOTE),
+      // ENC3 = PLAYBACK (GATE/RECORDED), ENC4 = OVERDUB (OFF/ON).  A DRUM
+      // track has no record options - blank, like an idle slot
+      if (c == 1)
+        snprintf(val, sizeof(val), "%s", seqRecListenName(seqRecListen()));
+      else if (c == 2)
+        snprintf(val, sizeof(val), "%s",
+                 seqRecPlaybackName(seqRecPlayback()));
+      else
+        snprintf(val, sizeof(val), "%s", seqRecOverdubName(seqRecOverdub()));
     } else if (seq3 && c == 1) {
       snprintf(val, sizeof(val), "%d", seqPatLen());      // ENC2 = steps
     } else if (seq3 && c == 2) {
@@ -535,7 +567,7 @@ void refreshMainScreen() {
     } else if (key4Emb && c == 1) {
       snprintf(val, sizeof(val), "%s", k4EmbPlaceName()); // ENC2 = PLACE
     } else if (key4Emb && c == 2) {
-      snprintf(val, sizeof(val), "%s", k4PhraseName());   // ENC3 = PHRASE
+      snprintf(val, sizeof(val), "%u", k4Knob(5));         // ENC3 = ERA
     } else if (key4Emb) {
       snprintf(val, sizeof(val), "");                   // ENC3..8 idle
     } else if (key4Step) {
@@ -628,6 +660,7 @@ void refreshMainScreen() {
     if (leadP && 4 + c == 6) l2 = "DENS";         // lead page: ENC7 = density
     if (genOv) l2 = "---";                        // SHIFT/TRANS row: idle
     if (seqTrOv) l2 = "---";                      // held-step TRANS: idle
+    if (barOv) l2 = "---";                        // held-bar row: idle
     if (seqDrumGe && 4 + c == 6 && stepEditSel() == 5)
       l2 = "FX";                                  // POLY edit: ENC7 = FX type
     if (seqDrumGe && 4 + c == 6 && stepEditSel() == 6)
@@ -658,6 +691,8 @@ void refreshMainScreen() {
       snprintf(val, sizeof(val), "");              // SHIFT/TRANS row idle
     } else if (seqTrOv) {
       snprintf(val, sizeof(val), "");              // held-step TRANS idle
+    } else if (barOv) {
+      snprintf(val, sizeof(val), "");              // held-bar row: row 2 idle
     } else if (skankStepOv) {
       // lock row: EXT / SUB / TES% override, ENC8 = the step's TRANS
       int8_t ss = seqTrStepSelGet();
@@ -749,7 +784,7 @@ void refreshMainScreen() {
     } else if (key4 && 4 + c == 5) {
       snprintf(val, sizeof(val), "%u", k4Knob(4));          // CPX
     } else if (key4 && 4 + c == 6) {
-      snprintf(val, sizeof(val), "%u", k4Knob(5));          // ERA
+      snprintf(val, sizeof(val), "%s", k4PhraseName());      // PHRASE
     } else if (key4 && 4 + c == 7) {
       snprintf(val, sizeof(val), "%u", k4Knob(6));          // SURP
     } else if (key4Ov || key4Emb) {

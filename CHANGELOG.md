@@ -6,8 +6,43 @@ de-facto version marker is the size of the saved-settings block (see
 
 ## Unreleased
 
+### Sequencer
+
+- **ARP: the MODE knob now carries all nine walk orders** - `OUTIN` / `INOUT` /
+  `CONV` / `DIV` existed only on the F1 `ORDER` knob, so with `ORDER = MODE` (the
+  default) they were unreachable and the MODE knob stopped at `RANDOM2`. The enum
+  grew past `RANDOM2` (`SEQ_ARP_OUTIN` .. `SEQ_ARP_DIV`), the knob and the value
+  column follow it, and an older save's mode 0..4 keeps its exact sound. The ORDER
+  knob's list is unchanged, so `RANDOM` / `RANDOM2` stay on MODE and `PLAY` still
+  follows MODE for its shape.
+
+- **SEQ 3: hold a bar pad for that bar's `OCT` / `TRANS`** - the keyboard's C D E F row
+  already picks the 16-step edit window (and loops it on a second press); now the pad
+  also arms an encoder row for **that bar**: `ENC1` = `OCT` (-2..+2), `ENC2` = `TRANS`
+  (-12..+12 st), header `Bar 3 Transpose +5`. The stored chords are untouched - the
+  shift folds into the track's own octave/`TRANS` at playback, so a `KLOCK` track
+  snaps the transposed bar back into scale instead of stepping outside it. DRUM tracks
+  refuse both (`Bar 2 Drum Track`): their steps are drum-map ids, not pitches. One bar
+  at a time (the last pad pressed); the row drops when the last C-F pad lets go.
+
 ### Keyboard
 
+- **KEY 4 phrase templates are per-bar, so `AABB` / `ABAB` / `AABA` differ** - the
+  restating templates used to copy the first half verbatim into the second, which made
+  all three produce the same `AA` pattern and left only `ABAC` distinguishable. They
+  are a four-letter map over bars now: a bar whose letter has already played replays
+  the first bar that carried it, so `AABB` runs one cell for bars 1-2 and a repeated
+  second cell for 3-4, `ABAB` alternates, `AABA` returns to the opening cell for its
+  last bar, and `ABAC` repeats just bar 3 from bar 1. The replay goes through the
+  normal write path, so the chain advances with it and the next new bar answers the
+  repeated material; each bar's planned landing and any locked step are never
+  overwritten, which keeps the cadence arc intact.
+
+- **KEY 4: `PHRASE` promoted to the encoder row, `ERA` moved to the EMB page** - the phrase
+  template decides whether the pattern has an arc at all, so it no longer sits two gestures
+  deep (`NEXT` tap, then `ENC3`): it takes `ENC7`, the slot `ERA` used, and reads out by name
+  (`FREE`/`AABB`/...). `ERA` keeps its value and now lives at the EMB page's `ENC3`, where a
+  turn regenerates the unlocked steps immediately instead of waiting for the next row turn.
 - **KEY 4 phrase templates** - `FREE` / `AABB` / `ABAB` / `ABAC` / `AABA` (EMB page
   `ENC3`) give the progression generator a **goal**: the cadence the knob selected is
   planned for the last bar, every earlier bar end is derived **backward** from it, and

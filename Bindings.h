@@ -16,6 +16,8 @@ enum EncSet : uint8_t {
   ENC_SEQ_STEPOV,              // overlay: step held in SEQMODE (per-step TRANS)
   ENC_SEQ_SKANK_STEP,           // overlay: step held on a POLY+SKANK track
                                //   (per-step derivation locks, ENC8 = TRANS)
+  ENC_SEQ_BAR_OV,              // overlay: bar pad held on the SEQMODE3
+                               //   keyboard row (bar OCT / TRANS)
   ENC_KEY2_PREV,               // overlay: PREV held in KEYMODE2
   ENC_KEY4_PREV,               // overlay: PREV held in KEYMODE4
   ENC_KEY4_EMB,                // sticky: EMB menu open in KEYMODE4

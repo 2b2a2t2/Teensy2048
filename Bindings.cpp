@@ -29,11 +29,12 @@ static const ModeBinding table[3][4] = {
 // encoder legend rows: the DEFAULT (idle) bindings of each set - overlays
 // repaint over them when they take the row (arp/gen pages, step-edit radio,
 // CC banks, held-step rows).  "--" = no idle binding (the knob only comes
-// alive under its page/radio, e.g. SEQ ENC2-4 = the M2 page knobs, ENC7 =
-// the POLY FX/TYPE dial)
+// alive under its page/radio, e.g. ENC7 = the POLY FX/TYPE dial).  The
+// SEQ row's ENC2-4 read LISTEN/PLAY/OVERDUB: idle labels, but the knobs
+// only turn with the step-edit radio on (like GATE/VEL on row 2)
 static const char* encLabels[ENC_SET_COUNT][8] = {
-  /* ENC_SEQ          */ { "OCT", "--", "--", "--", "GATE", "VEL", "--", "PROB" },
-  /* ENC_SEQ2         */ { "OCT", "--", "--", "--", "GATE", "VEL", "--", "PROB" },
+  /* ENC_SEQ          */ { "OCT", "LISTEN", "PLAY", "OVERDUB", "GATE", "VEL", "--", "PROB" },
+  /* ENC_SEQ2         */ { "OCT", "LISTEN", "PLAY", "OVERDUB", "GATE", "VEL", "--", "PROB" },
   /* ENC_SEQ3         */ { "OCT", "LEN", "FOLLOW", "SPEED", "INCH", "TRACK", "TYPE", "BPM" },
   /* ENC_SEQ4         */ { "SWING", "AMT", "EXT IN", "SRC", "GATE", "VEL", "--", "PROB" },
   /* ENC_ENC          */ { "CC17", "CC18", "CC19", "CC20", "CC1", "CC2", "CC3", "CC4" },
@@ -43,14 +44,15 @@ static const char* encLabels[ENC_SET_COUNT][8] = {
   /* ENC_KEY          */ { "OCT", "SCALE", "KEY", "--", "--", "--", "--", "--" },
   /* ENC_KEY2         */ { "OCT", "SCALE", "KEY", "FSCALE", "BASS", "SPRD", "DENS", "LATCH" },
   /* ENC_KEY3         */ { "OCT", "SCALE", "ENCOD", "KBOARD", "--", "--", "--", "--" },
-  /* ENC_KEY4         */ { "GENRE", "MOOD", "TENS", "MOTION", "CAD", "CPX", "ERA", "SURP" },
+  /* ENC_KEY4         */ { "GENRE", "MOOD", "TENS", "MOTION", "CAD", "CPX", "PHRASE", "SURP" },
   /* ENC_SEQ_STEP_HELD*/ { "--", "--", "--", "--", "--", "--", "--", "--" },  // set not wired yet
   /* ENC_SEQ_ROT_OV   */ { "SHIFT", "TRANS", "KLOCK", "--", "--", "--", "--", "--" },
   /* ENC_SEQ_STEPOV   */ { "TRANS", "--", "--", "--", "--", "--", "--", "--" },
   /* ENC_SEQ_SKANK_STEP*/ { "TES", "MOT", "SHP", "THN", "EXT", "SUB", "TES%", "TRANS" },
+  /* ENC_SEQ_BAR_OV   */ { "OCT", "TRANS", "--", "--", "--", "--", "--", "--" },
   /* ENC_KEY2_PREV    */ { "OCT", "SCALE", "KEY", "LATCH", "KLOCK", "PERF", "--", "--" },
   /* ENC_KEY4_PREV    */ { "OCT", "SCALE", "KEY", "FSCALE", "SUB", "INV", "PAS", "COL" },
-  /* ENC_KEY4_EMB     */ { "EMB", "PLACE", "PHRASE", "--", "--", "--", "--", "--" },
+  /* ENC_KEY4_EMB     */ { "EMB", "PLACE", "ERA", "--", "--", "--", "--", "--" },
   /* ENC_KEY4_STEP    */ { "OCT", "DEG", "INV", "VOICE", "--", "--", "--", "--" },
 };
 
@@ -59,6 +61,7 @@ static const char* encSetNames[ENC_SET_COUNT] = {
   "ENCENC", "ENCENC2", "ENCENC3", "ENCENC4",
   "KEYENC", "KEYENC2", "KEYENC3", "KEYENC4",
   "SEQENC_STEP_HELD", "SEQENC_ROT_OV", "SEQENC_STEPOV", "SEQENC_SKANK_STEP",
+  "SEQENC_BAR_OV",
   "KEYENC2_PREV", "KEYENC4_PREV",
   "KEYENC4_EMB", "KEYENC4_STEP"
 };

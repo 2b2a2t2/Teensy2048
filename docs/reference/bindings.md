@@ -17,7 +17,8 @@ cleared on release (or when the armed page closes), which is why a held key's ro
 comes back to what it covered.
 
 `Labels` are printed on the OLED; `--` means the knob has no idle binding and only comes
-alive under its page or radio.
+alive under its page or radio. Every code is expanded in the
+[glossary's panel-codes table](../glossary.md#panel-codes).
 
 ## Encoders — base sets
 
@@ -34,7 +35,7 @@ alive under its page or radio.
 | **KEY 1** | OCT | SCALE | KEY | -- | -- | -- | -- | -- |
 | **KEY 2** | OCT | SCALE | KEY | FSCALE | BASS | SPRD | DENS | LATCH |
 | **KEY 3** | OCT | SCALE | ENCOD | KBOARD | -- | -- | -- | -- |
-| **KEY 4** | GENRE | MOOD | TENS | MOTION | CAD | CPX | ERA | SURP |
+| **KEY 4** | GENRE | MOOD | TENS | MOTION | CAD | CPX | PHRASE | SURP |
 
 In ENCMODE, `ENC5–8` print the live CC number of the armed bank: `CC1–CC4` in page group 1,
 `CC21–CC24` in group 2.
@@ -46,9 +47,10 @@ In ENCMODE, `ENC5–8` print the live CC number of the armed bank: `CC1–CC4` i
 | **SEQ ROT** | `PREV` held (any SEQ variant) | SHIFT · TRANS · KLOCK · -- · -- · -- · -- · -- |
 | **SEQ STEP** | a step pad held (non-DRUM) | TRANS · -- · -- · -- · -- · -- · -- · -- |
 | **SEQ SKANK STEP** | a step held on POLY + SKANK | TES · MOT · SHP · THN · EXT · SUB · TES% · TRANS |
+| **SEQ BAR** | a C–F bar pad held (SEQ 3 keyboard row) | OCT · TRANS · -- · -- · -- · -- · -- · -- |
 | **KEY 2 PREV** | `PREV` held in KEY 2 | OCT · SCALE · KEY · LATCH · KLOCK · PERF · -- · -- |
 | **KEY 4 PREV** | `PREV` held in KEY 4 | OCT · SCALE · KEY · FSCALE · SUB · INV · PAS · COL |
-| **KEY 4 EMB** | `NEXT` tapped in KEY 4 | EMB · PLACE · PHRASE · -- · -- · -- · -- · -- |
+| **KEY 4 EMB** | `NEXT` tapped in KEY 4 | EMB · PLACE · ERA · -- · -- · -- · -- · -- |
 | **KEY 4 STEP** | a step pad held in KEY 4 | OCT · DEG · INV · VOICE · -- · -- · -- · -- |
 
 Page rows (ARP sub-pages, GNR8 option radios, the strum ADDS row, the DRUM knob sets,

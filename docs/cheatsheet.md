@@ -35,7 +35,7 @@ alive under its page or radio).
 | **KEY 1** | OCT | SCALE | KEY | -- | -- | -- | -- | -- |
 | **KEY 2** | OCT | SCALE | KEY | FSCALE | BASS | SPRD | DENS | LATCH |
 | **KEY 3** | OCT | SCALE | ENCOD | KBOARD | -- | -- | -- | -- |
-| **KEY 4** | GENRE | MOOD | TENS | MOTION | CAD | CPX | ERA | SURP |
+| **KEY 4** | GENRE | MOOD | TENS | MOTION | CAD | CPX | PHRASE | SURP |
 
 `ENC 5–8` in ENCMODE print the live CC number of the armed bank: `CC1–CC4` in page group 1,
 `CC21–CC24` in group 2.
@@ -51,6 +51,7 @@ alive under its page or radio).
 | **PREV held**, KEY 4 | OCT · SCALE · KEY · FSCALE · SUB · INV · PAS · COL |
 | **EMB menu**, KEY 4 | EMB · PLACE · PHRASE · -- · -- · -- · -- · -- |
 | **Step held**, KEY 4 | OCT · DEG · INV · VOICE · -- · -- · -- · -- |
+| **Bar pad held**, SEQ 3 | OCT · TRANS · -- · -- · -- · -- · -- · -- |
 
 ## Gestures
 

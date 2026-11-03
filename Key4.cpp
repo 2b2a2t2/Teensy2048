@@ -1033,6 +1033,27 @@ static int k4ApplyBody() {
   // they keep this main chord when the passing rule declines it)
   uint8_t mDeg[64], mBass[64];            // STEP_MAX: pattern max 64
   bool mOk[64];
+  // PHRASE restatement is BAR-level, not half-level: every template is a
+  // four-letter map (AABB / ABAB / ABAC / AABA) and a bar whose letter has
+  // already played replays the FIRST bar that carried it.  That is the only
+  // reading where the three restating templates differ: AABB keeps one cell
+  // for bars 1-2 and a second, repeated cell for 3-4; ABAB alternates two
+  // cells; ABAC repeats just bar 3 from bar 1; AABA returns to the opening
+  // cell for its last bar.  Bar 1 and every first appearance of a cell are
+  // new material, so the chain still decides them.
+  int8_t srcOf[4] = { -1, -1, -1, -1 };
+  if (sPhrase != 0) {
+    static const char *const phraseMap[5] = { "", "AABB", "ABAB", "ABAC",
+                                              "AABA" };
+    const char *pm = phraseMap[sPhrase];
+    int nb = (L + 15) / 16;               // bars actually present
+    if (nb > 4) nb = 4;
+    for (int b = 1; b < nb; b++) {
+      for (int i = 0; i < b; i++) {
+        if (pm[i] == pm[b]) { srcOf[b] = (int8_t)i; break; }
+      }
+    }
+  }
   for (uint8_t st = 0; st < (uint8_t)L; st++) {
     mOk[st] = false;
     if (k4Locked(st)) {
@@ -1045,6 +1066,36 @@ static int k4ApplyBody() {
         mOk[st] = true;
       }
       continue;
+    }
+    // PHRASE: this bar carries a letter that already played - replay that
+    // bar's chord for the same in-bar position.  Going through the normal
+    // write path also advances the chain (prev/prevBass/prevRoot/prevQ), so
+    // the next NEW bar answers the repeated material instead of the pattern
+    // it replaced.  The bar's planned landing is generated, never copied,
+    // and a locked step returned above: the cadence arc always survives.  A
+    // rest in the source bar is filled with new material, the same way the
+    // old half-copy behaved.
+    {
+      uint8_t qu = (uint8_t)(st / 16);
+      bool barLast = ((st % 16) == 15) || (st == (uint8_t)(L - 1));
+      if (qu < 4 && srcOf[qu] >= 0 && !barLast) {
+        uint8_t from = (uint8_t)((uint8_t)srcOf[qu] * 16 + (st % 16));
+        uint8_t sn = 0;
+        const uint8_t *snt = stepChordAt(from, &sn);
+        if (snt && sn && stepChordWrite(st, snt, sn) >= 0) {
+          uint8_t rRoot = 0, rQ = 0;
+          mDeg[st] = decodeChord(snt, sn, &rRoot, &rQ);
+          mBass[st] = (uint8_t)(snt[0] % 12);
+          mOk[st] = true;
+          written++;
+          prev = mDeg[st];
+          prevBass = mBass[st];
+          prevRoot = rRoot;
+          prevQ = rQ;
+          prevSd = 255;                 // a replay brings no V/x state along
+          continue;
+        }
+      }
     }
     // PHRASE: a planned bar end pulls its landing (FREE = no plan at all)
     uint8_t plan = K4_PLAN_NONE;
@@ -1090,25 +1141,6 @@ static int k4ApplyBody() {
       sDiagWho = (alt != pc) ? 0 : (mDeg[st] == sPlanGoal ? 1 : 2);
     }
   }
-  // PHRASE restatement: AABB / ABAB / AABA replay the opening half into the
-  // second half (max 64 steps = two 2-bar units, so the templates differ
-  // only in whether the second half restates the first); ABAC leaves it new.
-  // Planned bar ends and locked steps are never overwritten - the cadence
-  // arc survives the repeat
-  if (sPhrase == 1 || sPhrase == 2 || sPhrase == 4) {
-    int half = L / 2;
-    if (half >= 16) {
-      for (int st = half; st < L; st++) {
-        if (k4Locked((uint8_t)st)) continue;
-        if ((st % 16) == 15 || st == L - 1) continue;   // the planned landing
-        uint8_t sn = 0;
-        const uint8_t *snt = stepChordAt((uint8_t)(st - half), &sn);
-        if (!snt || sn == 0) continue;
-        if (stepChordWrite((uint8_t)st, snt, sn) < 0) continue;
-      }
-    }
-  }
-
   // phase B (PASS/P+S): the odd steps become passing chords - a triad on
   // the scale degree one below the FOLLOWING main chord, quality and
   // inversion re-derived through the proposal scoring (genre + knobs +

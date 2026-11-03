@@ -167,6 +167,15 @@ static uint8_t stepModP[SEQ_CH_COUNT][STEP_MAX];
 // never changes.  RAM only like every step field; rotates with SHIFT and
 // rides the GNR8 snapshot; defaults ride in stepAttClear
 static int8_t  stepTrM[SEQ_CH_COUNT][STEP_MAX];
+// per-BAR octave (-2..+2) and semitone TRANS (-12..+12) of a pattern: the
+// SEQ3 keyboard row's held-bar overlay (C D E F) edits these.  One bar =
+// 16 steps, four bars = the 64-step pattern.  Playback-only like the
+// per-step mods - the stored chords never change - and they ride the
+// track's own octave/TRANS inside shNoteK, so Klock still snaps the sum
+// and a transposed bar stays diatonic.  DRUM tracks refuse both (a drum
+// step is a drum-map id, not a pitch).  RAM only like every step field
+static int8_t  barOctM[SEQ_CH_COUNT][4];
+static int8_t  barTrM[SEQ_CH_COUNT][4];
 // per-step SKANK locks (hold-row encoders 1..6 on a POLY+SKANK track):
 // raw 0 = inherit the page knob, else value+1 (1..101 = 0..100).  Stored
 // with the step content (stepAttClear wipes), RAM only like every field
@@ -1523,6 +1532,38 @@ void stepTrSet(uint8_t step, int8_t v) {
   stepTrM[seqEditCh][step] = v;
 }
 
+// --- per-bar OCT / TRANS (the SEQ3 keyboard row's held-bar overlay) --------
+// barEditSel carries the pad the keyboard is holding (0..3, 0xFF = none):
+// one overlay slot means one bar under the knobs at a time, the last pad
+// pressed owns it.  The adjust calls return the new value so the header can
+// echo it; both refuse DRUM tracks, which have no pitch to shift
+static uint8_t barEditSel = 0xFF;
+uint8_t seqBarEditSel() { return barEditSel; }
+void seqBarEditBegin(uint8_t bar) { if (bar < 4) barEditSel = bar; }
+void seqBarEditEnd() { barEditSel = 0xFF; }
+int8_t seqBarOctAt(uint8_t bar) {
+  return bar < 4 ? barOctM[seqEditCh][bar] : 0;
+}
+int8_t seqBarTrAt(uint8_t bar) {
+  return bar < 4 ? barTrM[seqEditCh][bar] : 0;
+}
+int8_t seqBarOctAdjust(int16_t counts) {
+  if (barEditSel > 3 || seqTrackOf(seqEditCh) == SEQ_TRACK_DRUM) return 0;
+  int v = (int)barOctM[seqEditCh][barEditSel] + counts;
+  if (v < -2) v = -2;                 // the per-step OCT's range
+  if (v > 2) v = 2;
+  barOctM[seqEditCh][barEditSel] = (int8_t)v;
+  return (int8_t)v;
+}
+int8_t seqBarTrAdjust(int16_t counts) {
+  if (barEditSel > 3 || seqTrackOf(seqEditCh) == SEQ_TRACK_DRUM) return 0;
+  int v = (int)barTrM[seqEditCh][barEditSel] + counts;
+  if (v < -12) v = -12;
+  if (v > 12) v = 12;
+  barTrM[seqEditCh][barEditSel] = (int8_t)v;
+  return (int8_t)v;
+}
+
 // per-step SKANK locks (the hold-step lock row): value 0..100, -1 = inherit.
 // The playback reads the array of ITS channel directly; these accessors
 // walk the edit sequence like every other step field
@@ -1968,9 +2009,9 @@ static uint8_t arpExpand(const uint8_t *src, uint8_t len, uint8_t inst,
   return k;
 }
 
-// extended walk orders (the ORDER knob on the F1 sub-page).  The MODE
-// knob still owns 0..4; the shapes past RANDOM2 sit above them so an
-// ORDER = MODE setting keeps its exact old behaviour
+// the walk orders, shared by the MODE knob and the F1 sub-page's ORDER knob.
+// The four pivot shapes (5..8) were ORDER-only at first; they sit above the
+// MODE knob's original five so an older save's mode keeps its exact sound
 typedef enum {
   ARP_ORD_UP = 0, ARP_ORD_DOWN, ARP_ORD_UPDN, ARP_ORD_RAND, ARP_ORD_RAND2,
   ARP_ORD_OUTIN, ARP_ORD_INOUT, ARP_ORD_CONV, ARP_ORD_DIV
@@ -2102,8 +2143,9 @@ static uint8_t arpNoteAt(const uint8_t *ch, uint8_t n, uint8_t seq,
     }
   if (L == 0) return 0;
 
-  // ORDER 0 follows the MODE knob; 1..3 are MODE's first three shapes and
-  // 4..7 the new pivot shapes, 8 = as-played (handled by src0 above)
+  // ORDER 0 follows the MODE knob (which carries all nine shapes now);
+  // 1..3 are UP/DOWN/UPDN, 4..7 the pivot shapes, 8 = as-played (src0
+  // above), and PLAY still takes its shape from the MODE knob
   uint8_t order;
   if (pOrder == 0 || pOrder == 8)  order = mode;
   else if (pOrder <= 3)            order = (uint8_t)(pOrder - 1);
@@ -3457,6 +3499,16 @@ static void seqAdvanceOnce(bool start, const bool *go,
     if (handStep && !handTimed && !recVerbatim) continue;
     int8_t sh = seqOct[c];
     int8_t tr = seqTransOf(c);       // per-track semitone TRANS (0 on DRUM)
+    // the bar this step sits in (the SEQ3 held-bar row edits one bar at a
+    // time): its OCT/TRANS fold into the track's own shift pair, so every
+    // engine path below - MONO, POLY, STRUM, GNR8 FOLLOW - inherits them
+    // and Klock still snaps the sum instead of the bare track TRANS
+    if (seqTrackOf(c) != SEQ_TRACK_DRUM) {
+      uint8_t bnr = (uint8_t)(stp >> 4);
+      if (bnr > 3) bnr = 3;
+      sh = (int8_t)(sh + barOctM[c][bnr]);
+      tr = (int8_t)(tr + barTrM[c][bnr]);
+    }
     if (mono) {
       uint8_t vel = (att & SEQ_ATT_ACCENT) ? seqAccVel[c] : seqVel[c];
       // gate timer: TIE/GLIDE hold to the boundary by definition
@@ -3487,86 +3539,155 @@ static void seqAdvanceOnce(bool start, const bool *go,
         if (e > 40) e = 40;
         strumEnqueue(c, order, ovel, n, (uint16_t)e, true, defer[c], arm);
       } else {
-        uint8_t note;
-        // GNR8 per-step modifiers: the roll gates OCT (all mono types)
-        // and BRW (inside mapBassNote) - no mod set = no roll consumed
-        bool hasMod = stepBrwM[c][stp] != 0 || stepOctM[c][stp] != 0;
-        bool modOn = !hasMod ||
-                     (uint8_t)random(100) < (uint8_t)stepModP[c][stp];
-        bool mapped = false;
-        uint8_t mtype = seqMonoTypeOf(c);
-        if (mtype == SEQ_MONO_BASS || mtype == SEQ_MONO_LEAD) {
-          if (follow) {
-            // map the own generated pitch onto the feeder chord (window +
-            // MAP mode; LEAD uses ct/gd for chord/guide-tone resolution) -
-            // sound space already, shNote below is skipped
-            note = mapBassNote(c, stp, ch, len, sh, modOn);
-            mapped = true;
+        // PLAYBACK = RECORDED / OVERDUB = ON: the step's own notes play ALL
+        // at once - the single-note engine pick steps aside, so the track is
+        // no longer mono on playback.  Two passes stay on the engine: FOLLOW
+        // reads the feeder (not this track's stored line), and liveIn is the
+        // injected EXT IN = LIVE gesture which must keep arpeggiating - that
+        // engine output is exactly what LISTEN = NOTE captures below
+        bool stack = !follow && !liveIn &&
+                     (recVerbatim ||
+                      (len > 1 &&
+                       seqRecOverdubOf((uint8_t)c) == REC_OVER_ON));
+        if (stack) {
+          // GATE + OVERDUB keeps the BASS/LEAD window fold (the stored line
+          // is still shaped into the live window), RECORDED skips it (the
+          // line replays verbatim).  Octave + the per-step OCT/TRANS finish
+          // the playback either way - both knobs may move a recorded line
+          uint8_t mtype = seqMonoTypeOf(c);
+          bool hasMod = stepBrwM[c][stp] != 0 || stepOctM[c][stp] != 0;
+          bool modOn = !hasMod ||
+                       (uint8_t)random(100) < (uint8_t)stepModP[c][stp];
+          uint8_t out[CHORD_MAX];
+          uint8_t sn = 0;
+          for (uint8_t i = 0; i < len && sn < CHORD_MAX; i++) {
+            uint8_t v = ch[i];
+            if (!recVerbatim &&
+                (mtype == SEQ_MONO_BASS || mtype == SEQ_MONO_LEAD)) {
+              int wlo = 24 + 12 * seqGenLowOf(c);
+              int whi = wlo + 12 * seqGenRangeOf(c) - 1;
+              if (whi > 127) whi = 127;
+              v = (uint8_t)foldWin((int)v, wlo, whi);
+            }
+            v = shNoteK(c, v, sh, tr);
+            if (modOn && stepOctM[c][stp]) {  // OCT: octave shift, clamped
+              int w = (int)v + 12 * (int)stepOctM[c][stp];
+              if (w < 0) w = 0;
+              if (w > 127) w = 127;
+              v = (uint8_t)w;
+            }
+            if (stepTrM[c][stp]) {            // TRANS: plain offset, clamped
+              int w = (int)v + (int)stepTrM[c][stp];
+              if (w < 0) w = 0;
+              if (w > 127) w = 127;
+              v = (uint8_t)w;
+            }
+            out[sn++] = v;
+          }
+          if (defer[c]) {
+            // GLIDE: new note-ons BEFORE the old note-offs (legato overlap)
+            for (uint8_t i = 0; i < sn; i++) seqOutOn(c, out[i], vel);
+            for (uint8_t i = 0; i < seqLen[c]; i++)
+              seqOutOff(c, seqNotes[c][i]);
+            seqLen[c] = 0;
+            gateOffAt[c] = 0;
           } else {
-            note = ch[0];
-            for (uint8_t i = 1; i < len; i++) if (ch[i] < note) note = ch[i];
+            for (uint8_t i = 0; i < sn; i++) seqOutOn(c, out[i], vel);
           }
-        } else if (mtype == SEQ_MONO_ARP) {
-          uint8_t elen = 0;
-          note = arpNoteAt(ch, len, c, arpIdx[c], &elen);
-          if (!elen) note = ch[0];       // degenerate walk: hold the chord
-          arpIdx[c]++;
+          for (uint8_t i = 0; i < sn; i++) seqNotes[c][i] = out[i];
+          seqLen[c] = sn;
+          if (arm) gateOffAt[c] = arm;
         } else {
-          note = rootOf(ch, len);         // SEQ_MONO_ROOT
-        }
-        if (!mapped) {
-          // BASS/LEAD: fold the STORED line into the live LOW..RANGE window
-          // first (RANGE 2->1 lowers the upper octave into it, 1->2
-          // restores the originals - stored notes never change), then
-          // apply SEQMODE ENC1's octave shift: shifting AFTER the fold
-          // keeps the transposition (folding after shNote would cancel it)
+          uint8_t note;
+          // GNR8 per-step modifiers: the roll gates OCT (all mono types)
+          // and BRW (inside mapBassNote) - no mod set = no roll consumed
+          bool hasMod = stepBrwM[c][stp] != 0 || stepOctM[c][stp] != 0;
+          bool modOn = !hasMod ||
+                       (uint8_t)random(100) < (uint8_t)stepModP[c][stp];
+          bool mapped = false;
+          uint8_t mtype = seqMonoTypeOf(c);
           if (mtype == SEQ_MONO_BASS || mtype == SEQ_MONO_LEAD) {
-            int wlo = 24 + 12 * seqGenLowOf(c);
-            int whi = wlo + 12 * seqGenRangeOf(c) - 1;
-            if (whi > 127) whi = 127;
-            note = foldWin((int)note, wlo, whi);
+            if (follow) {
+              // map the own generated pitch onto the feeder chord (window +
+              // MAP mode; LEAD uses ct/gd for chord/guide-tone resolution) -
+              // sound space already, shNote below is skipped
+              note = mapBassNote(c, stp, ch, len, sh, modOn);
+              mapped = true;
+            } else {
+              note = ch[0];
+              for (uint8_t i = 1; i < len; i++)
+                if (ch[i] < note) note = ch[i];
+            }
+          } else if (mtype == SEQ_MONO_ARP) {
+            uint8_t elen = 0;
+            note = arpNoteAt(ch, len, c, arpIdx[c], &elen);
+            if (!elen) note = ch[0];     // degenerate walk: hold the chord
+            arpIdx[c]++;
+          } else {
+            note = rootOf(ch, len);       // SEQ_MONO_ROOT
           }
-          note = shNoteK(c, note, sh, tr);
+          if (!mapped) {
+            // BASS/LEAD: fold the STORED line into the live LOW..RANGE
+            // window first (RANGE 2->1 lowers the upper octave into it, 1->2
+            // restores the originals - stored notes never change), then
+            // apply SEQMODE ENC1's octave shift: shifting AFTER the fold
+            // keeps the transposition (folding after shNote would cancel it)
+            if (mtype == SEQ_MONO_BASS || mtype == SEQ_MONO_LEAD) {
+              int wlo = 24 + 12 * seqGenLowOf(c);
+              int whi = wlo + 12 * seqGenRangeOf(c) - 1;
+              if (whi > 127) whi = 127;
+              note = foldWin((int)note, wlo, whi);
+            }
+            note = shNoteK(c, note, sh, tr);
+          }
+          if (modOn && stepOctM[c][stp]) {  // OCT: shift, 0..127 clamp
+            int v = (int)note + 12 * (int)stepOctM[c][stp];
+            if (v < 0) v = 0;
+            if (v > 127) v = 127;
+            note = (uint8_t)v;
+          }
+          if (stepTrM[c][stp]) {            // TRANS: plain offset, clamped
+            int v = (int)note + (int)stepTrM[c][stp];
+            if (v < 0) v = 0;
+            if (v > 127) v = 127;
+            note = (uint8_t)v;
+          }
+          // LISTEN = NOTE capture (hook b): the injected EXT IN = LIVE pass
+          // sounds through the engine - record the note onto the step it
+          // sounds on.  The track's own stored-step playback never gets
+          // here (liveIn false), so a line cannot feed itself
+          if (liveIn && recState == 2 && recCh == c &&
+              recListen[recCh] == REC_LISTEN_NOTE)
+            liveRecAppend(&note, 1, 0, true);
+          if (defer[c]) {
+            // GLIDE: new note-on BEFORE the old note-off (legato overlap)
+            seqOutOn(c, note, vel);
+            for (uint8_t i = 0; i < seqLen[c]; i++)
+              seqOutOff(c, seqNotes[c][i]);
+            seqLen[c] = 0;
+            gateOffAt[c] = 0;
+          } else {
+            seqOutOn(c, note, vel);
+          }
+          seqNotes[c][0] = note;
+          seqLen[c] = 1;
+          if (arm) gateOffAt[c] = arm;
         }
-        if (modOn && stepOctM[c][stp]) {  // OCT: octave shift 0..127 clamp
-          int v = (int)note + 12 * (int)stepOctM[c][stp];
-          if (v < 0) v = 0;
-          if (v > 127) v = 127;
-          note = (uint8_t)v;
-        }
-        if (stepTrM[c][stp]) {            // TRANS: plain offset, never rolled
-          int v = (int)note + (int)stepTrM[c][stp];
-          if (v < 0) v = 0;
-          if (v > 127) v = 127;
-          note = (uint8_t)v;
-        }
-        if (defer[c]) {
-          // GLIDE: new note-on BEFORE the old note-off (legato overlap)
-          seqOutOn(c, note, vel);
-          for (uint8_t i = 0; i < seqLen[c]; i++)
-            seqOutOff(c, seqNotes[c][i]);
-          seqLen[c] = 0;
-          gateOffAt[c] = 0;
-        } else {
-          seqOutOn(c, note, vel);
-        }
-        seqNotes[c][0] = note;
-        seqLen[c] = 1;
-        if (arm) gateOffAt[c] = arm;
       }
     } else {
       // new content cuts HAND's ring (or a deferred glide) first
       if (defer[c] || handRing[c]) releaseCh(c);
       // STRUM rakes at the fixed 8..40 ms tempo (ascending), HAND replays
       // the gesture with its recorded onsets - or the even spread when the
-      // chord was block-written (all dts zero)
-      bool doStrum = strumStep || handStep;
+      // chord was block-written (all dts zero).  PLAYBACK = RECORDED skips
+      // the rake: the line replays as a block
+      bool doStrum = !recVerbatim && (strumStep || handStep);
       // COMP: a plain POLY STEP (or SKANK - the stab pattern rides the
       // derived voicing, HITS set while the track was STEP) with per-track
       // HITS >= 2 stages the chord into the stab queue instead of one
       // block send (DRUM keeps its per-voice path even though its et is
-      // always STEP)
-      bool compOn = !drumTrack && !doStrum &&
+      // always STEP).  RECORDED skips the shaping too
+      bool compOn = !recVerbatim && !drumTrack && !doStrum &&
                     (et == SEQ_POLY_STEP || et == SEQ_POLY_SKANK) &&
                     compHits[c] >= 2;
       uint8_t snote[CHORD_MAX], svel[CHORD_MAX];
@@ -4503,14 +4624,16 @@ void seqPatRepeatInto(uint8_t ch, uint8_t oldLen) {
 // drumFillMaster[16] | drumMotMaster[16] | drumMap[16] | arpP params |
 // arpParamsMark | swingStyle[16] | swingAmt[16] | swingMark |
 // extInMode[16] | extInSrc[16] | extInMark |
-// checksum = 1330 bytes; blank or
+// recListen[16] | recPlayback[16] | recOverdub[16] | recMark |
+// checksum = 1380 bytes; blank or
 // corrupt keeps the defaults.  A block written by an older build
-// (1296/1262/940/923/666/665/649/616/567/564/532/436/420/404/388/260 bytes) still
+// (1330/1296/1262/940/923/666/665/649/616/567/564/532/436/420/404/388/260 bytes) still
 // loads: the core fields are at the same offsets and the newer params keep
 // their defaults - saved config survives the upgrade
 static const uint8_t  SEQ_EE_MAGIC = 0x53;
 static const uint16_t SEQ_EE_ADDR = 160;
-static const uint16_t SEQ_EE_LEN = 1330;      // + per-track EXT IN (SEQMODE 4)
+static const uint16_t SEQ_EE_LEN = 1380;      // + per-track record options
+static const uint16_t SEQ_EE_LEN_RECO = 1330; // previous: per-track EXT IN
 static const uint16_t SEQ_EE_LEN_EXTIN = 1296; // previous: per-track swing
 static const uint16_t SEQ_EE_LEN_SWING = 1262; // previous: ARP F sub-page params
 static const uint16_t SEQ_EE_LEN_ARP = 940;   // previous: DRUM kit mapping
@@ -4528,6 +4651,7 @@ static const uint8_t  SEQ_SPD_MARK = 2;
 static const uint8_t  SEQ_ARP_MARK = 1;   // ARP sub-page params present (b[1260])
 static const uint8_t  SEQ_SWING_MARK = 1; // per-track swing present (b[1294])
 static const uint8_t  SEQ_EXTIN_MARK = 1; // per-track EXT IN present (b[1328])
+static const uint8_t  SEQ_RECMARK = 1;    // record options present (b[1378])
 static const uint16_t SEQ_EE_LEN_LEAD2 = 616; // previous: mode/page mem
 static const uint16_t SEQ_EE_LEN_MODE = 567;  // previous: link flags only
 static const uint16_t SEQ_EE_LEN_SKANK2 = 564; // previous: SKANK knobs[128]
@@ -4568,7 +4692,7 @@ void seqCfgSave() {
     b[115 + i] = seqSpeedIdxOf((uint8_t)i);   // pattern speed 0..6
     b[131 + i] = seqAccVel[i];                // accent velocity 1..127
     b[147 + i] = seqArpSpanOf(i);             // arp span 1..4 octaves
-    b[163 + i] = seqArpModeOf(i);             // arp mode 0..4
+    b[163 + i] = seqArpModeOf(i);             // arp mode 0..8 (SEQ_ARP_*)
     b[179 + i] = seqArpInstOf(i);             // arp insert 0..4
     b[195 + i] = seqArpSkipOf(i) ? 1 : 0;     // arp skip rests
     b[211 + i] = seqProb[i];                  // playback probability %
@@ -4630,6 +4754,12 @@ void seqCfgSave() {
     b[1312 + i] = seqExtInSrcOf(i);             // USB / DIN / BOTH
   }
   b[1328] = SEQ_EXTIN_MARK;           // ext-in params present
+  for (uint8_t i = 0; i < SEQ_CH_COUNT; i++) {  // per-track record options
+    b[1330 + i] = seqRecListenOf(i);             // CHORD / NOTE
+    b[1346 + i] = seqRecPlaybackOf(i);           // GATE / RECORDED
+    b[1362 + i] = seqRecOverdubOf(i);            // OFF / ON
+  }
+  b[1378] = SEQ_RECMARK;               // record options present
   uint8_t sum = 0;
   for (uint16_t i = 0; i < SEQ_EE_LEN - 1; i++) sum += b[i];
   b[SEQ_EE_LEN - 1] = sum;
@@ -4653,11 +4783,13 @@ void seqCfgLoad() {
     if (b[0] == SEQ_EE_MAGIC && sum == b[L - 1] &&
         (L < SEQ_EE_LEN ||
          (b[664] == SEQ_SPD_MARK && b[1260] == SEQ_ARP_MARK &&
-          b[1294] == SEQ_SWING_MARK && b[1328] == SEQ_EXTIN_MARK))) {
+          b[1294] == SEQ_SWING_MARK && b[1328] == SEQ_EXTIN_MARK &&
+          b[1378] == SEQ_RECMARK))) {
       len = L;
       break;
     }
-    if (L == SEQ_EE_LEN) L = SEQ_EE_LEN_EXTIN;
+    if (L == SEQ_EE_LEN) L = SEQ_EE_LEN_RECO;
+    else if (L == SEQ_EE_LEN_RECO) L = SEQ_EE_LEN_EXTIN;
     else if (L == SEQ_EE_LEN_EXTIN) L = SEQ_EE_LEN_SWING;
     else if (L == SEQ_EE_LEN_SWING) L = SEQ_EE_LEN_ARP;
     else if (L == SEQ_EE_LEN_ARP) L = SEQ_EE_LEN_DRUM2;
@@ -4694,7 +4826,8 @@ void seqCfgLoad() {
   bool extDM = (len >= SEQ_EE_LEN_ARP);  // DRUM kit mapping (940)
   bool extA  = (len >= SEQ_EE_LEN_SWING); // ARP sub-page params (1262)
   bool extSw = (len >= SEQ_EE_LEN_EXTIN); // per-track swing (1296)
-  bool extXi = (len >= SEQ_EE_LEN);      // per-track EXT IN (1330)
+  bool extXi = (len >= SEQ_EE_LEN_RECO); // per-track EXT IN (1330)
+  bool extRc = (len >= SEQ_EE_LEN);     // record options (1380)
   for (uint8_t i = 0; i < SEQ_CH_COUNT; i++) {
     int v = (int8_t)b[3 + i];            // octave: keep the cast signed
     if (v < -60) v = -60;
@@ -4751,10 +4884,17 @@ void seqCfgLoad() {
       seqSwingAmtSet(i, b[1278 + i]);    // (bad -> 50)
     }
   }
-  if (extXi) {                           // per-track EXT IN (newest block only)
+  if (extXi) {                           // per-track EXT IN (1330 block)
     for (uint8_t i = 0; i < SEQ_CH_COUNT; i++) {
       seqExtInModeSet(i, b[1296 + i]);   // clamped inside (bad -> ON)
       seqExtInSrcSet(i, b[1312 + i]);    // (bad -> USB)
+    }
+  }
+  if (extRc) {                           // per-track record options (1380)
+    for (uint8_t i = 0; i < SEQ_CH_COUNT; i++) {
+      seqRecListenSet(i, b[1330 + i]);   // clamped inside (bad -> CHORD)
+      seqRecPlaybackSet(i, b[1346 + i]); // (bad -> GATE)
+      seqRecOverdubSet(i, b[1362 + i]);  // (bad -> OFF)
     }
   }
   if (extG) {                            // GNR8 params (new-format block;

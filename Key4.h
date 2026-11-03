@@ -55,7 +55,7 @@ void    k4EmbPlaceAdjust(int16_t counts); // CW = dist, CCW = odd
 uint8_t k4EmbPlace();                     // 0 odd, 1 distance
 const char* k4EmbPlaceName();             // "ODD" / "DIST"
 
-// --- PHRASE (EMB page ENC3: phrase template + cadence goal) ----------------
+// --- PHRASE (encoder row ENC7: phrase template + cadence goal) -------------
 // The chain is causal - one weighted draw per step - so it has no goal.  A
 // phrase template gives it one: the phrase-end cadence TYPE is chosen by the
 // CADENCE knob in four bands (HALF ii-V under 25, PLAGAL IV-I under 50,
@@ -63,10 +63,14 @@ const char* k4EmbPlaceName();             // "ODD" / "DIST"
 // k4CadencePair), the degree it lands on becomes the plan for the
 // last bar, and every earlier bar end is walked BACKWARD from it through the
 // genre transition table.  The forward pass then scores those landings
-// heavily, so the chain serves the goal instead of wandering.  AABB / ABAB /
-// AABA also replay the opening half into the second half (restatement =
-// memory); ABAC leaves it new; FREE is the plain chain.  Clamped at both
-// ends, RAM only - a reboot starts FREE.
+// heavily, so the chain serves the goal instead of wandering.  Restatement is
+// a BAR-level letter map (AABB / ABAB / ABAC / AABA): a bar whose letter has
+// already played replays the first bar that carried it, so AABB repeats a
+// cell into bars 3-4 and AABA returns to the opening cell for its last bar;
+// FREE is the plain chain.  A planned landing and locked steps always win.
+// Clamped at both ends, RAM only - a reboot starts FREE.  The slot was the
+// EMB page's ENC3
+// until 2026-11-02; ERA took that menu slot in exchange.
 void        k4PhraseAdjust(int16_t counts);
 uint8_t     k4Phrase();                  // 0 FREE .. 4 AABA
 const char* k4PhraseName();              // "FREE" / "AABB" / ... (<= 4 chars)

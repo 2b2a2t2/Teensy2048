@@ -65,6 +65,14 @@ _Docs home: [Teensy2048](../README.md) · [Cheat sheet](../cheatsheet.md) · [Gl
 - **Loop activation**: playhead **teleports immediately** to the looped bar and starts looping it (no waiting to "walk" there)
 - **Loop disable**: playhead resumes at the global position it *would have reached* without the loop (shadow position continues advancing silently during the loop)
 - Each track has independent loop state and pattern length (polymeter)
+- **Hold a bar to shift it**: while a C-F pad is down the encoder row becomes
+  **that bar's** playback shift - `ENC1` = `OCT` (-2..+2, the step `OCT`'s range),
+  `ENC2` = `TRANS` (-12..+12 st), the header echoing `Bar 3 Transpose +5`. The stored
+  chords are never rewritten: the shift folds into the track's own octave/`TRANS` at
+  playback, so a `KLOCK` track snaps the transposed bar back into the scale, and a
+  DRUM track refuses both (`Bar 2 Drum Track`) because its steps are drum-map ids,
+  not pitches. One bar is under the knobs at a time (the last pad pressed); the row
+  goes when the last C-F pad lets go. RAM only, like the per-step fields
 
 ## Track Verbs
 - The **five black keys** of the bar octave carry the per-track verbs - C# - D# - F# - G# - A# (pads 37-41). They are swallowed exactly like the C-F bar buttons, release included, so a press never leaks a MIDI note, and they work on **every track type**:  Their LEDs are a second row, not part of the keyboard: the length pair pulses light blue (**C# dim, D# brighter and faster** - one colour, two intensities; both pulses stay dim, well under a bar LED), copy / paste sit dim MediumSeaGreen, and follow is dim green that breathes brighter green while it is **ON**.

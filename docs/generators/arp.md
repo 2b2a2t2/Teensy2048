@@ -12,7 +12,7 @@ _Docs home: [Teensy2048](../README.md) · [Cheat sheet](../cheatsheet.md) · [Gl
 | ENC1 | OCT | playback octave shift of the sequence (unchanged) |
 | ENC2 | **SPAN** | 1–4 octaves, default **1** |
 | ENC3 | **SKIP** | ON/OFF, default **OFF** |
-| ENC4 | **MODE** | **UP / DOWN / UPDOWN / RANDOM / RANDOM2**, default **UP** |
+| ENC4 | **MODE** | **UP / DOWN / UPDOWN / RANDOM / RANDOM2 / OUTIN / INOUT / CONV / DIV**, default **UP** |
 | ENC5 | GATE | step gate % (unchanged) |
 | ENC6 | VEL | default velocity (unchanged) |
 | ENC7 | **INST** | **OFF / HI / LOW / 3F1B / 4F2B**, default **OFF** |
@@ -24,6 +24,9 @@ _Docs home: [Teensy2048](../README.md) · [Cheat sheet](../cheatsheet.md) · [Gl
   - **UPDOWN**: up through every octave and back down without repeating either turning point (period 2×span−2)
   - **RANDOM**: the chord order is shuffled once per octave and stays that way until the chord changes
   - **RANDOM2**: same, but re-shuffled every full pass of the sequence
+  - **OUTIN** / **INOUT**: start at the top and bottom of the span and walk inward, or the reverse
+  - **CONV** / **DIV**: converge on / diverge from the **PIVOT** tone by distance (the F1 page's PIVOT and WEIGHT shape it)
+- **MODE carries all nine orders**, so `ORDER = MODE` on the F1 page reaches every shape and no sub-page is needed to pick one. The ORDER knob's own list is `MODE`, `UP`, `DOWN`, `UPDN`, `OUTIN`, `INOUT`, `CONV`, `DIV`, `PLAY`: `RANDOM` / `RANDOM2` stay on the MODE knob (they are the two stochastic walks, not fixed orders), and `PLAY` keeps the chord in the order the keys arrived while still taking its shape from MODE
 - **INST**: repeats notes inside the sequence (extends its length)
   - **OFF**: none · **HI**: the highest note goes in front of every other note · **LOW**: the lowest does the same · **3F1B**: 3 steps forward, 1 back · **4F2B**: 4 steps forward, 2 back
 - **SKIP**: on a rest (empty step) **or** a probability miss the arp position **advances anyway** instead of pausing, so the sequence keeps walking over dead steps

@@ -428,7 +428,7 @@ void seqArpModeAdjust(int16_t counts) {
   if (!step) return;
   int16_t v = (int16_t)arpMode[arpEdit()] + step;
   if (v < SEQ_ARP_UP)     v = SEQ_ARP_UP;
-  if (v > SEQ_ARP_RANDOM2) v = SEQ_ARP_RANDOM2;   // no wrap
+  if (v > SEQ_ARP_DIV)    v = SEQ_ARP_DIV;        // no wrap
   arpMode[arpEdit()] = (uint8_t)v;
 }
 
@@ -438,13 +438,17 @@ uint8_t seqArpModeOf(uint8_t idx) {
 
 void seqArpModeSet(uint8_t idx, uint8_t v) {
   if (idx >= 16) return;
-  if (v > SEQ_ARP_RANDOM2) v = SEQ_ARP_UP;
+  if (v > SEQ_ARP_DIV) v = SEQ_ARP_UP;   // an older save only holds 0..4
   arpMode[idx] = v;
 }
 
 const char *seqArpModeName(uint8_t v) {
-  static const char *names[5] = { "UP", "DOWN", "UPDOWN", "RANDOM", "RANDOM2" };
-  if (v > SEQ_ARP_RANDOM2) v = SEQ_ARP_UP;
+  // all nine walk shapes: the four pivot orders used to live only on the F1
+  // ORDER knob, which left them unreachable when ORDER = MODE
+  static const char *names[9] = { "UP", "DOWN", "UPDOWN", "RANDOM",
+                                  "RANDOM2", "OUTIN", "INOUT", "CONV",
+                                  "DIV" };
+  if (v > SEQ_ARP_DIV) v = SEQ_ARP_UP;
   return names[v];
 }
 

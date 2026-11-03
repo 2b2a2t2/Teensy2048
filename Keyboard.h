@@ -437,6 +437,19 @@ uint8_t  stepModPAt(uint8_t step);
 void     stepModPSet(uint8_t step, uint8_t v);
 int8_t   stepTrAt(uint8_t step);     // per-step TRANS: playback-only semitone
 void     stepTrSet(uint8_t step, int8_t v);  // offset, clamped -12..+12
+// per-BAR octave / TRANS (the SEQ3 keyboard row: hold a C D E F bar pad and
+// the encoder row edits THAT bar's playback shift - 16 steps per bar, 4
+// bars).  Octave -2..+2 like the step OCT, TRANS -12..+12 like the track's;
+// playback-only, folded into the track's own shift so Klock still applies.
+// The Begin/End pair carries the held pad (one bar at a time); the adjust
+// calls return the new value and refuse DRUM tracks
+uint8_t  seqBarEditSel();
+void     seqBarEditBegin(uint8_t bar);
+void     seqBarEditEnd();
+int8_t   seqBarOctAt(uint8_t bar);
+int8_t   seqBarTrAt(uint8_t bar);
+int8_t   seqBarOctAdjust(int16_t counts);
+int8_t   seqBarTrAdjust(int16_t counts);
 // per-step SKANK locks (hold a step on a POLY+SKANK track = the lock row,
 // encoders 1..6): value 0..100 or -1 = inherit the track's page knob.
 // Stored with the step content (stepAttClear wipes them), RAM only like

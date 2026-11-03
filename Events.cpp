@@ -841,6 +841,10 @@ void handleButtonEvents() {
           if (currentBinding().enc == ENC_SEQ_STEPOV ||
               currentBinding().enc == ENC_SEQ_SKANK_STEP)
             clearOverlay(G_ENC);
+          // a bar pad may still be down underneath (SEQ 3): the step row
+          // step aside, so the bar's OCT/TRANS comes back instead of
+          // leaving the encoder row dead until the next bar press
+          if (seqBarEditSel() < 4) setOverlay(G_ENC, ENC_SEQ_BAR_OV);
           refreshMainScreen();
         }
         stepAssignSet(-1);
@@ -1752,6 +1756,10 @@ void handleButtonEvents() {
       static uint16_t barHeld = 0;         // kidx bits eaten as pattern bars /
                                            // track verbs - uint16 because
                                            // G# and A# sit at kidx 8 and 10
+      static uint8_t barSel = 0;           // which C D E F bars are down now
+                                           // (bit 0..3) - the bar OCT/TRANS
+                                           // row stays up until the last one
+                                           // lets go
       bool isBar = (ev == EV_PRESSED && seq3KbRole() &&
                     kl >= 25 && kl <= 28);
       // ...and the five BLACK keys of the same octave carry the track
@@ -1765,6 +1773,16 @@ void handleButtonEvents() {
         uint8_t bar = (uint8_t)(kl - 25);  // 25,26,27,28 -> bar 0..3
         seq3KbLatch(seqEditChannel());     // the keys stay on this track's row
         barHeld |= (uint16_t)(1u << kidx);
+        // holding the pad also arms the bar's own row: ENC1 = that bar's
+        // OCT, ENC2 = its TRANS (playback-only, like the held-step TRANS).
+        // The press above still selects / loops the bar exactly as before
+        barSel |= (uint8_t)(1u << bar);
+        seqBarEditBegin(bar);
+        setOverlay(G_ENC, ENC_SEQ_BAR_OV);
+        // the overlay's labels are the encoder row's: repaint it now, or
+        // the screen keeps the base row until something else redraws
+        // (headerShow only touches the header band)
+        refreshMainScreen();
         uint8_t r = seqBarPress(bar);
         char bb[20];
         if (r == 0)
@@ -1830,8 +1848,21 @@ void handleButtonEvents() {
         if (n >= 0 && keyChordMode() && chordName()[0])
           headerShow(chordName());
       } else if (ev == EV_RELEASED) {
-        if (barHeld & (1u << kidx)) barHeld &= (uint16_t)~(1u << kidx);
-        else keyPadRelease(kidx);
+        if (barHeld & (1u << kidx)) {
+          barHeld &= (uint16_t)~(1u << kidx);
+          // a C D E F pad letting go drops the bar OCT/TRANS row with it
+          // (the five verbs ride the same mask but never arm it); holding
+          // two bars leaves the row up until the second pad goes
+          if (kl >= 25 && kl <= 28) {
+            barSel &= (uint8_t)~(1u << (kl - 25));
+            if (!barSel) {
+              seqBarEditEnd();
+              if (currentBinding().enc == ENC_SEQ_BAR_OV)
+                clearOverlay(G_ENC);
+              refreshMainScreen();
+            }
+          }
+        } else keyPadRelease(kidx);
       }
       refreshAllLeds();   // first assign key can activate the held step's LED
     }
@@ -2088,7 +2119,7 @@ void handleEncoderEvents() {
     }
 
     // KEYMODE4: the main context row = ENC1 GENRE (1 count = 1 genre,
-    // wraps), ENC2..ENC8 = MOOD/TENS/MOTION/CAD/CPX/ERA/SURP (1 count =
+    // wraps), ENC2..8 = MOOD/TENS/MOTION/CAD/CPX/PHRASE/SURP (1 count =
     // 1 unit, clamped 0..100).  Every change re-ranks the proposals AND
     // re-generates every unlocked step live, so the progression playing
     // in the sequencer follows the knobs in real time (locked steps are
@@ -2102,6 +2133,16 @@ void handleEncoderEvents() {
         if (logRoom(48)) {
           Serial.print("  genre ");
           Serial.println(k4GenreName());
+        }
+      } else if (ei == 6) {
+        // PHRASE took the ERA slot: the template is a word, not a 0..100
+        // bias, and it is the one knob that decides whether the pattern has
+        // an arc at all - it should not be two gestures deep
+        k4PhraseAdjust(ed);
+        headerAnnounce("Phrase", k4PhraseName());
+        if (logRoom(48)) {
+          Serial.print("  phrase ");
+          Serial.println(k4PhraseName());
         }
       } else {
         k4KnobAdjust((uint8_t)(ei - 1), ed);
@@ -2117,11 +2158,12 @@ void handleEncoderEvents() {
       k4Regenerate();       // the written progression follows the knobs
       refreshAllLeds();   // the keyboard repaints the re-ranked proposals
       k4Announce();       // ...and the header names them (I V vi IV)
-      // the two knobs whose value is a word say the word LAST, so the
-      // proposals line cannot scroll it away: "Mood MIXED", "Cadence
-      // DECEPTIVE" (the row keeps the short form: MIXED / V-vi)
+      // the word-valued knobs say the word LAST, so the proposals line
+      // cannot scroll it away: "Mood MIXED", "Cadence DECEPTIVE", "Phrase
+      // AABA" (the row keeps the short form: MIXED / V-vi / AABA)
       if (ei == 1) headerAnnounce("Mood", k4MoodName());
       else if (ei == 4) headerAnnounce("Cadence", k4CadenceName());
+      else if (ei == 6) headerAnnounce("Phrase", k4PhraseName());
       any = true;
     }
 
@@ -2173,7 +2215,8 @@ void handleEncoderEvents() {
 
     // KEYMODE4: the sticky EMB menu row = ENC1 = embellish mode (off ->
     // pass -> pass+sub, wraps), ENC2 = passing placement (odd / distance,
-    // two-state: CW one way, CCW the other).  The other six are "--"
+    // two-state: CW one way, CCW the other), ENC3 = ERA.  The other five
+    // are "--"
     if (modeBase == MODE_KEY && modeVariant == 4 && k4EmbMenu() && ed != 0 &&
         currentBinding().enc == ENC_KEY4_EMB) {
       if (ei == 0) {
@@ -2185,9 +2228,16 @@ void handleEncoderEvents() {
         headerAnnounce("Embed Place", k4EmbPlaceName());
         if (logRoom(48)) { Serial.print("  place "); Serial.println(k4EmbPlaceName()); }
       } else if (ei == 2) {
-        k4PhraseAdjust(ed);          // phrase template + cadence goal
-        headerAnnounce("Phrase", k4PhraseName());
-        if (logRoom(48)) { Serial.print("  phrase "); Serial.println(k4PhraseName()); }
+        // ERA moved off the encoder row (PHRASE took the slot).  Unlike the
+        // two entries above it is generative, so it regenerates the way the
+        // row knobs do - otherwise the turn would look dead until the next
+        k4KnobAdjust(5, ed);
+        headerAnnounceInt("Era", (int)k4Knob(5));
+        k4Regenerate();
+        refreshAllLeds();
+        k4Announce();
+        headerAnnounceInt("Era", (int)k4Knob(5));
+        if (logRoom(48)) { Serial.print("  era "); Serial.println(k4Knob(5)); }
       }
       any = true;
     }
@@ -2351,6 +2401,33 @@ void handleEncoderEvents() {
               Serial.println(seqKlock() ? "ON" : "OFF");
             }
           }
+        }
+        any = true;
+      } else if (ed != 0 && currentBinding().enc == ENC_SEQ_BAR_OV &&
+                 seqBarEditSel() < 4) {
+        // SEQMODE3 held-bar row: a C D E F pad is down, so ENC1/ENC2 edit
+        // THAT bar's playback shift - OCT (-2..+2, the step OCT's range)
+        // and TRANS (-12..+12 st).  The stored chords never change; the
+        // shift folds into the track's own octave/TRANS at playback, so a
+        // Klock track snaps the transposed bar back into scale.  DRUM
+        // tracks have no pitch to move and say so instead of doing nothing
+        uint8_t bar = seqBarEditSel();
+        char bb[24];
+        if (seqTrack() == SEQ_TRACK_DRUM)
+          snprintf(bb, sizeof(bb), "Bar %u Drum Track", bar + 1);
+        else if (ei == 0)
+          snprintf(bb, sizeof(bb), "Bar %u Octave %+d", bar + 1,
+                   (int)seqBarOctAdjust(ed));
+        else if (ei == 1)
+          snprintf(bb, sizeof(bb), "Bar %u Transpose %+d", bar + 1,
+                   (int)seqBarTrAdjust(ed));
+        else
+          snprintf(bb, sizeof(bb), "Bar %u", bar + 1);
+        headerShow(bb);
+        refreshMainScreen();       // the value column follows the turn
+        if (logRoom(48)) {
+          Serial.print("  ");
+          Serial.println(bb);
         }
         any = true;
       } else if (ed != 0 && currentBinding().enc == ENC_SEQ_STEPOV &&
@@ -2908,7 +2985,43 @@ void handleEncoderEvents() {
             Serial.println(seqAccentVelocity());
           }
         } else if (ed != 0 && stepEditOn) {
-          if (ei == 4 && stepEditCtx()) {
+          // M1 step-edit row, variants 1/2: ENC2 = LISTEN (CHORD/NOTE) -
+          // what live record writes (NOTE stores the arp output onto the
+          // step it sounds on), ENC3 = PLAYBACK (GATE/RECORDED) - engine-
+          // shaped vs as-recorded, ENC4 = OVERDUB (OFF/ON) - a fresh
+          // gesture replaces the step vs notes stacking onto it.  Per
+          // track, clamped (4 counts = 1 state, no wrap).  A page that
+          // owns ENC2..4 keeps them while open
+          if ((ei == 1 || ei == 2 || ei == 3) &&
+              (modeVariant == 1 || modeVariant == 2) &&
+              seqTrack() != SEQ_TRACK_DRUM &&
+              !genPageActive() && !leadPageActive() && !harmPageActive() &&
+              !compPageActive() && !skankPageActive() && !drumPageActive() &&
+              !arpPageActive()) {
+            if (ei == 1) {
+              seqRecListenAdjust(ed);
+              headerAnnounce("Listen", seqRecListenName(seqRecListen()));
+              if (logRoom(48)) {
+                Serial.print("  listen ");
+                Serial.println(seqRecListenName(seqRecListen()));
+              }
+            } else if (ei == 2) {
+              seqRecPlaybackAdjust(ed);
+              headerAnnounce("Playback",
+                             seqRecPlaybackName(seqRecPlayback()));
+              if (logRoom(48)) {
+                Serial.print("  playback ");
+                Serial.println(seqRecPlaybackName(seqRecPlayback()));
+              }
+            } else {
+              seqRecOverdubAdjust(ed);
+              headerAnnounce("Overdub", seqRecOverdubName(seqRecOverdub()));
+              if (logRoom(48)) {
+                Serial.print("  overdub ");
+                Serial.println(seqRecOverdubName(seqRecOverdub()));
+              }
+            }
+          } else if (ei == 4 && stepEditCtx()) {
             seqGateAdjust(ed);
             headerAnnounceInt("Gate", seqGatePct(), "%");
             if (logRoom(48)) {

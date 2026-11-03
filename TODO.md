@@ -8,22 +8,31 @@ Rules of engagement live in `AGENTS.md` (read it before touching this file).
 Current phase: tuning + bug hunting on the hardware. **No feature work
 from the Backlog while this section has open items** (unless overridden).
 
-- [x] **Per-track swing (user request, explicit override of the freeze:
-  "we need to add swing independently per track, should be done within
-  SEQMODE4 using ENC1 and ENC2, ENC1 should be used to select different
-  kinds of swings (emulations from existing machines) and ENC2 will
-  control the amount")** — SEQMODE variant 4 becomes the timing screen:
-  ENC1 = swing STYLE (machine emulations: OFF · MPC60 · MPC3K · SP1200 ·
-  LINN · TR808 · TR909 · SHUFFLE · TRIPLET), ENC2 = AMT (0 = straight ..
-  100 = the machine's full shove). The off-half of every swing pair on the
-  track's own step grid plays late by a style-shaped fraction of the pair
-  (deferred pass per track in `Keyboard.cpp`).
+- [ ] **Live-record options on the M1 step-edit row — ENC2 LISTEN (CHORD/NOTE),
+  ENC3 PLAYBACK (GATE/RECORDED), ENC4 OVERDUB (OFF/ON)** (user report +
+  request: *\"when live recording an arp track (i hold a chord on the
+  keyboard, i hear the arpeggiated chord) if i try to record what i play,
+  only a single note is recorded on one single step, the recording should
+  also be able to record all played notes or even to overdub (which means
+  the track would of course no longer be a mono track), we could set these
+  options on ENC2-4 in the step edit (M1)\")* — root cause: live record
+  (`liveRecAppend`) captures keyboard **key edges** only; the arp you hear
+  (live keyboard arp / transport arp) never feeds the recorder, so a chord
+  held before arming records at most one later key press — and a fresh
+  gesture clears the step first. Design (decided with user): **LISTEN**
+  CHORD = today, NOTE = the arp's output note lands on the step it sounds
+  on (capture hooks: live keyboard arp + the EXT IN = LIVE injected pass;
+  never the track's own stored-step playback — no self-feeding passes).
+  **PLAYBACK** GATE = engine as now, RECORDED = stored notes verbatim,
+  all at once (engine bypassed; octave + per-step TRANS still applied —
+  recording is pre-compensated). **OVERDUB** OFF = replace (as now), ON =
+  stack notes onto steps; a MONO track's stacked steps then play all at
+  once (the \"no longer mono\" consequence, user's choice). MONO gets all
+  three, POLY gets PLAYBACK + OVERDUB, DRUM untouched, LISTEN=NOTE is
+  MONO-only. Variants 1/2 only (variant 4 keeps AMT/EXT IN/SRC). Per
+  track, EEPROM 1330 → 1380.
 
-- [ ] **Live-record options on the M1 step-edit row — ENC2 LISTEN (CHORD/NOTE),\n  ENC3 PLAYBACK (GATE/RECORDED), ENC4 OVERDUB (OFF/ON)** (user report +\n  request: *\"when live recording an arp track (i hold a chord on the\n  keyboard, i hear the arpeggiated chord) if i try to record what i play,\n  only a single note is recorded on one single step, the recording should\n  also be able to record all played notes or even to overdub (which means\n  the track would of course no longer be a mono track), we could set these\n  options on ENC2-4 in the step edit (M1)\")* — root cause: live record\n  (`liveRecAppend`) captures keyboard **key edges** only; the arp you hear\n  (live keyboard arp / transport arp) never feeds the recorder, so a chord\n  held before arming records at most one later key press — and a fresh\n  gesture clears the step first. Design (decided with user): **LISTEN**\n  CHORD = today, NOTE = the arp's output note lands on the step it sounds\n  on (capture hooks: live keyboard arp + the EXT IN = LIVE injected pass;\n  never the track's own stored-step playback — no self-feeding passes).\n  **PLAYBACK** GATE = engine as now, RECORDED = stored notes verbatim,\n  all at once (engine bypassed; octave + per-step TRANS still applied —\n  recording is pre-compensated). **OVERDUB** OFF = replace (as now), ON =\n  stack notes onto steps; a MONO track's stacked steps then play all at\n  once (the \"no longer mono\" consequence, user's choice). MONO gets all\n  three, POLY gets PLAYBACK + OVERDUB, DRUM untouched, LISTEN=NOTE is\n  MONO-only. Variants 1/2 only (variant 4 keeps AMT/EXT IN/SRC). Per\n  track, EEPROM 1330 → 1380.
 ## 🚿 Hygiene (quick fixes, anytime)
-
-- [x] Add MIT `LICENSE` (README promised it) — 2026-10-12
-- [x] Untrack `.DS_Store` + add to `.gitignore` — 2026-10-12
 
 ## 🧊 Backlog — features (frozen until Active is empty)
 
@@ -118,10 +127,24 @@ from the Backlog while this section has open items** (unless overridden).
   voicing), with probability **REPEAT**. Human progressions are cells
   (I–V | vi–IV | I–V | IV–I); a pure chain makes every chord novel and nothing
   composes. The storage half is the **Motif capture** item below
+- [ ] **Chord-gen: tension metric** — *prerequisite to the trajectory below*, not
+  a second item: a per-candidate **tension number** the curve can aim at (borrowed
+  tones, tritone/♭9 against the key centre, bass leap, degree distance from the
+  previous chord, dominant-function saturation). Today **TENS** is not a tension
+  level at all — it is the gate that *opens the borrowed window* (`scorePc`:
+  `t <= 33` returns 0), so there is nothing yet to compare a positional target
+  against. Instrument first, then **Chord-gen: tension trajectory**
 - [ ] **Chord-gen: positional SURP** — gate surprise by position: ≈0 at the
   phrase head, rising through the phrase, highest just before the cadence
   (where a deceptive move is musical), 0 on the final chord — replacing the
   uniform hashed noise **SURP** adds today (`scorePc`'s `sp` block)
+- [ ] **Chord-gen: cadence spill on the weights, not on the type** — between band
+  centres keep `planRollType()`'s type **deterministic** (the backward pass needs
+  exactly one landing) and put the in-betweenness in the *terms*: at 62 the plan
+  is AUTHENTIC while ~30% of the DECEPTIVE pair weight rides along, collapsing to
+  zero at 25/50/75. Rolling the type probabilistically would make the same knob
+  position land somewhere else on the next generation — the dead-knob complaint
+  inverted (non-repeatable instead of inert)
 - [ ] **Chord-gen: functional grammar filter** — hard rejects *before* ranking,
   not down-scores: V→IV at a cadence (retrogression), two dominant-function
   chords in a row, a predominant that never resolves, an unprepared borrowed
@@ -170,6 +193,49 @@ from the Backlog while this section has open items** (unless overridden).
 - Harmonic rhythm control — chord-change rate independent of step rate
 
 ## ✅ Done (ticked items; prune occasionally)
+- [x] **ARP MODE knob was missing the four pivot walk orders** (user report:
+  *"some arp ORDER from ARP ORDER page M2/F1 (OUTIN, INOUT, CONV, DIV) are missing in
+  the Arp Mode in M2 page"*, fixed 2026-11-03) - `OUTIN` / `INOUT` / `CONV` / `DIV`
+  were reachable only from the F1 sub-page's `ORDER` knob: `arpMode` clamped at
+  `SEQ_ARP_RANDOM2` and `seqArpModeName` had five entries, so the plain-page MODE knob
+  stopped at `RANDOM2` and `ORDER = MODE` could never reach the pivot shapes. The enum
+  now runs to `SEQ_ARP_DIV`, the clamp, the name table and the OLED value column follow,
+  and modes 0..4 keep their meaning so an older save sounds identical.
+  `SeqClock.h/cpp`, `Keyboard.cpp` (enum + ORDER/MODE note), `docs/generators/arp.md`,
+  `CHANGELOG.md`.
+- [x] **KEYMODE4 phrase templates are per-bar (AABB / ABAB / AABA now differ)**
+  (bug found 2026-11-02, fixed 2026-11-03) - the restating templates copied the first
+  half verbatim into the second, so AABB, ABAB and AABA all rendered `AA` halves and
+  only ABAC differed. Restatement is a four-letter **bar map** now: a bar whose letter
+  already played replays the first bar that carried it (AABB = cell A for bars 1-2 and
+  a repeated cell B for 3-4; ABAB alternates; AABA's last bar returns to the opening
+  cell; ABAC repeats only bar 3 from bar 1). The replay writes through the generation
+  tick (`stepChordWrite` + `decodeChord`), so it advances the chain and the next new
+  bar answers what was actually heard; a bar's planned landing and locked steps still
+  win, so the cadence arc survives. Short patterns read the map from their first bars
+  (32 steps: AABB/AABA repeat bar 1, ABAB/ABAC keep two new cells). `Key4.cpp`
+  (`k4ApplyBody`), `Key4.h`, `docs/modes/keymode.md`, `CHANGELOG.md`
+- [x] **Per-bar octave / transpose from the SEQ 3 keyboard row** (user request,
+  explicit override of the freeze: *"in SEQMODE3 ... we should be able to hold a
+  bar (on C D E F keys) and get the octave and transpose option for the selected
+  bar"*) — holding a C-F pad arms an encoder overlay for THAT bar: ENC1 `OCT`
+  (-2..+2), ENC2 `TRANS` (-12..+12 st), header `Bar 3 Transpose +5`. The shift
+  folds into the track's octave/TRANS pair at playback (`shNoteK`), so KLOCK still
+  snaps the transposed bar into scale and every engine path (MONO, POLY, STRUM,
+  GNR8 FOLLOW) inherits it; stored chords never change, DRUM refuses both. Values
+  live in `barOctM`/`barTrM` ([ch][4]), RAM only like the per-step fields.
+  Hardware-verified 2026-11-03: the first cut armed the row but never
+  repainted the encoder band (`headerShow()` redraws only the header), so the
+  screen kept the base row; it now repaints on the pad press and on each turn.
+  Compiled (FLASH 204176), `tools/header_lint.py` 0 findings, flashed and
+  confirmed on the board.
+
+- [x] **PHRASE on the encoder row, not the EMB menu** — `PHRASE` took `ENC7`
+  (the row shows the template name, `FREE`…`AABA`, and turning it re-plans and
+  regenerates); `ERA` moved to the EMB page's `ENC3` with its value intact and now
+  regenerates on the turn instead of on the next row move. Chosen over mirroring the
+  template in the header tail: the row is where the gesture happens
+
 
 - [x] **KEYMODE3 `ENCOD` / `KBOARD` boot `locked`** (2026-11-02, user request): the
   link flags defaulted to free, so the encoder and keyboard channels only followed
@@ -197,7 +263,9 @@ from the Backlog while this section has open items** (unless overridden).
   every earlier bar end; `scorePc` gained a `plan` argument that multiplies a
   planned landing ×8 (and `pickPc`/`k4Refresh` thread it, so the proposals at
   a planned bar end agree with what M3 writes); the restating templates replay
-  the opening half into the second half, keeping planned landings and locks.
+  the opening half into the second half, keeping planned landings and locks
+  — **revised 2026-11-03:** restatement is bar-level now (a four-letter map, so
+  AABB / ABAB / AABA finally differ), see the Done entry above.
   Control: **EMB page ENC3 = PHRASE** (`ENC_KEY4_EMB`, no new page), clamped,
   RAM only. Header after M3/F1: `Plan V-I PLAN|CAD|GENR` — the arc-level
   diagnostic, **not** the full per-term attribution (that stays open in §9).
@@ -318,4 +386,6 @@ from the Backlog while this section has open items** (unless overridden).
 - [x] **LEAD page CT/GD knobs + deterministic contour reshape** — ENC5/ENC6 on the M2 LEAD page (which used to keep the base GATE/VEL labels; those stay on the base SEQ row / M1 edit menu) become **CT** and **GD** knobs, extending the page to own ENC2–7. **CT = chord-tone vs scale blend** (0–100%, default 0, per-note chance in `mapBassNote`'s SEQ_MAP_CT branch — LEAD only — to keep the skeleton's own in-scale pitch instead of snapping to the feeder chord tone; 0% = pure ct which flattens the line to the triad, 100% = pure skeleton, mid values interleave scale color so the line stops locking to the chord). **GD = guide-tone set depth** (4 states `3/7`→`+9`→`+13`→`EXT`, default `3/7`; the SEQ_MAP_GD branch gains scale-snapped extensions derived from the chord root — 9th = root+14, 13th = root+21 via new `scaleSnap()` — plus the 5th at EXT; a plain triad feeder has no 7th so stock gd collapsed to the single 3rd, the extensions keep enough notes to stay melodic). Both bite only when the global MAP mode is ct / gd and are LEAD-only (gated on `seqMonoTypeOf(c) == SEQ_MONO_LEAD`). **Deterministic contour reshape (same session)**: first visit to a contour no longer fresh-rolls — `leadReshape()` (Gen.cpp) reads the pattern's active notes, sorts them, and re-assigns to the active steps via the contour's index-walk over the sorted pool (ARCH = mountain fold, DESC = descending, WALK = fixed +1/−1/+2/−2 zigzag; same pitch material, no randomness, rests kept; empty pattern → falls back to `leadEmit`). M3 GEN still fresh-rolls; per-contour cache + undo unchanged. **EEPROM extended 616 → 649 bytes** (b[616..631] CT, b[632..647] GD, checksum b[648]; cascade 649→616→567→564→532→436→420→404→388→260; `extD` guard). `Gen.cpp/h`, `Keyboard.cpp` (mapBassNote + scaleSnap + EEPROM), `Events.cpp`, `Display.cpp`, README; 2026-10-22
 - [x] **TRANS scale-lock (Klock)** — per-track **Klock** toggle on the SHIFT/TRANS overlay **ENC3** (PREV held; ENC1=SHIFT/rotate, ENC2=TRANS, ENC3=KLOCK). When **ON**, the transposed playback note is **snapped back to the nearest in-scale pitch** (down first, then up, via `klockSnap()` in Keyboard.cpp using `keyIsInScale`; Chromatic = no-op), so the −12…+12 semitone TRANS knob stays **diatonic** under the current KEY + SCALE. Non-destructive (stored steps untouched; snap is a playback-time transform applied *after* the octave + TRANS offset). Routed through the new `shNoteK(c, n, sh, tr)` wrapper (Keyboard.cpp) which all five playback call sites now use — POLY, MONO, STRUM, and both `mapBassNote` FOLLOW-return paths — so it covers every playback path uniformly. **DRUM tracks never lock** (their notes are drum-map ids; `seqKlockOf` returns false, `seqKlockToggle` refuses). Turning the scale recolors the transposed line live. **EEPROM extended 649 → 665 bytes** (b[648..663] = Klock[16] bools, checksum b[664]; cascade 665→649→616→567→564→532→436→420→404→388→260; `extKL` guard). `Keyboard.cpp/h` (state, `klockSnap`/`shNoteK`, accessors `seqKlockToggle/seqKlock/seqKlockOf/seqKlockSet`, EEPROM), `Events.cpp` (ENC3 toggle), `Bindings.cpp` (KLOCK label), `Display.cpp` (ON/OFF value), README; 2026-10-22
 - [x] **FOLLOW knob FREEZE (OFF/ON/FREEZE)** — SEQMODE3 **ENC3** goes from two-state to **three-state**: `OFF` (own steps play the stored line) → `ON` (notes re-resolve live from the feeder) → `FREEZE` (**keep the last incoming chord**). In FREEZE the follower still runs — its **own steps keep gating the rhythm** — but the **chord it plays is latched once** on its first frozen active step (the feeder's current chord, same backward scan as live follow) and **replayed unchanged** even as the feeder walks on. Activation still comes from the listener's own pattern (a rest/miss step stays silent; the latch is only *what* plays, not *when*). Leaving FREEZE (to OFF or ON) clears the per-channel cache `frzN`/`frzCh` (declared next to `harmLive`/`skankLive`) so re-entering FREEZE recaptures fresh. FREEZE is a form of following: `seqFollow()`/`seqFollowOf()` return true for both ON and FREEZE (mode `!= 0`) so every existing gate that checks them keeps working; only chord resolution changes. Implementation: `followOn[16]` becomes a 3-state `uint8_t` mode array (`0/1/2`) in `SeqClock.cpp` with the new mode API (`seqFollowMode()`, `seqFollowModeOf()`, `seqFollowFreezeOf()`, `seqFollowModeSet()`, `seqFollowModeSetOf()`); the `follow` block in `Keyboard.cpp seqAdvanceOnce` gains the frozen branch; `ch` points at `frzCh[c]` when frozen; the **live SKANK refresh is gated off when frozen** (`&& !frz`) so the latched chord keeps playing. **EEPROM unchanged in length** — `b[243+i]` now stores the raw mode (0/1/2) instead of a bool; old 0/1 saves still load correctly (clamped). `SeqClock.cpp/h`, `Keyboard.cpp` (freeze cache + follow block + `ch` selection + skank gate + EEPROM), `Events.cpp` (ENC3 3-state cycle, 4 counts = 1 state, wraps), `Display.cpp` (`OFF`/`ON`/`FREEZE` value), README; 2026-10-22
+- [x] Untrack `.DS_Store` + add to `.gitignore` — 2026-10-12
+- [x] Add MIT `LICENSE` (README promised it) — 2026-10-12
 - [x] (move finished backlog/active items here)

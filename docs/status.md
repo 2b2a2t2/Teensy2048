@@ -24,7 +24,7 @@ A blank means the feature predates the initial import or cannot be attributed to
 | Chord engine, bass, spread, density, latch | KEY 2 | Stable | 2026-09-26 | 8-note maximum |
 | Force-to-scale on inbound notes | KEY 2 | Stable | 2026-09-28 | `FScale` |
 | Channel select + ENCOD/KBOARD links | KEY 3 | Stable | 2026-09-30 | Momentary; restores the previous base and variant; both links boot **locked** |
-| Progression engine, 18 genres | KEY 4 | **Beta** | 2026-10-06 | The progression itself is not persisted — it is rebuilt from the knobs; phrase templates and the cadence band selector are new — compiled, not yet auditioned on hardware |
+| Progression engine, 18 genres | KEY 4 | **Beta** | 2026-10-06 | The progression itself is not persisted — it is rebuilt from the knobs; phrase templates (on the encoder row as `ENC7`; `ERA` moved to the EMB page) and the cadence band selector are new — compiled, not yet auditioned on hardware |
 
 ## Sequencer
 
@@ -38,6 +38,7 @@ A blank means the feature predates the initial import or cannot be attributed to
 | Swing, 8 style tables | SEQ 4 | Stable | 2026-11-01 | Effective ratio = 50 + (AMT/100) × (max − 50) |
 | External input, USB / DIN / BOTH | SEQ 4 | **Beta** | 2026-11-01 | DIN carries **notes only**; clock stays USB so two sources cannot double-advance |
 | Follow (a track reading another's timeline) | SEQ 3 | Stable | 2026-10-03 | Single level, non-recursive |
+| Per-bar octave / transpose, held bar pad | SEQ 3 | Stable | 2026-11-03 | Playback-only, RAM only; folds into the track's octave/TRANS before `KLOCK` snaps |
 | Per-channel mode memory, `SEQ 4 + REC` | SEQ 4 | Stable | 2026-09-30 | 16 channels × base/variant |
 
 ## Generators and pages

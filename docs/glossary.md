@@ -122,3 +122,85 @@ transient message on the right.
 
 **Legend** — the control-button label row under the encoder grid. ENCMODE 1/2/4 draw none;
 the dials take the band.
+
+## Panel codes
+
+The OLED prints 3–6 character codes where the full word will not fit; the header band always
+names the parameter in words. This is the key to every code the panel can show. `--` in a
+legend means the knob has no idle binding.
+
+**Shared SEQ rows**
+
+| Code | In words |
+|---|---|
+| `OCT` | octave |
+| `LEN` | length — the steps the track plays |
+| `INCH` | input channel — the follower's feeder |
+| `SPEED` | clock division |
+| `SWING` / `AMT` | swing style / amount |
+| `SRC` | external source (`USB` / `DIN` / `BOTH`) |
+| `EXT IN` | external input mode |
+| `GATE` / `VEL` / `PROB` | gate length / velocity / probability |
+| `SHIFT` | pattern rotate |
+| `TRANS` | transpose |
+| `KLOCK` | key lock — fixes the TRANS offset to the scale |
+| `MAP` | drum kit mapping (`CUSTOM` / `GM`) |
+| `HITS` | comp stabs per step (0–8) |
+| `BRW` | borrow a tone from the incoming chord |
+
+**KEY 2 / 3 / 4**
+
+| Code | In words |
+|---|---|
+| `FSCALE` | force to scale |
+| `BASS` / `SPRD` / `DENS` | chord bass note / spread / density |
+| `LATCH` | latch — the chord survives the release |
+| `KLOCK` | key lock — the chord is the scale's diatonic triad |
+| `PERF` | performance switch (state only — see below) |
+| `ENCOD` / `KBOARD` | encoder / keyboard channel link |
+| `GENRE` | genre (18 tables) |
+| `MOOD` | mood bias (DARK/COOL/MIXED/WARM/LIGHT) |
+| `TENS` | tension — how wide the borrowed-degree window opens |
+| `MOTION` | motion — how hard the transition matrix pulls |
+| `CAD` | cadence (`V-I` / `IV-I` / `V-vi` / `ii-V`) |
+| `CPX` | complexity — how faithfully chord *qualities* follow the genre |
+| `ERA` | era — the same weighting for *inversions* |
+| `SURP` | surprise — the chance a proposal rolls into a secondary dominant |
+| `EMB` | embellish — the menu and its mode (OFF / PASS / P+S) |
+| `PLACE` | passing-chord placement (DIST / ODD) |
+| `PHRASE` | phrase template (FREE / AABB / ABAB / ABAC / AABA) |
+| `SUB` / `INV` / `PAS` / `COL` | substitution probability / inversion bias / passing amount / colour amount |
+| `DEG` / `VOICE` | scale-degree shift / voice spread |
+
+`PERF` (`KEY 2` → hold `PREV`, ENC6) is a two-state switch kept for parity with the reference
+instrument: it stores ON/OFF and changes no behaviour.
+
+Codes that already spell their word need no key: `SCALE`, `KEY`, `TRACK`, `TYPE`, `FOLLOW`,
+`BPM`, `MODE`, `SPAN`, `SKIP`, `TONES`, `LOW`, `ALGO`, `RANGE`, `CONTOUR`, `HOLD`. `CC1`–`CC36`
+print the MIDI control-change number itself.
+
+**SKANK and DRUM pages**
+
+| Code | In words |
+|---|---|
+| `TES` | tessitura — the walk's anchor inversion |
+| `MOT` | motion — how far the voicing walks from the anchor |
+| `SHP` | shape of the walk (`LIN` / `PP` / `RND`) |
+| `THN` | thinning — drop the lowest tones |
+| `EXT` | extension — the chance of a colour tone |
+| `TES%` / `NOT%` | tessitura randomizer / note randomizer |
+| `VAR` | variation — the bar-end fill (`off` / `fill4` / `fill8`) |
+| `FILL` | fill amount |
+
+**GNR8 and ARP pages**
+
+| Code | In words |
+|---|---|
+| `FILL` | note density |
+| `ACC` | accent |
+| `GLIDE` / `TIE` | glide / tie probability |
+| `RNG` | range |
+| `BRW` | borrow from the incoming chord |
+| `ORD` / `MOT` / `GEN` / `OPT` | order / motion / generative / options sub-pages |
+| `INST` | instrument (`3F1B` = 3 from the bottom, `4F2B` = 4 from the bottom) |
+
