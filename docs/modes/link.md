@@ -94,8 +94,28 @@ turn). Every knob write is rate-limited to one per parameter per 20 ms.
 
 `Remote Scripts/Teensy2048/` (see its `README.md`): copy the folder into your User Library's
 `Remote Scripts`, then Settings → Tempo & MIDI → Control Surface **Teensy2048** with the
-Teensy port as **Input and Output**. `Remote Scripts/Tap/` is untouched — the two scripts
-live in different control-surface slots.
+Teensy port as **Input and Output**. `Remote Scripts/Tap/` sits in its own control-surface
+slot. Both scripts ship **as-is**: the companion phone app loads the same files, so this repo
+never edits them — a bridge problem is fixed in the firmware or in the MIDI setup below.
+
+## Troubleshooting
+
+The header tells you where the link stands, so no log file is needed: `Live Link On` means a
+frame came back and the overlay is live, `Live Link Off` means the firmware is still sending
+`HELLO` into the dark.
+
+| Symptom | Meaning | Fix |
+|---|---|---|
+| header stays `Live Link Off`, Live's monitor shows frames 200 ms apart for 5 s, then 1 s apart | the firmware is talking, nothing answers | pick **Teensy2048** as a Control Surface, tick that port's **Remote** switch, set the port as the surface's **Input**, and share it with no other surface |
+| header stays `Live Link Off`, the monitor shows **no** frames at all | the board sits on a port the surface never sees, or the overlay is not up | press NEXT in ENCMODE; in Settings → MIDI Ports make sure the Teensy port is enabled and is the one the surface owns |
+| header `Live Link On`, pads stay dark | the handshake landed but clip state does not arrive | the surface has no **Output** port: assign the same port as **Output** |
+| header `Live Link On`, pads show clips | linked | audition |
+
+Those `Invalid` lines are the firmware's own `HELLO` seen from Live's side (the monitor counts
+the payload, not the `F0`/`F7`), and Live hands any message that is not three bytes to the
+surface's `handle_sysex` — so a run of them is a missing answer, not a framing fault. Retries
+are 200 ms for the first 5 s and then 1 s, and any tagged frame counts as life: one lost `ACK`
+cannot lock the link out for the session.
 
 ## Limits
 

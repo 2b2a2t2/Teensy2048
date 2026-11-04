@@ -23,8 +23,11 @@ de-facto version marker is the size of the saved-settings block (see
   CC 1–36 map, its dials and its per-CC-per-channel memory stay **byte-identical**, so every
   MIDI-learn map keeps working; a track with no device shows its mixer instead. Traffic is
   SysEx only (`F0 7D 37 32 34 38 … F7`, ≤ 32 bytes, chunked pattern dumps, HELLO retried
-  every 200 ms), so a port that also carries Ableton's clock is unaffected; state-only, never
-  clock. `Link.h/.cpp` (new), `Keyboard`, `Bindings`, `Modes`, `Events`, `Display`, `SeqClock`,
+  every 200 ms for the first 5 s and then every second, with **any** frame back — not just the
+  `ACK` — counting as the link being up), so a port that also carries Ableton's clock is
+  unaffected; state-only, never clock. The companion script ships as-is and is never edited
+  here: the phone app loads the same files, so bridge behaviour is fixed in firmware.
+  `Link.h/.cpp` (new), `Keyboard`, `Bindings`, `Modes`, `Events`, `Display`, `SeqClock`,
   `Teensy2048.ino`, `Remote Scripts/Teensy2048/` (new), docs (`modes/link.md` new); patterns
   and overlay state are RAM only — **no EEPROM block change**.
 
@@ -104,6 +107,19 @@ de-facto version marker is the size of the saved-settings block (see
   at a time (the last pad pressed); the row drops when the last C-F pad lets go.
 
 ### Keyboard
+
+- **The keyboard on a `DRUM` track is a drum pad row** - when the keyboard channel
+  points at a DRUM sequence the twelve pads stop being pitches: the scale filter, the
+  KEY/SCALE colors and the `KEY 2` / `KEY 4` chord engines all stay out of it, and the
+  row sits in one **dim OrangeRed**, blinking **dim green** on the pad whose note the
+  playhead is sounding and reading **dim orange** on a voice muted in the ENCMODE drum
+  overlay (mute wins over the blink; touch still flashes white). The keyboard **octave
+  snaps to 1** on landing there - the octave the kit's own notes sit on (`C1` = 36
+  through `B1` = 47) - and the snap is **local**: the octave the other tracks were left
+  on is held aside and put back when you leave the drum track, so no other track sees
+  its setting change, while the octave knob still transposes the drum row. Pressing a
+  pad also **picks that drum voice** for the step edit, the direct form of hold `M1` +
+  step N (`C` = part 1, `C#` = part 2 … `D#2` = part 16).
 
 - **KEY 4 phrase templates are per-bar, so `AABB` / `ABAB` / `AABA` differ** - the
   restating templates used to copy the first half verbatim into the second, which made

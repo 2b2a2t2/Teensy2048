@@ -786,15 +786,25 @@ bool keyDrumTrack() {
 }
 
 // a drum track's pads are kit notes (C1 = 36 = octave 1), so the keyboard
-// defaults to octave 1 the moment it lands on one - edge triggered, so the
-// octave knob still transposes the row afterwards (loop context: called by
-// seqPoll beside keyMonoPoll)
-static bool drumOctWas = false;
+// defaults to octave 1 the moment it lands on one.  The octave the other
+// tracks were left on is held aside and put back on the way out - the snap
+// is edge triggered, so the octave knob still transposes the drum row while
+// you are on it, and no other track sees its setting changed (loop context:
+// called by pollSeqClock beside keyMonoPoll)
+static bool   drumOctWas = false;
+static bool   octHeld = false;                 // a drum track holds the octave
+static int8_t octBeforeDrum = KEY_OCT_DEF;     // ..and this is what it hides
 
 void keyDrumOctPoll() {
   bool d = keyDrumTrack();
-  if (d && !drumOctWas && keyOctave() != KEY_DRUM_OCT)
-    setOctave(KEY_DRUM_OCT);
+  if (d && !drumOctWas) {          // landed on a drum track: kit octave, and
+    octBeforeDrum = keyOctave();   // ..the other tracks' setting goes aside
+    octHeld = true;
+    if (keyOctave() != KEY_DRUM_OCT) setOctave(KEY_DRUM_OCT);
+  } else if (!d && drumOctWas && octHeld) {   // left it: restore, so the
+    octHeld = false;                         // ..other tracks never changed
+    if (keyOctave() != octBeforeDrum) setOctave(octBeforeDrum);
+  }
   drumOctWas = d;
 }
 
@@ -4574,9 +4584,10 @@ void seqMuteToggle(uint8_t seq) {
 
 // --- overdub-layer overlay (hold M2, SEQMODE 1/2/4) -------------------------
 // Holding M2 turns the keyboard row into the layer panel: white C D E F
-// pick layers 1..4, the five black keys arm MUTE / ERASE (a white key
-// confirms, press the armed key again to disarm) or fire UNDO / REDO /
-// RESET immediately, G A B are dark.  layOvSel is the raw hold flag (like
+// pick layers 1..4, the five black keys select MUTE / ERASE (a white key
+// confirms; MUTE is the default selection and stays on after a mute,
+// ERASE clears after its confirm) or fire UNDO / REDO / RESET
+// immediately, G A B are dark.  layOvSel is the raw hold flag (like
 // encMuteSel), the composite layOvActive() gates it on mode + track, and
 // layOvClose() runs on every M2 release so a mode switch mid-hold cannot
 // leave it stuck.  Every state change pushes the track's pre-state onto
@@ -4598,7 +4609,8 @@ bool layOvActive(void) { return layOvSel && layOvEligible(); }
 
 void layOvOpen(void) {
   layOvSel = true;
-  layArm = LAY_CMD_NONE;
+  layArm = LAY_CMD_MUTE;          // mute is the default selection: a white
+                                  // key mutes straight away, no re-arm trip
 }
 
 // M2 let go: returns whether the overlay was up so the caller repaints.
@@ -4806,10 +4818,11 @@ static bool layFlatten(void) {
 }
 
 // performs the pressed key, returning the action Events turns into a
-// header line: black C# / D# arm MUTE / ERASE (press again to disarm),
-// F# / G# / A# fire undo / redo / reset immediately, white C D E F
-// confirm the armed command or - with no arm - report that layer, G A B
-// have no job (swallowed while the overlay is up)
+// header line: black C# / D# select MUTE / ERASE (press again to deselect),
+// F# / G# / A# fire undo / redo / reset immediately, white C D E F act for
+// the selected command (MUTE stays selected after a confirm, ERASE clears;
+// none selected = report that layer), G A B have no job (swallowed while
+// the overlay is up)
 static uint8_t layKeyAct(uint8_t kidx) {
   switch (kidx) {
     case 1:                                       // C#: mute arm
@@ -4837,7 +4850,9 @@ static uint8_t layKeyAct(uint8_t kidx) {
       uint8_t layer = (kidx == 0) ? 0 : (kidx == 2) ? 1 :
                       (kidx == 4) ? 2 : 3;
       if (layArm == LAY_CMD_MUTE) {
-        layArm = LAY_CMD_NONE;
+        // stays selected: layer 2, then 3, mute one after the other without
+        // re-arming (a second tap unmutes, undo walks it back).  ERASE below
+        // clears instead - erasing is not reversed by a second tap
         return layMuteToggle(layer) ? LAY_ACT_MUTE_ON : LAY_ACT_MUTE_OFF;
       }
       if (layArm == LAY_CMD_ERASE) {

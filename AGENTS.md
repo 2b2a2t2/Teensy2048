@@ -81,3 +81,6 @@ from that exact commit and flash it with the Teensy Loader.
 - Keep the docs in sync with user-visible changes: the page that describes the
   behaviour, `docs/status.md`, `CHANGELOG.md`, and the map in `README.md` if a
   page moved. Follow `docs/style-guide.md`.
+- **`Remote Scripts/` is frozen** — `Tap/` and `Teensy2048/` ship exactly as
+  committed, because the companion phone app loads those same files. Never edit
+  them: fix bridge behaviour in the firmware (or in the docs) instead.

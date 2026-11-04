@@ -50,6 +50,8 @@ static uint16_t rxLen = 0;
 static bool     alive = false;
 static uint32_t lastHostMs = 0;
 static uint32_t lastHelloMs = 0;
+static uint32_t firstHelloMs = 0;
+static bool     helloSent = false;
 
 // host state cache
 static uint8_t  trkIdx = 255;
@@ -268,15 +270,18 @@ static void pumpDump() {
 static void parseCmd(const uint8_t *p, uint16_t n) {
   if (n == 0) return;
   lastHostMs = millis();
+  // Any tagged frame proves the surface is there: a lost ACK must not lock
+  // the link out for good, and the script's TRACK/CLIP_STATE/PARAM burst on
+  // connect is just as good a sign of life as the ACK itself.
+  if (!alive) {
+    alive = true;
+    if (modeBase == MODE_ENC) headerShow("Live Link On");
+    refreshMainScreen();
+  }
 
   switch (p[0]) {
     case CMD_ACK:
-      if (!alive) {
-        alive = true;
-        headerShow("Live Link On");
-        refreshMainScreen();
-      }
-      break;
+      break;   // liveness is set for any tagged frame, above
 
     case CMD_TRACK:
       if (n >= 2) {
@@ -388,9 +393,13 @@ void linkTick() {
     alive = false;
     if (modeBase == MODE_ENC) headerShow("Live Link Off");
   }
-  uint32_t period = alive ? 2000u : 200u;   // heartbeat / connect retry
+  // Linked: a slow heartbeat.  Connecting: retry fast for 5 s, then 1 s, so a
+  // missing script cannot flood Live's MIDI monitor with HELLO frames.
+  uint32_t period = 2000u;
+  if (!alive) period = (!helloSent || (now - firstHelloMs) < 5000u) ? 200u : 1000u;
   if (now - lastHelloMs >= period) {
     lastHelloMs = now;
+    if (!helloSent) { helloSent = true; firstHelloMs = now; }
     uint8_t b[Q_LEN];
     uint8_t n = mk(b, CMD_HELLO);
     b[n++] = LINK_PROTO_VER;

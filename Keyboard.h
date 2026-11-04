@@ -205,9 +205,11 @@ void seqMuteToggle(uint8_t seq);      // step pad press
 // (4 layers max; pre-existing content reads as layer 1, a pass picks the
 // first layer that holds no notes yet and a full set stacks into layer 4).
 // Holding M2 turns the keyboard row into the layer panel: white C D E F
-// pick layers 1..4 (with MUTE/ERASE armed they confirm, otherwise they
-// report), black C# / D# arm MUTE / ERASE, F# / G# / A# fire undo / redo /
-// reset.  Layer mutes gate playback per track (DRUM steps never carry
+// pick layers 1..4 (MUTE is selected by default and stays selected after
+// a mute, so layers mute one after another; with ERASE selected they
+// confirm an erase, with none selected they report), black C# / D# select
+// MUTE / ERASE, F# / G# / A# fire undo / redo / reset.  Layer mutes gate
+// playback per track (DRUM steps never carry
 // tags), erase drops the layer's notes, reset flattens all layers of the
 // edit track into one - commands ride an 8-deep undo/redo stack.  Patterns
 // are RAM-only, so layers are too (no EEPROM change)
@@ -318,7 +320,8 @@ bool handLive();
 // press skips the scale filter and the chord engines, and the LEDs drop
 // the scale/chord colors for one dim orange-red row.  A pad press also
 // selects that drum voice for the step edit (the direct form of hold M1 +
-// step N), and the octave snaps to 1 (C1 = 36 = the kit) on entry
+// step N), and the octave snaps to 1 (C1 = 36 = the kit) on entry - the
+// octave the other tracks were left on is restored when you leave it
 bool keyDrumTrack();
 void keyDrumOctPoll();             // octave 1 on entering a drum track (loop)
 

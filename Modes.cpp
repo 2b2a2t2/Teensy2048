@@ -373,7 +373,8 @@ static CRGB modeLedHook(uint8_t pad, bool isTouched, CRGB defaultColor) {
     // hold-M2 overdub-layer overlay: the row is the layer panel - white
     // C D E F = layers 1..4 (bright hue = holds notes, dim = empty, red =
     // muted), the five black keys = MUTE / ERASE / UNDO / REDO / RESET with
-    // the armed one burning, G A B dark, gap LEDs black.  Touch still
+    // the selected one in its own colour (mute = dim orange pulsing, erase
+    // = dim dark red), G A B dark, gap LEDs black.  Touch still
     // flashes white; the panel wins over the bar row and every inherited
     // key color while it is up
     if (layOvActive()) {
@@ -393,10 +394,21 @@ static CRGB modeLedHook(uint8_t pad, bool isTouched, CRGB defaultColor) {
         return c;
       }
       if (lk == 1 || lk == 3 || lk == 6 || lk == 8 || lk == 10) {
-        // black = commands; the armed pair (C# mute, D# erase) burns
-        bool armed = (lk == 1 && layArmCmd() == LAY_CMD_MUTE) ||
-                     (lk == 3 && layArmCmd() == LAY_CMD_ERASE);
-        c.nscale8(armed ? 220 : 72);
+        // black = commands; the SELECTED one wears its own colour instead
+        // of the track hue - mute = dim orange, breathing; erase = dim dark
+        // red (static).  Unselected commands keep the dim track hue
+        if (lk == 1 && layArmCmd() == LAY_CMD_MUTE) {
+          uint8_t s = sin8((uint32_t)millis() * 256UL / PULSE_PERIOD_MS);
+          CRGB o = CRGB::Orange;
+          o.nscale8((uint8_t)(48 + ((uint16_t)s * 112) / 255));  // dim 48..160
+          return o;
+        }
+        if (lk == 3 && layArmCmd() == LAY_CMD_ERASE) {
+          CRGB r = CRGB::DarkRed;            // dim dark red, no pulse
+          r.nscale8(176);
+          return r;
+        }
+        c.nscale8(72);
         return c;
       }
       c.nscale8(40);                           // G A B: nothing assigned

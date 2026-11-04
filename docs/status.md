@@ -21,6 +21,7 @@ A blank means the feature predates the initial import or cannot be attributed to
 | Feature | Mode | Status | Since | Notes |
 |---|---|---|---|---|
 | Chromatic pads, in-scale LEDs, octave/scale/key | KEY 1 | Stable | 2026-09-25 | MIDI 24 = C0; pads outside the scale stay dark |
+| Drum-track pad row | KEY 1, DRUM | Stable | 2026-11-04 | One dim orange-red row, no scale/key/chord engine; the octave snaps to 1 only while the track is live (other tracks keep theirs) and a pad press picks that drum voice for the step edit |
 | Chord engine, bass, spread, density, latch | KEY 2 | Stable | 2026-09-26 | 8-note maximum |
 | Force-to-scale on inbound notes | KEY 2 | Stable | 2026-09-28 | `FScale` |
 | Channel select + ENCOD/KBOARD links | KEY 3 | Stable | 2026-09-30 | Momentary; restores the previous base and variant; both links boot **locked** |
@@ -63,7 +64,7 @@ A blank means the feature predates the initial import or cannot be attributed to
 | Dial grid screen (270° arcs, CC captions) | ENC 1/2/4 | Stable | 2026-10-26 | ENC 3 keeps the plain label/value screen |
 | Locked channel picker | ENC 4 | Stable | 2026-09-30 | 16 pads = 16 encoder channels |
 | `ENC 4 + REC` (36×16 values + channel) | ENC 4 | Stable | 2026-09-30 | An older save is ignored |
-| ENCABLETONMODE (NEXT overlay, clip grid, CC 64–71 automap) | ENC, `NEXT` | **Beta** | 2026-11-04 | Compiles and follows the protocol; auditioned against Live over USB-MIDI, not yet part of a set. Needs the `Teensy2048` remote script; RAM only (no EEPROM change) |
+| ENCABLETONMODE (NEXT overlay, clip grid, CC 64–71 automap) | ENC, `NEXT` | **Beta** | 2026-11-04 | Compiles and follows the protocol; the Live handshake is still unconfirmed, so the clip grid is not yet auditioned. Needs the `Teensy2048` remote script; RAM only (no EEPROM change) |
 | Companion remote script `Remote Scripts/Teensy2048/` | — | **Beta** | 2026-11-04 | Tracks, clip states, clip fills, parameter pages; state only, never clock (`modes/link.md`) |
 | USB-MIDI device, notes/CC/clock | all | Stable | 2026-09-25 | USB Type **MIDI** — no serial tty |
 | 5-pin DIN input (Serial2) | SEQ 4 | **Beta** | 2026-11-01 | Notes only, no clock/transport |
