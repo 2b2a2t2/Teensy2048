@@ -12,6 +12,7 @@
 #include "Gen.h"        // GNR8 generator params / produce / rotate
 #include "Skank.h"      // SKANK page: shape name for the header
 #include "Drum.h"       // DRUM page: genre/var/lane params + produce
+#include "Link.h"       // ENCABLETONMODE bridge (clips, tracks, Live params)
 
 // skip a log line if the USB TX buffer is congested (never block the loop —
 // a blocked Serial.write stalls pollSeqClock and freezes the playhead)
@@ -516,8 +517,9 @@ void handleButtonEvents() {
       // channel overlays: steps select a MIDI channel
       // (KEY = keyboard output, SEQ = sequencer edit, ENC = encoder CCs).
       // SEQ3's selector is gone once an encoder moved - the pads are back
-      // on the sequencer until SEQ is held into SEQMODE3 again.  ENCMODE4
-      // is the locked form: the picker is simply what that variant is
+      // on the sequencer until SEQ is held into SEQMODE3 again.  Plain
+      // ENCMODE is the locked form: the picker is simply what that variant
+      // is, and ENCMODE4 hands the pads back so the sequence stays visible
       bool chOverlay = chSelOverlay();
       // DRUM track: step press = toggle the selected part (voice)
       bool drum = (modeBase == MODE_SEQ && modeVariant != 3 &&
@@ -538,7 +540,54 @@ void handleButtonEvents() {
       // pads address the edit WINDOW (one bar of 16): map pad -> absolute
       // step of the sequence (overlays above keep using the raw pad index)
       uint8_t stp = (uint8_t)(sidx + seqStepViewBase());
-      if (encMute) {
+      // ENCABLETONMODE: the pads are Live's 16 clip slots of the selected
+      // track (PREV held: the 16 tracks).  Empty slot = create + fill from
+      // that channel's pattern, filled = launch, playing = stop, double =
+      // re-fill.  The script answers with CLIP_STATE either way
+      bool abltPads = (modeBase == MODE_ENC && abltOn() && modeVariant != 3);
+      if (abltPads) {
+        if (abltPrevPick()) {
+          if (ev == EV_PRESSED) {
+            encSetChannel((uint8_t)(sidx + 1));
+            linkTrackSelect(sidx);
+            char tb[20];
+            snprintf(tb, sizeof(tb), "Track %u", sidx + 1);
+            headerShow(tb);
+            refreshMainScreen();
+            if (logRoom(48)) {
+              Serial.print("  live track ");
+              Serial.println(sidx + 1);
+            }
+          }
+        } else {
+          uint8_t lbits = linkClipBits(sidx);
+          if (ev == EV_PRESSED) {
+            if (!linkAlive()) {
+              headerShow("Live Link Off");
+            } else if (lbits & 0x02) {
+              linkClipAct(sidx, 1);
+              headerShow("Clip Stopped");
+            } else if (lbits & 0x01) {
+              linkClipAct(sidx, 0);
+              headerShow("Clip Launched");
+            } else {
+              linkClipAct(sidx, 2);
+              linkDumpTrack((uint8_t)(encChannel() - 1));
+              headerShow("Clip Filled");
+            }
+          } else if (ev == EV_DOUBLE && (lbits & 0x01)) {
+            linkClipAct(sidx, 2);
+            linkDumpTrack((uint8_t)(encChannel() - 1));
+            headerShow("Clip Refilled");
+          }
+          if (logRoom(48)) {
+            Serial.print("  live clip row ");
+            Serial.print(sidx);
+            Serial.print(" state ");
+            Serial.println(lbits);
+          }
+        }
+      } else if (encMute) {
         if (ev == EV_PRESSED) {
           seqMuteToggle(sidx);
           char mb[24];
@@ -576,6 +625,7 @@ void handleButtonEvents() {
             channelLinkPropagate(2);
           } else {
             encSetChannel(sidx + 1);
+            linkTrackSelect(sidx);   // ENCABLETONMODE: mirror into Live
             channelLinkPropagate(1);
           }
           if (modeBase == MODE_ENC)
@@ -1192,11 +1242,39 @@ void handleButtonEvents() {
       if (droppedArp) refreshMainScreen();  // the encoder row changes
     }
 
+    // NEXT in ENCMODE: the ENCABLETONMODE overlay (latched).  NEXT has no
+    // other job in this family, so in ENCMODE the toggle is its whole meaning
+    if (ev == EV_CLICKED && modeBase == MODE_ENC && kl == groupControls[1]) {
+      abltToggle();
+      headerShow(abltOn() ? "Live Mode On" : "Live Mode Off");
+      refreshAllLeds();
+      refreshMainScreen();
+      refreshHeader();
+      if (logRoom(48)) {
+        Serial.print("  ableton overlay ");
+        Serial.println(abltOn() ? "on" : "off");
+      }
+    }
+
+    // M3 in ENCABLETONMODE: swaps the F row to the clip-action set
+    // (fill track / fill scene / stop track / stop all)
+    if (ev == EV_CLICKED && modeBase == MODE_ENC && abltOn() &&
+        kl == groupControls[4]) {
+      abltActionToggle();
+      headerShow(abltActionSet() ? "Clip Actions" : "Bank Actions");
+      refreshAllLeds();
+      refreshMainScreen();
+      if (logRoom(48)) {
+        Serial.print("  ableton F row ");
+        Serial.println(abltActionSet() ? "clip" : "bank");
+      }
+    }
+
     // M3 in ENCMODE: toggles the page group of the ENC5..8 banks (off =
     // F1..F4 = CC1..16, on = CC21..36; ENC1..4 always send CC17..20).
     // The pad LED follows (dim green = lower group, purple = upper), the
     // encoder labels/values repaint with the group
-    if (ev == EV_CLICKED && modeBase == MODE_ENC &&
+    if (ev == EV_CLICKED && modeBase == MODE_ENC && !abltOn() &&
         kl == groupControls[4]) {
       bool on = !encM3Page();
       encM3PageSet(on);
@@ -1209,13 +1287,46 @@ void handleButtonEvents() {
       refreshMainScreen();
     }
 
+    // F1-F4 in ENCABLETONMODE: bank left/right + device left/right, or -
+    // on the M3 action set - fill track / fill scene / stop track / stop all
+    if (ev == EV_CLICKED && modeBase == MODE_ENC && abltOn() &&
+        kl >= groupControls[5] && kl <= groupControls[8]) {
+      uint8_t fidx = (uint8_t)(kl - groupControls[5]);
+      uint8_t hrow = linkHighlightRow();
+      if (hrow > 15) hrow = 0;
+      if (!abltActionSet()) {
+        if (fidx == 0) { linkBankStep(-1); headerShow("Bank Previous"); }
+        else if (fidx == 1) { linkBankStep(1); headerShow("Bank Next"); }
+        else if (fidx == 2) { linkDeviceStep(-1); headerShow("Device Previous"); }
+        else { linkDeviceStep(1); headerShow("Device Next"); }
+      } else if (fidx == 0) {
+        linkClipAct(hrow, 2);
+        linkDumpTrack((uint8_t)(encChannel() - 1));
+        headerShow("Track To Clip");
+      } else if (fidx == 1) {
+        for (uint8_t t = 0; t < 16; t++) linkClipAct(hrow, 2);
+        linkDumpAll();
+        headerShow("Scene To Clips");
+      } else if (fidx == 2) {
+        linkStopTrack();
+        headerShow("Track Stopped");
+      } else {
+        linkStopAll();
+        headerShow("All Clips Stopped");
+      }
+      if (logRoom(48)) {
+        Serial.print("  ableton F");
+        Serial.println(fidx + 1);
+      }
+    }
+
     // F1-F4 in ENCMODE: radio switches for the ENC5..8 CC bank (F1 =
     // CC1..4 ... F4 = CC13..16 in the lower M3 page group, F1 = CC21..24
     // ... F4 = CC33..36 in the upper one; ENC1..4 always send CC17..20).
     // RAM only and always one bank armed - re-clicking the selected one
     // keeps it.  The pad LEDs follow via refreshAllLeds, the encoder
     // labels/values via refreshMainScreen
-    if (ev == EV_CLICKED && modeBase == MODE_ENC &&
+    if (ev == EV_CLICKED && modeBase == MODE_ENC && !abltOn() &&
         kl >= groupControls[5] && kl <= groupControls[8]) {
       uint8_t idx = (uint8_t)(kl - groupControls[5]);      // 0..3
       encBankSet(idx);
@@ -1241,7 +1352,18 @@ void handleButtonEvents() {
         headerShow("Channel Mute");
         if (logRoom(48)) Serial.println("  mute overlay");
         refreshAllLeds();
-      } else if (ev == EV_RELEASED && encMuteActive()) {
+      } else if (ev == EV_HOLD && layOvEligible()) {
+        // hold M2 (SEQMODE 1/2/4, non-DRUM edit track) = the overdub-layer
+        // overlay: the keyboard row becomes the layer panel until release.
+        // A hold never emits EV_CLICKED, so the tap actions below (pages,
+        // erase, strum row) stay taps
+        layOvOpen();
+        headerShow("Overdub Layers");
+        if (logRoom(48)) Serial.println("  layer overlay");
+        refreshAllLeds();
+      } else if (ev == EV_RELEASED && (layOvClose() || encMuteActive())) {
+        // release closes whichever hold overlay rode in; layOvClose() runs
+        // unconditionally so a mode switch mid-hold cannot leave it stuck
         encMuteHold(false);
         refreshAllLeds();
       } else if (ev == EV_CLICKED && modeBase == MODE_SEQ && modeVariant == 3) {
@@ -1473,11 +1595,14 @@ void handleButtonEvents() {
       bool fSeq = (ci >= 5 && modeBase == MODE_SEQ && modeVariant != 3);
       bool fEnc = (ci >= 5 && modeBase == MODE_ENC);
       bool m3Enc = (ci == 4 && modeBase == MODE_ENC);
+      // NEXT belongs to the ENCABLETONMODE toggle in this family, not to
+      // the KEYMODE2 quality momentaries
+      bool nextEnc = (ci == 1 && modeBase == MODE_ENC);
       // F1-F4 belong to the SEQMODE edit radio (target / accent / prob)
       // plus the F3 accent-velocity hold - they never touch the chords
       // there, on any track type; in ENCMODE they are the CC-bank radio
       // and M3 the page-group toggle
-      if (ci > 0 && !m1SeqRadio && !m1Enc && !m2Enc && !m2Seq3 &&
+      if (ci > 0 && !nextEnc && !m1SeqRadio && !m1Enc && !m2Enc && !m2Seq3 &&
           !m3Enc && !fSeq && !fEnc) {                     // ci 0 = PREV
         bool on = (ev == EV_PRESSED);
         static const uint8_t extOf[4] = { CHORD_EXT_6, CHORD_EXT_m7,
@@ -1688,7 +1813,19 @@ void handleButtonEvents() {
     // Oct/Scale/Root/Latch/KLock/Perf, KEYMODE4 to Oct/Scale/Key; release
     // restores it.  A quick KEYMODE4 tap (no hold) steps the focus back
     if (kl == groupControls[0]) {
-      if (ev == EV_PRESSED && modeBase == MODE_SEQ) {
+      if (modeBase == MODE_ENC && abltOn()) {
+        // ENCABLETONMODE: PREV (hold) turns the pads into the 16 Live tracks;
+        // release hands them straight back to the clip grid
+        if (ev == EV_PRESSED) {
+          abltPrevHold(true);
+          headerShow("Live Tracks");
+          refreshAllLeds();
+          if (logRoom(48)) Serial.println("  ableton track picker");
+        } else if (ev == EV_RELEASED) {
+          abltPrevHold(false);
+          refreshAllLeds();
+        }
+      } else if (ev == EV_PRESSED && modeBase == MODE_SEQ) {
         // SEQMODE: PREV held = the SHIFT/TRANS row (ENC1 = pattern rotate,
         // ENC2 = semitone transpose of the sequence's playback).  The GNR8
         // page's old rotate row lives on this same overlay (ENC1 still =
@@ -1753,6 +1890,75 @@ void handleButtonEvents() {
     // and press the selected bar again to loop it - swallowed presses are
     // remembered so the matching release never sends a stray note-off
     if (kidx != 255) {
+      // hold-M2 overdub-layer overlay: its dispatch runs FIRST, so the
+      // layer panel owns the row even over a latched bar/verb row; swallowed
+      // presses remember themselves (layKeyHandle) so the matching release
+      // / click never reaches the instrument.  The header line is built
+      // here - the action codes carry no text
+      uint8_t lact = layKeyHandle(kidx, ev);
+      if (lact) {
+        if (lact != LAY_ACT_EAT) {
+          uint8_t ln = (kidx == 0) ? 1 : (kidx == 2) ? 2 :
+                       (kidx == 4) ? 3 : (kidx == 5) ? 4 : 0;
+          char lb[24];
+          lb[0] = 0;
+          switch (lact) {
+            case LAY_ACT_ARM_MUTE:
+              snprintf(lb, sizeof(lb), "Mute layer?");
+              break;
+            case LAY_ACT_ARM_ERASE:
+              snprintf(lb, sizeof(lb), "Erase layer?");
+              break;
+            case LAY_ACT_ARM_OFF:
+              snprintf(lb, sizeof(lb), "Layer cmd off");
+              break;
+            case LAY_ACT_MUTE_ON:
+              snprintf(lb, sizeof(lb), "Layer %u Muted", ln);
+              break;
+            case LAY_ACT_MUTE_OFF:
+              snprintf(lb, sizeof(lb), "Layer %u On", ln);
+              break;
+            case LAY_ACT_ERASED:
+              snprintf(lb, sizeof(lb), "Layer %u Erased", ln);
+              break;
+            case LAY_ACT_EMPTY:
+              snprintf(lb, sizeof(lb), "Layer %u Empty", ln);
+              break;
+            case LAY_ACT_REPORT: {
+              uint8_t nn = layNotes((uint8_t)(ln - 1));
+              if (nn) snprintf(lb, sizeof(lb), "Layer %u: %u notes", ln, nn);
+              else snprintf(lb, sizeof(lb), "Layer %u empty", ln);
+              break;
+            }
+            case LAY_ACT_UNDO_OK:
+              snprintf(lb, sizeof(lb), "Undone");
+              break;
+            case LAY_ACT_UNDO_NO:
+              snprintf(lb, sizeof(lb), "Nothing to undo");
+              break;
+            case LAY_ACT_REDO_OK:
+              snprintf(lb, sizeof(lb), "Redone");
+              break;
+            case LAY_ACT_REDO_NO:
+              snprintf(lb, sizeof(lb), "Nothing to redo");
+              break;
+            case LAY_ACT_FLATTEN:
+              snprintf(lb, sizeof(lb), "Layers flattened");
+              break;
+            default:
+              break;
+          }
+          if (lb[0]) {
+            headerShow(lb);
+            if (logRoom(48)) {
+              Serial.print("  ");
+              Serial.println(lb);
+            }
+          }
+        }
+        refreshAllLeds();   // arm / mute / erase / undo all move the LEDs
+        continue;           // the overlay owned this event
+      }
       static uint16_t barHeld = 0;         // kidx bits eaten as pattern bars /
                                            // track verbs - uint16 because
                                            // G# and A# sit at kidx 8 and 10
@@ -2333,7 +2539,35 @@ void handleEncoderEvents() {
     // block (F1 = CC1..4 ... F4 = CC13..16) on the encoder channel
     // (ENCMODE3); 1 count = 1 value step, clamped 0..127, no wrap;
     // positions persist across mode changes like a real knob
-    if (modeBase == MODE_ENC && ei < 8 && ed != 0) {
+    // ENCABLETONMODE: the eight knobs send CC64..71 on the encoder channel
+    // (a NEW automap block - the ENCMODE CC map below is untouched, so
+    // every MIDI-learn map made there keeps working) and the same turn is
+    // announced over SysEx, because a remote script cannot rely on hearing a
+    // CC on all 16 channels
+    if (modeBase == MODE_ENC && abltOn() && ei < 8 && ed != 0) {
+      uint8_t acch = encChannel();
+      int16_t av = (int16_t)linkParamValue(ei) + ed;
+      if (av < 0) av = 0;
+      if (av > 127) av = 127;
+      if (av != (int16_t)linkParamValue(ei)) {
+        linkParamTouch(ei, (uint8_t)av);
+        usbMIDI.sendControlChange((uint8_t)(64 + ei), (uint8_t)av, acch);
+        linkKnob(ei, (uint8_t)av);
+        const char* pn = linkParamName(ei);
+        char ab[26];
+        snprintf(ab, sizeof(ab), "%s %d", pn[0] ? pn : "Param", (int)av);
+        headerShow(ab);
+        if (logRoom(48)) {
+          Serial.print("  live CC ");
+          Serial.print(64 + ei);
+          Serial.print("=");
+          Serial.println(av);
+        }
+      }
+      any = true;
+    }
+
+    if (modeBase == MODE_ENC && !abltOn() && ei < 8 && ed != 0) {
       uint8_t cch = encChannel();
       uint8_t cc = encCcNum(ei);
       int16_t v = ccVal[cc - 1][cch - 1] + ed;

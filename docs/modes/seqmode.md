@@ -3,7 +3,7 @@ _Docs home: [Teensy2048](../README.md) · [Cheat sheet](../cheatsheet.md) · [Gl
 
 # Sequencer Overview (SEQMODE)
 
-**Encoder feel**: one detent is **4 counts**. Knobs whose value is a wide range — every **0–100%** dial (GNR8 FILL/ACC/GLIDE/TIE, the LEAD CT blend, the ARP sub-page percentages, GATE, PROB, the eight SKANK knobs, DRUM FILL/MOT and the per-lane FILL/MOT) — go through `encDrain()` in `Encoders.cpp` at **1 count = 1 unit**, the same rate as the ENCMODE **CC knobs**, so **one detent = 4% and a full 0–100 sweep is about one turn**; a spin (the library hands a fast turn over as a bigger delta per poll) is worth up to **4×** that. Small enums (MODE, SPAN, TRACK, GENRE …) stay 1 step per detent, and the CC knobs themselves stay 1 count = 1 value.
+**Encoder feel**: one detent is **4 counts**. Knobs whose value is a wide range — every **0–100%** dial (GNR8 FILL/ACC/GLIDE/TIE, the LEAD CT blend, the ARP sub-page percentages, GATE, PROB, the eight SKANK knobs, DRUM FILL/MOT and the per-lane FILL/MOT) — go through `encDrain()` in `Encoders.cpp` at **1 count = 1 unit**, the same rate as the ENCMODE **CC knobs**, so **one detent = 4% and a full 0–100 sweep is about one turn**; a spin (the library hands a fast turn over as a bigger delta per poll) is worth up to **4×** that. Small enums (MODE, SPAN, TRACK, GENRE …) stay 1 step per detent, and the CC knobs themselves stay 1 count = 1 value. Two enums are the opposite: **FOLLOW** and the three **live-record knobs** (`LISTEN` / `PLAY` / `OVERDUB`) take **4 counts = 1 state**, so a value cannot be skipped by a fast turn.
 
 **Playhead** advances on MIDI clock (24 PPQN external or internal master at tempo). Up to 64 steps per track (four 16-step bars, `LEN` on `SEQ 3`), 16 tracks (one per MIDI channel 1–16).
 
@@ -11,7 +11,7 @@ _Docs home: [Teensy2048](../README.md) · [Cheat sheet](../cheatsheet.md) · [Gl
 - **ENC1**: Playback octave shift (±5 octaves from stored notes, clamped to –2..+8 convention)
 - **ENC2**: Pattern length of the edit sequence (**0–64** steps, boot default 16; 0 = silent track, per-track RAM only)
   - **Steps past the length go dark and inert** — no record, no toggle, no attribute edit, so a shortened pattern can't hide stale content. An armed **bar loop** still covers its own 16 steps, so those stay lit and editable
-- **ENC3**: **FOLLOW** — three-state `OFF · ON · FREEZE` (4 counts = 1 state, **clamped at both ends — no wrap**). **OFF** = the track plays its own stored line. **ON** = its active steps still gate the rhythm, but the notes re-resolve live from the feeding track's current bar (the input channel on ENC5). **FREEZE** = keep the chord **that was sounding when you turned the knob**: `seqFollowModeSet` latches the feeder's current chord/note right then (`seqFollowFreezeCapture`) and **replays it unchanged** even as the feeder walks on — its own steps still gate *when* it plays, only *what* it plays is frozen. Leaving FREEZE (to ON or OFF) drops the latch, so every entry recaptures; if the feeder has nothing sounding at that instant the latch stays empty and the follower captures on its first frozen active step instead (also the boot path, since a restored FREEZE track starts unlatched). FREEZE counts as following for every gate that checks FOLLOW, so HARM/SKANK/arp-style listeners behave identically except that the resolved chord is held. A follower copies its feeder's timeline into a step, so while the **feeder is empty** a step press has nothing to copy and is refused with `Feeder track empty` in the header — feed the input track (or play a chord and press again) and the step lights. Survives SEQMODE4+REC (a 0/1/2 mode per track in the SEQ EEPROM block; older ON/OFF saves still load)
+- **ENC3**: **FOLLOW** — three-state `OFF · ON · FREEZE` (4 counts = 1 state, **clamped at both ends — no wrap**). **OFF** = the track plays its own stored line. **ON** = its active steps still gate the rhythm, but the notes re-resolve live from the feeding track's current bar (the input channel on ENC5). **FREEZE** = keep the chord **that was sounding when you turned the knob**: `seqFollowModeSet` latches the feeder's current chord/note right then (`seqFollowFreezeCapture`) and **replays it unchanged** even as the feeder walks on — its own steps still gate *when* it plays, only *what* it plays is frozen. Leaving FREEZE (to ON or OFF) drops the latch, so every entry recaptures; if the feeder has nothing sounding at that instant the latch stays empty and the follower captures on its first frozen active step instead (also the boot path, since a restored FREEZE track starts unlatched). FREEZE counts as following for every gate that checks FOLLOW, so HARM/SKANK/arp-style listeners behave identically except that the resolved chord is held. A follower copies its feeder's timeline into a step, so while the **feeder is empty** a step press has nothing to copy and is refused with `Feeder track empty` in the header — feed the input track (or play a chord and press again) and the step lights. Survives SEQMODE4+REC (a 0/1/2 mode per track in the SEQ EEPROM block; older ON/OFF saves still load). **An OVERDUBBED step is the one exception to "the feeder supplies the pitches"**: a step the record pass stacked while `OVERDUB` was `ON` **claims** itself and plays its **own** stored notes, exactly as it would with FOLLOW off (engine, FX, FScale, the PLAYBACK knob and the per-step `OCT`/`TRANS` all still apply) — every other step of the track keeps re-resolving from the feeder. A plain record gesture (`OVERDUB` = `OFF`) never claims: it still gates the rhythm and the feeder still supplies its pitches, as before. FREEZE and the live HARM / SKANK refreshes lose to a claim too — the point of the knob is that what you played is what sounds. The claim is step content: it rides in `stepAtt`, so a rotate, copy/paste and the undo snapshot carry it, while a fresh gesture with `OVERDUB` off, a generator re-roll or erasing the step clears it (it is masked out of the armed-attribute LED pulse, so a claimed step never lights an FX target it does not carry)
 - **ENC4**: Pattern **speed** of the edit sequence — step rate relative to the master clock: **1/64, 1/32, 1/16, 1/8, 1/4, 1/2, 1 (default), 2, 4** (the two slowest rungs are one step per 32 / 64 master ticks — a step can span several bars)
   - Per track (polymeter + polyrhythm): a slow track skips master ticks until its accumulator fills, a fast one plays 2–4 sub-steps inside one tick; the gate time scales with the track's own step length
   - Saved/restored with SEQMODE4+REC. Clock **SYNC** moved to **ENCMODE3+PLAY**
@@ -60,6 +60,92 @@ _Docs home: [Teensy2048](../README.md) · [Cheat sheet](../cheatsheet.md) · [Gl
 - Press **REC again** = cancel (`rec off`); **transport stop** interrupts the pass and re-arms it for the next start
 - **PLAY starts in SEQMODE or KEYMODE4** — start the transport there first (or feed an external clock), then switch to KEYMODE to arm and play
 
+### Record options — `LISTEN` / `PLAY` / `OVERDUB`
+
+Three knobs on the **M1 step-edit row** (`ENC2` / `ENC3` / `ENC4`, SEQMODE 1 and 2). They
+live where the row's `GATE` / `VEL` / `PROB` live: **the step-edit radio must be armed**,
+the plain track view must be showing — an open page that owns those slots (GNR8, LEAD,
+HARM, COMP, SKANK, DRUM, ARP) keeps them while it is open. Each knob is **4 counts = 1
+state, clamped at both ends — no wrap**, **per track**, and saved with **SEQMODE4 + REC**
+(the SEQ EEPROM block grew **1330 → 1380 bytes**; a save from an older build still loads
+and keeps `CHORD` / `GATE` / `OFF`).
+A **DRUM** track shows `--` and does not turn them; its record behaviour is the overdub it
+has always had.
+
+- **`ENC2 LISTEN` — what a record pass listens to**
+  - **`CHORD`** (default): the **gesture** — key edges, the held chord, a latched chord, notes arriving on the input channel. One write per touch, as before.
+  - **`NOTE`**: the **arp's own output**. Each note the live keyboard arp sounds is written to the **step it sounds on**, one note per step, so the line you hear is the line that gets stored instead of one chord on the step where the gesture began. On a **MONO** track the gesture's key edges stop recording altogether (the arp output is the only thing written); the arp output is captured only from the gesture you play — the track's own stored-step playback is never fed back into the recorder. On POLY / DRUM the knob has no arp to listen to and is inert.
+- **`ENC3 PLAY` — how stored steps play back**
+  - **`GATE`** (default): notes run **through the engine** as always — MONO's ROOT / BASS / ARP / STRUM / LEAD pick, POLY's per-step FX, FScale, HAND buffering, COMP shaping.
+  - **`RECORDED`**: the stored notes sound **exactly as recorded**, **all at once**, with the engine bypassed. The track's playback octave and the per-step `OCT` / `TRANS` still apply; step FX, FScale, strum/HAND onsets and COMP shaping are skipped, and a MONO track's BASS/LEAD register fold is skipped too.
+- **`ENC4 OVERDUB` — what a fresh gesture does to a step**
+  - **`OFF`** (default): a fresh gesture **replaces** the step (and clears its attributes) — today's behaviour.
+  - **`ON`**: notes **stack** onto what the step already holds, duplicates skipped — the DRUM behaviour, now on MONO and POLY. A MONO track whose step holds several notes then plays **all of them at once** (the track stops being mono for that step) instead of the engine picking one.
+  - `ON` never clears: a record pass re-prints cleanly on an empty track and stacks on a filled one.
+  - **A claimed step beats FOLLOW**: while the track follows, every other step still re-resolves its pitches from the feeder, but a step stacked with `ON` keeps its own notes and plays them (see [ENC3 FOLLOW](#sequence-configuration) above) — which is why overdubbing is audible with FOLLOW on and not only with it off.
+
+The header echoes each change full-width: `Listen Chord` / `Listen Note`,
+`Playback Gate` / `Playback Recorded`, `Overdub Off` / `Overdub On`.
+
+### Overdub layers — hold `M2`
+
+A record pass with `OVERDUB` = `ON` stacks notes onto what is already there, but until now
+there was no way to take a single pass back out again. **Layers** give every note the
+identity of the pass that wrote it: up to **4 layers per track**, shown and managed from a
+keyboard-row overlay opened by **holding `M2`** in SEQMODE 1/2/4 (the panel wears the
+**same hue as the M2 button**, i.e. the track's `seqPageColor()`; DRUM tracks have no
+layers — their steps gate per voice — so the hold does nothing there, and SEQMODE 3 keeps
+its own M2 jobs).
+
+**How a layer gets picked** — a layer is **one record pass over the whole pattern**. When
+the pass starts it writes the **first layer that holds no notes anywhere** in the pattern,
+so pre-existing content counts as layer 1 (the first pass over a written pattern lands in
+layer 2) and a set where all four layers are full **stacks into layer 4**. Every note of
+the pass carries that tag (`stepLay`, RAM only — patterns are never stored, so neither are
+layers); DRUM steps stay untagged.
+
+**The panel** (while `M2` is held — release closes it):
+
+| Key | Job |
+|---|---|
+| **C · D · E · F** (white) | layers **1 · 2 · 3 · 4** — with nothing armed, a press **reports** the layer (`Layer 2: 7 notes` / `Layer 2 empty`); with `MUTE` or `ERASE` armed it **confirms** on that layer |
+| **C#** | arm / disarm **mute layer** (`Mute layer?`) |
+| **D#** | arm / disarm **erase layer** (`Erase layer?`) |
+| **F#** | **undo** the last layer command (`Undone` / `Nothing to undo`) |
+| **G#** | **redo** it (`Redone` / `Nothing to redo`) |
+| **A#** | **reset layers** — flatten the whole track back to one layer (`Layers flattened`) |
+| **G · A · B** | nothing assigned (swallowed while the panel is up) |
+
+Arming is a toggle: pressing the armed black key again disarms (`Layer cmd off`), and any
+confirm or a command press clears the arm. The white keys and black commands swallow their
+press, release and click, so nothing leaks to the instrument even if the overlay closes
+mid-hold.
+
+- **Mute layer** gates **playback only** on this track: the layer's notes drop out of every
+  step (a step whose notes are all muted **rests**), and notes already sounding ring out to
+  the next step boundary — same granularity as the track mute. A follower reads the
+  **feeder's** mute mask and tags, because that is where its chord came from.
+- **Erase layer** deletes that layer's notes from every step of the track: the remaining
+  notes compact in place (strum onsets and tags travel with them), a step that empties
+  loses its attributes with it, and mirrors / HARM re-derive follow. Nothing to erase = no
+  change.
+- **Reset layers (flatten)** sets every tag back to layer 1 and clears the mute mask, so
+  the pattern reads as a single base layer again; an already-flat track reports but does
+  not change.
+- **Undo / redo** walk **layer commands only** (mute, erase, flatten — never ordinary step
+  edits), on an **8-deep** stack per direction. Undo and redo each move the current state
+  onto the other stack and apply the top of this one, switching the edit channel to
+  whatever they restore.
+
+**LEDs**: the whole keyboard row turns into the panel — the four white keys wear the
+track's page hue **bright when the layer holds notes, dim when empty, red when muted**;
+the five black keys wear the same hue **dim as commands, bright while armed**; `G A B` sit
+dark and the gap LEDs go black. Touch still flashes white, and the panel wins over every
+inherited key colour while it is up.
+
+Like the patterns they tag, layers and the undo stacks live in **RAM only** — no EEPROM
+change, gone on power cycle.
+
 ## Bar Loop
 - **Press C/D/E/F bar button** (on step pads in SEQMODE3): first press selects that 16-step edit window; **press again on the SELECTED bar toggles its loop**
 - **Loop activation**: playhead **teleports immediately** to the looped bar and starts looping it (no waiting to "walk" there)
@@ -104,7 +190,7 @@ _Docs home: [Teensy2048](../README.md) · [Cheat sheet](../cheatsheet.md) · [Gl
   - **ENC2 = TRANS** — the edit track's **semitone transpose** of its playback, **1 count = 1 st**, clamped **−12…+12**, no wrap; header `Transpose +k` / `Transpose −k`. TRANS is **non-destructive**: the stored steps never change, the playback offset is applied after the fold/octave shaping (the same property ENC1's octave shift has). **DRUM tracks ignore it** (the turn does nothing). Generators bake *raw* notes (the offset then moves the whole result), comp stabs / HARM live-follow / FOLLOW-resolved notes pick it up at send time, and it survives SEQMODE4+REC (per-track field of the extended SEQ EEPROM block, backward-tolerant like the rest).
   - **ENC3 = KLOCK** — per-track **scale-lock** for the TRANS offset, a **two-state switch with no wrap** exactly like the KEYMODE3 `ENCOD`/`KBOARD` switches: **CW = `Scale Lock on`**, **CCW = `Scale Lock off`**, so a continuous turn saturates at the end instead of flipping back and forth on every count (the header/value column only repaint when the flag actually changes). When **ON** the transposed playback note is snapped back to the **nearest in-scale pitch** (down first, then up), so the −12…+12 semitone knob stays **diatonic** under the current KEY + SCALE. Non-destructive like TRANS (stored steps untouched; the snap is a playback-time transform), applied *after* the octave + TRANS offset on every playback path (POLY, MONO incl. STRUM, and FOLLOW-resolved notes). Chromatic (scale `Chrom`) is a no-op. **DRUM tracks never lock** (their "notes" are drum-map ids). Turning the scale recolors the transposed line live. Survives SEQMODE4+REC (per-track flag of the extended SEQ EEPROM block).
 - **Hold a step pad = per-step TRANS overlay** (non-DRUM tracks): the encoder row swaps to `TRANS` on **ENC1** and the header announces `Step N Transpose +k` — **1 count = 1 st**, same −12…+12 clamp. It is a **playback-only modifier like the step's OCT** (the stored chord stays a clean root-shape for the generators), **never probability-rolled**, moves with **SHIFT** (rotate), resets with generate/erase, and needs no undo (release just closes the overlay; the step keeps its offset until the next step refresh). Assign mode keeps working while the step is held; release closes the overlay (a PREV pressed mid-hold keeps its own row). Per-step values are **RAM only** like every other step field.
-- Saved/restored with SEQMODE4+REC: the per-track **TRANS** offset arrived with the 436-byte extension and **Klock** closed the 665-byte block; the SEQ EEPROM block is **1330 bytes** today, and a save of any earlier size (1296 · 1262 · 940 · 923 · 666 · 665 · 649 · 616 · 567 · 564 · 532 · 436 · 420 · 404 · 388 · 260 bytes) still loads — TRANS = 0, Klock = off, and speed indices written before the ladder grew to nine rungs are lifted two rungs so a saved **1/16** still boots as 1/16.
+- Saved/restored with SEQMODE4+REC: the per-track **TRANS** offset arrived with the 436-byte extension and **Klock** closed the 665-byte block; the SEQ EEPROM block is **1380 bytes** today, and a save of any earlier size (1330 · 1296 · 1262 · 940 · 923 · 666 · 665 · 649 · 616 · 567 · 564 · 532 · 436 · 420 · 404 · 388 · 260 bytes) still loads — TRANS = 0, Klock = off, and speed indices written before the ladder grew to nine rungs are lifted two rungs so a saved **1/16** still boots as 1/16.
 
 ## Cross-Sequence Sync
 When a track's step chords are written, all MONO/POLY sequences **listening to that track's channel** re-derive their active steps from the source timeline (single-level, non-recursive). This enables "follow the leader" arrangements. A POLY track with **TYPE = HARM** never mirrors — it **re-bakes** instead (see the [HARM generative page](../generators/harm.md)).

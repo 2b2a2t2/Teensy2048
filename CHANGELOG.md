@@ -6,7 +6,85 @@ de-facto version marker is the size of the saved-settings block (see
 
 ## Unreleased
 
+### Ableton Live bridge
+
+- **`ENCABLETONMODE` — tap `NEXT` in ENCMODE and the instrument becomes a Live controller** —
+  a latched overlay (like an ARP page, not a fourth mode family) with a companion remote
+  script in `Remote Scripts/Teensy2048/`. The pads become the selected track's 16 **clip
+  slots** (bright green playing · blinking green triggered · dim green has a clip · dark blue
+  empty · dim red armed): press an empty one to **create and fill** it from that channel's
+  Teensy pattern, a filled one to **launch**, a playing one to **stop**, double-press to
+  **re-fill**. A fill is `patLen × 0.25` beats with notes at the stored pitch **+ 12 × octave
+  + transpose**, duration `0.25 × gate%`, TIE ringing through the following empty steps,
+  GLIDE +0.02 beat, velocity accent-aware and PROB as the note's probability. **PREV** (hold)
+  turns the pads into the 16 **tracks**, **M3** swaps **F1–F4** to `FILL · SCENE · STOP ·
+  ALL`, **F1/F2** page the parameter bank and **F3/F4** step the device. The knobs auto-map to
+  the selected device's eight parameters on the **new CC block 64–71** — ENCMODE's CC 17–20 /
+  CC 1–36 map, its dials and its per-CC-per-channel memory stay **byte-identical**, so every
+  MIDI-learn map keeps working; a track with no device shows its mixer instead. Traffic is
+  SysEx only (`F0 7D 37 32 34 38 … F7`, ≤ 32 bytes, chunked pattern dumps, HELLO retried
+  every 200 ms), so a port that also carries Ableton's clock is unaffected; state-only, never
+  clock. `Link.h/.cpp` (new), `Keyboard`, `Bindings`, `Modes`, `Events`, `Display`, `SeqClock`,
+  `Teensy2048.ino`, `Remote Scripts/Teensy2048/` (new), docs (`modes/link.md` new); patterns
+  and overlay state are RAM only — **no EEPROM block change**.
+
 ### Sequencer
+
+- **Overdub layers + the hold-`M2` layer panel** — every note a record pass writes now
+  remembers **which pass wrote it**: up to **4 layers per track** (RAM only, like the
+  patterns; DRUM steps stay untagged). A pass writes the **first layer that holds no notes
+  anywhere**, so pre-existing content counts as layer 1, the first pass over a written
+  pattern lands in layer 2, and a full set **stacks into layer 4**. **Holding `M2`** in
+  SEQMODE 1/2/4 (non-DRUM edit track) opens a keyboard-row panel in the **M2 button's
+  hue**: white **C D E F = layers 1–4** (bright = holds notes, dim = empty, red = muted;
+  a press reports `Layer 2: 7 notes`), the black keys carry **C# = mute layer · D# =
+  erase layer · F# = undo · G# = redo · A# = reset layers** — mute/erase arm first and a
+  white key confirms (press the armed key again to disarm), undo/redo/reset fire at once.
+  **Mute** gates playback per layer (an all-muted step rests; a follower filters with the
+  feeder's mask), **erase** deletes the layer's notes from every step (the rest compact,
+  emptied steps lose their attributes, mirrors/HARM re-derive), **reset** flattens all
+  layers back into one. Undo/redo walk **layer commands only** on an **8-deep** stack per
+  direction and switch the edit channel to whatever they restore. The panel swallows its
+  keys (press/release/click) so nothing leaks to the instrument, and closes on every M2
+  release even across a mid-hold mode switch. `Keyboard` (`stepLay`/`layMute`/`recLay`,
+  playback filter, overlay + stacks), `Events`, `Modes`; docs (`modes/seqmode.md`); no
+  EEPROM change.
+
+- **`OVERDUB` now works while `FOLLOW` is ON** - a follower re-resolves every step's
+  pitches from the feeder, so notes stacked by a record pass were thrown away on the
+  next lap and the knob only shaped what you heard with FOLLOW off. A step the pass
+  stacked while `OVERDUB` = `ON` now **claims** itself: it plays its **own** stored
+  notes exactly as it would with FOLLOW off (engine, FX, FScale, the PLAYBACK knob and
+  the per-step `OCT`/`TRANS` all still apply), while every other step of the track keeps
+  following the feeder. A plain record gesture (`OVERDUB` = `OFF`) never claims - it
+  still gates the rhythm and the feeder still supplies its pitches, as before - and
+  FREEZE plus the live HARM / SKANK refreshes lose to a claim. The flag rides in
+  `stepAtt`, so a rotate, copy/paste and the undo snapshot carry it while a fresh
+  gesture, a generator re-roll or erasing the step clears it; it is masked out of the
+  armed-attribute LED pulse so a claimed step cannot light an FX target it does not
+  carry. Patterns are RAM only, so no EEPROM change.
+
+- **Live record gains `LISTEN` / `PLAY` / `OVERDUB` on the M1 step-edit row** (SEQMODE 1
+  and 2, ENC2/3/4, per track, saved with SEQMODE4 + REC). `LISTEN` picks what the pass
+  stores: `CHORD` (the gesture, as before) or `NOTE`, which writes the **live arp's own
+  output** onto the step it sounds on — one note per step — instead of a single chord on
+  the step where the gesture started; on a MONO track the gesture's key edges stop
+  recording while `NOTE` is set. `PLAY` picks how stored steps sound: `GATE` (through the
+  engine, as before) or `RECORDED`, which plays the stored notes **verbatim, all at once**
+  with the engine bypassed (octave and per-step `OCT`/`TRANS` still apply; step FX, FScale,
+  strum/HAND and COMP shaping are skipped). `OVERDUB` picks what a fresh gesture does:
+  `OFF` replaces the step (as before), `ON` stacks notes onto it — and a MONO step that
+  then holds several notes plays **all of them at once**. All three are clamped (4 counts =
+  1 state, no wrap); a DRUM track shows `--`, and only the gesture you play feeds the
+  recorder, never the track's own playback.
+
+- **ENCMODE: the step pads are the channel picker in plain ENCMODE, not ENCMODE4** -
+  the locked picker moved off the double-click variant, so entering ENCMODE now hands the
+  16 pads to the encoder's MIDI channels (left header `CHANNEL SELECT`, bright yellow =
+  the selected one, a press sets the channel and repaints the dials). **ENCMODE4 keeps the
+  sequencer on the pads** - playhead, step states and triggers - so the CC dials can be
+  worked while the pattern runs. Variant 3 is still the momentary hold picker, and
+  ENCMODE4 + REC still saves the 36x16 CC values and channel.
 
 - **ARP: the MODE knob now carries all nine walk orders** - `OUTIN` / `INOUT` /
   `CONV` / `DIV` existed only on the F1 `ORDER` knob, so with `ORDER = MODE` (the
@@ -125,7 +203,7 @@ block size tells you which build wrote it.
 | 1262 | ARP sub-page parameters |
 | 1296 | per-track swing style and amount |
 | 1330 | per-track `EXT IN` and `SRC` |
-| 1380 | **pending** — live-record options on the M1 step-edit row (`TODO.md`) |
+| 1380 | per-track live-record options (`LISTEN` / `PLAYBACK` / `OVERDUB`) |
 
 `ENC 4 + REC` is the exception: an older block is **ignored** and defaults stay, because a
 half-loaded CC map is worse than a clean one.

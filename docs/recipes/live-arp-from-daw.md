@@ -26,6 +26,11 @@ An arpeggio that exists only while you hold the chord. Release, and those steps 
   MIDI thru box.
 - `ON` listens and feeds the pending chord for **recording**: same input path, but you
   capture it into steps with **REC** instead of playing it live.
+- To **keep the arpeggio you heard** rather than the held chord, arm **REC** with the
+  step-edit row's **`LISTEN`** → `NOTE`: each arp note is written to the step it sounds
+  on, one note per step, and the track's key edges stay out of the way. `PLAY` →
+  `RECORDED` then plays that line back exactly as it was captured — see
+  [Live recording](../modes/seqmode.md#live-recording).
 - Swap the transform to `BASS` or `LEAD` and the same held chord becomes a different part.
 
 ## Traps

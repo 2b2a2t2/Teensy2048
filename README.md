@@ -17,6 +17,7 @@ load, no computer required.
 | Program a 16-track pattern and sync it to a DAW | [Sequencer](docs/modes/seqmode.md) |
 | Generate basslines, leads and harmonies from a chord progression | [Generators](docs/generators/gnr8.md) |
 | Use the eight knobs as MIDI CC controllers | [Encoder mode](docs/modes/encmode.md) |
+| Drive Ableton Live's clips and device knobs | [ENCABLETONMODE](docs/modes/link.md) |
 | Build or reflash the firmware | [Build & flash](docs/build.md) |
 
 ## Hardware at a glance

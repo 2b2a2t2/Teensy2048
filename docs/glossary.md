@@ -141,6 +141,9 @@ legend means the knob has no idle binding.
 | `SRC` | external source (`USB` / `DIN` / `BOTH`) |
 | `EXT IN` | external input mode |
 | `GATE` / `VEL` / `PROB` | gate length / velocity / probability |
+| `LISTEN` | what a live record pass listens to (`CHORD` / `NOTE`) |
+| `PLAY` | playback source for stored steps (`GATE` / `RECORDED`) |
+| `OVERDUB` | whether a fresh gesture stacks onto a step (`OFF` / `ON`) |
 | `SHIFT` | pattern rotate |
 | `TRANS` | transpose |
 | `KLOCK` | key lock — fixes the TRANS offset to the scale |

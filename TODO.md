@@ -8,29 +8,13 @@ Rules of engagement live in `AGENTS.md` (read it before touching this file).
 Current phase: tuning + bug hunting on the hardware. **No feature work
 from the Backlog while this section has open items** (unless overridden).
 
-- [ ] **Live-record options on the M1 step-edit row — ENC2 LISTEN (CHORD/NOTE),
-  ENC3 PLAYBACK (GATE/RECORDED), ENC4 OVERDUB (OFF/ON)** (user report +
-  request: *\"when live recording an arp track (i hold a chord on the
-  keyboard, i hear the arpeggiated chord) if i try to record what i play,
-  only a single note is recorded on one single step, the recording should
-  also be able to record all played notes or even to overdub (which means
-  the track would of course no longer be a mono track), we could set these
-  options on ENC2-4 in the step edit (M1)\")* — root cause: live record
-  (`liveRecAppend`) captures keyboard **key edges** only; the arp you hear
-  (live keyboard arp / transport arp) never feeds the recorder, so a chord
-  held before arming records at most one later key press — and a fresh
-  gesture clears the step first. Design (decided with user): **LISTEN**
-  CHORD = today, NOTE = the arp's output note lands on the step it sounds
-  on (capture hooks: live keyboard arp + the EXT IN = LIVE injected pass;
-  never the track's own stored-step playback — no self-feeding passes).
-  **PLAYBACK** GATE = engine as now, RECORDED = stored notes verbatim,
-  all at once (engine bypassed; octave + per-step TRANS still applied —
-  recording is pre-compensated). **OVERDUB** OFF = replace (as now), ON =
-  stack notes onto steps; a MONO track's stacked steps then play all at
-  once (the \"no longer mono\" consequence, user's choice). MONO gets all
-  three, POLY gets PLAYBACK + OVERDUB, DRUM untouched, LISTEN=NOTE is
-  MONO-only. Variants 1/2 only (variant 4 keeps AMT/EXT IN/SRC). Per
-  track, EEPROM 1330 → 1380.
+- [ ] **ENCABLETONMODE — audition against Live** (implemented 2026-11-04, see
+  `docs/modes/link.md`): install `Remote Scripts/Teensy2048/`, flash, then check handshake
+  (`Live Mode On`), clip LEDs, single fill + scene fill, launch/stop/quantisation, the
+  parameter pages on a device, the mixer fallback, and EXT clock still running with the
+  bridge alive. Open questions from the build: whether `device.parameters[1:]` is the right
+  page for a v1 (racks and Max devices may need bank scraping), and whether Live's
+  `is_triggered` blink rate reads well against the 30 ms LED refresh.
 
 ## 🚿 Hygiene (quick fixes, anytime)
 
@@ -193,6 +177,127 @@ from the Backlog while this section has open items** (unless overridden).
 - Harmonic rhythm control — chord-change rate independent of step rate
 
 ## ✅ Done (ticked items; prune occasionally)
+
+- [x] **Overdub layers + hold-M2 layer overlay** (user request: *"holding M2 should
+  show the different layers (4 max) of overdub on a dedicated keyboard overlay (same
+  color as M2 button): black keys selects : mutelayer/ eraselayer/ undo/ redo/resetlayers"*,
+  shipped 2026-11-04) — all design questions answered and implemented:
+  - **A layer = one record pass over the whole pattern** (not per step). The pass picks
+    `layPassPick()` = the **first layer with no notes anywhere** in the pattern, so
+    pre-existing content counts as layer 1 (first pass over a written pattern lands in
+    layer 2) and a set where all 4 are full **stacks into layer 4**; picked at pass start
+    (`recState 1→2`).
+  - **Tag scheme**: `stepLay[16][64][8]` = 0..3 (0 = layer 1, zero-init = base content),
+    `recLay[16]` = the running pass's layer, `layMute[16]` = 4-bit per-track mute.
+    DRUM steps never tagged (they gate per voice, like the OVERDUB claim). **RAM only, no
+    EEPROM change.**
+  - **Overlay**: opens on `EV_HOLD` of M2 in SEQMODE 1/2/4 (non-DRUM edit track; SEQMODE3
+    and ENCMODE keep their own M2 jobs), closes on **every** M2 release
+    (`layOvClose()` runs unconditionally, so a mode switch mid-hold cannot strand it).
+    White **C D E F = layers 1–4** (report / confirm), black **C# = MUTE arm, D# = ERASE
+    arm** (press again to disarm), **F# / G# / A# = undo / redo / reset**, G A B dark —
+    all swallowed (press + release + click) via the `layHeld`/`layRel` masks so nothing
+    leaks to the instrument. LEDs wear the **M2 pad's `seqPageColor()`**: white keys
+    bright = notes / dim = empty / red = muted, black keys dim = command / bright =
+    armed (`Modes.cpp modeLedHook`).
+  - **Mute** = playback-only per layer (all-muted step rests; a follower filters with the
+    FEEDER's mask + tag row; FREEZE/live/DRUM bypass); **erase** compacts notes+dt+tags
+    per step (`stepAttClear` on emptied steps, `stepSyncFrom` after, undo pushed only if
+    the layer had notes); **reset** = flatten all tags to 0 + clear `layMute` (undo only
+    if non-flat).
+  - **Undo/redo**: `LaySnap` (full step-table field set + `lay[64][8]` + mute mask + ch,
+    no patLen/speed) × 8 slots × 2 stacks (`layStack[2][8]`, ≈55 KB RAM); `layPush()`
+    clears redo and drops the oldest when full; undo and redo are one `laySwap()` that
+    moves current state to the other stack then applies the top (switching edit channel
+    like `stepSnapshotRestore`, then `seqOctClamp` + `stepSyncFrom`).
+  - Tag lifecycle: zeroed in `stepAttClear`, written in `liveRecAppend`, rotated
+    (`stepRotRow`), snapshotted (`snapLay`), mirrored (`stepSyncFrom`), copied
+    (`patClip`, `seqPatRepeatInto`, `stepDrumToggle`, ext-assign fresh start).
+  - `Keyboard.cpp/h` (storage, playback filter above the `plays` gate, overlay section),
+    `Events.cpp` (M2 hold/release + first-in-block `layKeyHandle` dispatch with the
+    header strings), `Modes.cpp` (panel LEDs); docs: `docs/modes/seqmode.md`
+    (*Overdub layers — hold M2*), `CHANGELOG.md`, `docs/status.md` (Beta), `leds.md`,
+    `cheatsheet.md`; `tools/header_lint.py` clean, build clean, flashed 2026-11-04;
+    not yet auditioned on hardware
+
+- [x] **ENCABLETONMODE — NEXT overlay + companion Ableton remote script** (user-approved
+  plan, 2026-11-04) — a latched overlay inside ENCMODE rather than a fourth family: pads =
+  the selected track's 16 Live clip slots (fill from the Teensy pattern, launch, stop,
+  re-fill; empty/has-clip/playing/triggered/armed LEDs from the script), PREV (hold) = the 16
+  tracks, M3 = the `FILL SCENE STOP ALL` F row, F1/F2 = parameter bank, F3/F4 = device, and
+  the eight knobs auto-map to the device's parameters on a **new CC 64–71 block** so
+  ENCMODE's CCs, dials and MIDI-learn maps are untouched. New `Link.h/.cpp` (framing, one
+  queued message per `linkPump()`, HELLO/ACK liveness, chunked pattern streamer, param and
+  clip caches), `Keyboard` per-track readers, `Bindings` `ENC_ABLETON`/`CTRL_ABLETON`/
+  `STEP_ABLETON`, `Modes` overlay state + clip LED row, `Events` NEXT/PREV/M3/F/pad/encoder
+  handlers, `Display` overlay screen (`LIVE <track>` header, 8 names + Live values),
+  `SeqClock` pump, `.ino` init; `Remote Scripts/Teensy2048/` (ControlSurface, SysEx,
+  listeners, clip writer, parameter pages, mixer fallback). Builds clean (FLASH 210 320),
+  `tools/header_lint.py` 0 findings, script `py_compile` clean; Live behaviour left to
+  audition (see the Active item). RAM only — no EEPROM change.
+- [x] **`OVERDUB` did nothing while `FOLLOW` was ON** (user report: *"it is annoying
+  when follow is ON, the overdubbed recorded notes are following sequence on the next
+  loop so the overdub function is only working when follow is off"*, fixed 2026-11-04) —
+  a follower throws the step's own chord away (`ch` read `stepChord[seqInCh[c]-1][fstp]`,
+  and the stacked gate was `stack = !follow && …`), so notes stacked by a record pass
+  were discarded on the next lap. Fix (design chosen with the user: **the step's own
+  notes win, and only an `OVERDUB = ON` write earns that**): the record pass now
+  **claims** a step when it stacks onto it — new `SEQ_ATT_OVDM` (bit 4 of `stepAtt`,
+  which already travels with the content through rotate, copy/paste, the undo snapshot
+  and `stepAttClear`), and `seqAdvanceOnce` skips the feeder resolution, the FREEZE
+  latch and the live HARM / SKANK refresh for a claimed step, so it plays its own chord
+  exactly as FOLLOW off would (engine pick, FX, FScale, PLAYBACK, per-step OCT/TRANS,
+  HAND onsets; the `stack` gate counts it as a non-follower). Every other step keeps
+  following; a plain record gesture (`OVERDUB = OFF`) never claims. `stepAttrs()` masks
+  bits 4-5 before it synthesises the FX/TYPE LED pulses, so a claimed step cannot pulse
+  an armed target it does not carry. Patterns are RAM only — no EEPROM change.
+  `Keyboard.h`, `Keyboard.cpp`; docs `docs/modes/seqmode.md` (FOLLOW bullet + OVERDUB
+  bullet), `CHANGELOG.md`; compiled (`FLASH: code:204304`), `tools/header_lint.py`
+  0 findings, uploaded; **not yet auditioned on hardware**; 2026-11-04
+- [x] **Live-record options on the M1 step-edit row — ENC2 LISTEN (CHORD/NOTE),
+  ENC3 PLAY (GATE/RECORDED), ENC4 OVERDUB (OFF/ON)** (user report: *"when live
+  recording an arp track … only a single note is recorded on one single step … we
+  could set these options on ENC2-4 in the step edit (M1)"*; fixed 2026-11-04) —
+  root cause was that `liveRecAppend` only ever saw keyboard **key edges**, so the
+  arp you hear never fed the recorder and a fresh gesture cleared the step first.
+  Shipped: **LISTEN** `CHORD` (gesture, as before) / `NOTE` — the live keyboard
+  arp's output (and the EXT IN = `LIVE` injected pass) is written onto the step it
+  sounds on, one note per step, with key-edge writes suppressed on a MONO track;
+  capture hooks only ever see the gesture, never the track's own stored-step
+  playback (no self-feeding). **PLAY** `GATE` (engine as before) / `RECORDED` —
+  stored notes play verbatim, all at once, engine bypassed (octave + per-step
+  `OCT`/`TRANS` still apply; step FX, FScale, strum/HAND onsets, COMP shaping and
+  the BASS/LEAD fold are skipped). **OVERDUB** `OFF` (replace, as before) / `ON` —
+  notes stack onto the step (duplicates skipped) and a stacked MONO step plays all
+  its notes at once. Variants 1/2 only, MONO + POLY (DRUM keeps `--`), clamped
+  4 counts = 1 state with no wrap, per track, EEPROM **1330 → 1380**
+  (`recListen/recPlayback/recOverdub[16]` at b[1330..1377], `SEQ_RECMARK` at b[1378],
+  cascade 1380→1330→1296→…, marker-validated so an older save still loads).
+  `Keyboard.h`/`Keyboard.cpp` (enums, adjusters, `liveRecAppend`, hooks, playback
+  gates, save/load), `Events.cpp` (dispatch in the `stepEditOn` branch), `Bindings.cpp`
+  (labels), `Display.cpp` (DRUM `--` override + value column), docs: `docs/modes/seqmode.md`
+  (new *Record options* subsection), `docs/reference/bindings.md`, `docs/cheatsheet.md`,
+  `docs/glossary.md`, `docs/recipes/live-arp-from-daw.md`, `docs/status.md`, the EEPROM
+  size lines in `timing.md`/`skank.md`/`lead.md`/`comp.md`/`drum-styles.md`/ADR 0003,
+  `CHANGELOG.md`; compiled (`FLASH: code:204176`), `tools/header_lint.py` 0 findings,
+  uploaded; **not yet auditioned on hardware**; 2026-11-04
+- [x] **Inverted the channel picker: plain ENCMODE locks the steps, ENCMODE4 shows the sequence**
+  (user request: *"we need to invert ENCMODE4 and ENCMODE select channel behavior for the
+  steps : ENCMODE should have locked select channel and ENCMODE4 should still see the
+  sequencer running"*) - the locked picker added the day before sat on ENCMODE4, so the
+  ordinary ENCMODE left the steps on the sequencer and the double-click variant hid the
+  playhead. One line of truth moved: `chSelOverlay()` now returns true for
+  `MODE_ENC && modeVariant == 1` instead of `== 4`, and everything that reads it follows -
+  the step-pad branch (press = `encSetChannel` + `channelLinkPropagate(1)` + `Channel N`),
+  the yellow pad row with the bright yellow selected channel, and `modeHeaderLabel()`
+  printing `CHANNEL SELECT`. ENCMODE4 therefore falls through to the normal step row:
+  green playhead, step states, triggers, the M1 drum-voice mute and M2 channel mute
+  overlays, so the dials can be worked while the pattern runs. Nothing else moved:
+  variant 3 is still the momentary hold picker on all three families, ENCMODE4 + REC still
+  saves the 36x16 CC values + channel, and ENCMODE4 still blinks. `Modes.cpp` (one
+  condition + comments), `Events.cpp` (comment), `docs/modes/encmode.md`,
+  `docs/reference/leds.md`, `docs/reference/display.md`; compiled (`FLASH: code:204176`),
+  `tools/header_lint.py` 0 findings; 2026-11-03
 - [x] **ARP MODE knob was missing the four pivot walk orders** (user report:
   *"some arp ORDER from ARP ORDER page M2/F1 (OUTIN, INOUT, CONV, DIV) are missing in
   the Arp Mode in M2 page"*, fixed 2026-11-03) - `OUTIN` / `INOUT` / `CONV` / `DIV`

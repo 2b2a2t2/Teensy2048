@@ -10,6 +10,7 @@
 #include "Key4.h"       // KEYMODE4 genre/knob values + control legend
 #include "Skank.h"      // SKANK page: shape name (LIN/PP/RND)
 #include "Drum.h"       // DRUM page: genre/var/lane values
+#include "Link.h"       // ENCABLETONMODE: Live track/clip/parameter state
 #include <Wire.h>
 
 U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, U8X8_PIN_NONE);
@@ -49,6 +50,20 @@ static const char* ctrlLegend(uint8_t i) {
   if (i > 8) return "";
   bool key2 = keyBehaviorVariant() == 2;   // quality / extension momentaries
   bool key4 = (modeBase == MODE_KEY && modeVariant == 4);  // genre row
+  // ENCABLETONMODE renames its whole control row: PREV = tracks, M3 = the
+  // clip-action set, F1-F4 = bank/device nav or the four clip actions
+  if (abltOn() && modeBase == MODE_ENC && modeVariant != 3) {
+    if (i >= 5) {
+      if (!abltActionSet()) {
+        static const char* bl[4] = { "BANK<", "BANK>", "DEV<", "DEV>" };
+        return bl[i - 5];
+      }
+      static const char* cl[4] = { "FILL", "SCENE", "STOP", "ALL" };
+      return cl[i - 5];
+    }
+    static const char* al[5] = { "TRACKS", "LIVE", "DRUM", "MUTE", "CLIPS" };
+    return al[i];
+  }
   if (i >= 5) {
     // SEQMODE + strum ADDS row (open with M2 on a POLY STRUM/HAND track):
     // F1..F4 = sus4 / add6 / add9 / clear - wins over the step-edit legend
@@ -193,6 +208,50 @@ static void drawCcDial(uint8_t cx, uint8_t cy, uint8_t val) {
 void refreshMainScreen() {
   clearMainScreen();
   u8g2.setFont(u8g2_font_4x6_tr);
+
+  // ENCABLETONMODE: the eight knobs are the selected device's parameters -
+  // the script's short name over Live's display value, two rows of four in
+  // the same band the CC dials occupy.  Only while the link is alive: a dead
+  // script falls through to the CC screen below, which never lies
+  if (modeBase == MODE_ENC && abltOn() && modeVariant != 3 && linkAlive()) {
+    for (uint8_t c = 0; c < 4; c++) {
+      uint8_t x = (uint8_t)(c * 32 + 1);
+      char num[8];
+      const char* nm = linkParamName(c);
+      const char* tx = linkParamText(c);
+      if (!nm[0]) nm = "--";
+      if (!tx[0]) {
+        snprintf(num, sizeof(num), "%u", (unsigned)linkParamValue(c));
+        tx = num;
+      }
+      u8g2.setFont(u8g2_font_micro_tr);
+      u8g2.drawStr(x, 22, nm);
+      u8g2.setFont(u8g2_font_4x6_tr);
+      u8g2.drawStr(x, 30, tx);
+
+      char num2[8];
+      const char* nm2 = linkParamName((uint8_t)(4 + c));
+      const char* tx2 = linkParamText((uint8_t)(4 + c));
+      if (!nm2[0]) nm2 = "--";
+      if (!tx2[0]) {
+        snprintf(num2, sizeof(num2), "%u",
+                 (unsigned)linkParamValue((uint8_t)(4 + c)));
+        tx2 = num2;
+      }
+      u8g2.setFont(u8g2_font_micro_tr);
+      u8g2.drawStr(x, 38, nm2);
+      u8g2.setFont(u8g2_font_4x6_tr);
+      u8g2.drawStr(x, 46, tx2);
+    }
+    for (uint8_t c = 0; c < 5; c++) {
+      uint8_t x = (uint8_t)(c * 25 + 1);
+      u8g2.drawStr(x, 54, ctrlLegend(c));
+      const char* r2 = ctrlLegend((uint8_t)(5 + c));
+      if (r2[0]) u8g2.drawStr(x, 62, r2);
+    }
+    displayDirty = true;
+    return;
+  }
 
   // ENCMODE (every variant but the channel picker, which keeps its own
   // screen): the label/value text rows and the control legend are replaced
@@ -830,6 +889,16 @@ void drawHeaderText() {
   // rebind is always visible.  Every label here is a whole word - the strip
   // is read at a glance during a set, so "PROB" is not a label
   const char* left = headerLeft;
+  // ENCABLETONMODE names the Live track it is bound to in the left slot
+  char liveLeft[22];
+  if (abltOn() && modeBase == MODE_ENC) {
+    if (linkTrackName()[0]) {
+      snprintf(liveLeft, sizeof(liveLeft), "LIVE %.12s", linkTrackName());
+    } else {
+      snprintf(liveLeft, sizeof(liveLeft), "LIVE LINK");
+    }
+    left = liveLeft;
+  }
   if (drumPageActive()) {
     left = "DRUM PATTERN";       // the drum pattern page owns the row
   } else if (genPageActive()) {

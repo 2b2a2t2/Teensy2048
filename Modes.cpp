@@ -8,6 +8,7 @@
 #include "Chords.h"
 #include "Events.h"
 #include "Key4.h"      // KEYMODE4 proposal LEDs (rank / focus / locks)
+#include "Link.h"      // ENCABLETONMODE: clip-slot states the script feeds
 
 ModeBase modeBase = MODE_NONE;
 uint8_t modeVariant = 0;
@@ -53,6 +54,11 @@ static uint8_t familyMem[4] = { 0, 1, 1, 1 };
 // stored).  RAM only, like familyMem
 static uint8_t keyModeMem[16] = { 1, 1, 1, 1, 1, 1, 1, 1,
                                   1, 1, 1, 1, 1, 1, 1, 1 };
+
+// ENCABLETONMODE (NEXT in ENCMODE): latched overlay, RAM only
+static bool abltLatched = false;
+static bool abltPrev = false;      // PREV held = pads pick a track
+static bool abltAct = false;       // M3 set = F1-F4 are clip actions
 
 static void applyModeLeds();     // defined below; recall repaints too
 
@@ -222,11 +228,45 @@ static CRGB modeLedHook(uint8_t pad, bool isTouched, CRGB defaultColor) {
       if (!drumVoiceMuted((uint8_t)(36 + led))) c.nscale8(32);
       return c;
     }
+    // ENCABLETONMODE: the pads are Live's 16 clip slots of the selected
+    // track (PREV held: the 16 tracks).  Empty reads dark, a clip dim green,
+    // the playing one bright green, a triggered one blinks, armed dim red -
+    // every bit comes from the script's CLIP_STATE
+    if (modeBase == MODE_ENC && abltOn() && modeVariant != 3) {
+      if (isTouched) return CRGB::White;
+      if (abltPrevPick()) {
+        if (led == (int8_t)(encChannel() - 1)) return CRGB::Yellow;
+        CRGB y = CRGB::Yellow;
+        y.nscale8(16);
+        return y;
+      }
+      uint8_t bits = linkClipBits((uint8_t)led);
+      if (bits & 0x02) return CRGB::Green;              // clip playing
+      if (bits & 0x04) {                                // triggered: blink
+        if ((millis() / BLINK_MS) & 1) return CRGB::Green;
+        CRGB td = CRGB::Green;
+        td.nscale8(40);
+        return td;
+      }
+      if (bits & 0x01) {                                // has a clip
+        CRGB hc = CRGB::Green;
+        hc.nscale8(64);
+        return hc;
+      }
+      if (bits & 0x08) {                                // track armed
+        CRGB ar = CRGB::Red;
+        ar.nscale8(48);
+        return ar;
+      }
+      CRGB em = CRGB::DarkBlue;
+      em.nscale8(32);
+      return em;
+    }
     // channel overlays: the 16 steps become the MIDI channel selector -
     // dimmed yellow background, selected channel in bright yellow
     // (KEY = keyboard output, SEQ = sequencer edit, ENC = encoder CCs).
     // SEQ3 only until an encoder moves: the pads then show the sequencer.
-    // ENCMODE4 keeps it up for the whole variant (locked picker)
+    // plain ENCMODE keeps it up for the whole variant (locked picker)
     if (chSelOverlay()) {
       uint8_t sel = (modeBase == MODE_KEY) ? keyChannel() :
                      (modeBase == MODE_SEQ) ? seqEditChannel() : encChannel();
@@ -330,6 +370,38 @@ static CRGB modeLedHook(uint8_t pad, bool isTouched, CRGB defaultColor) {
   // mode (behavior inherited); color follows the KEY family variant —
   // current variant while in KEYMODE, last latched KEY variant elsewhere
   if ((led >= 25 && led <= 31) || (led >= 37 && led <= 41)) {
+    // hold-M2 overdub-layer overlay: the row is the layer panel - white
+    // C D E F = layers 1..4 (bright hue = holds notes, dim = empty, red =
+    // muted), the five black keys = MUTE / ERASE / UNDO / REDO / RESET with
+    // the armed one burning, G A B dark, gap LEDs black.  Touch still
+    // flashes white; the panel wins over the bar row and every inherited
+    // key color while it is up
+    if (layOvActive()) {
+      if (isTouched) return CRGB::White;
+      int8_t lk = kbPitchIdx[led - 25];
+      if (lk < 0) return CRGB::Black;          // gap LEDs between the keys
+      CRGB c = seqPageColor();                 // the M2 hue the hold rode in on
+      if (lk == 0 || lk == 2 || lk == 4 || lk == 5) {   // white = layers 1..4
+        uint8_t layer = (lk == 0) ? 0 : (lk == 2) ? 1 : (lk == 4) ? 2 : 3;
+        uint8_t info = layInfo(layer);
+        if (info & 2) {                        // muted: red instead of hue
+          CRGB r = CRGB::Red;
+          r.nscale8(72);
+          return r;
+        }
+        c.nscale8((info & 1) ? 200 : 56);      // holds notes / empty
+        return c;
+      }
+      if (lk == 1 || lk == 3 || lk == 6 || lk == 8 || lk == 10) {
+        // black = commands; the armed pair (C# mute, D# erase) burns
+        bool armed = (lk == 1 && layArmCmd() == LAY_CMD_MUTE) ||
+                     (lk == 3 && layArmCmd() == LAY_CMD_ERASE);
+        c.nscale8(armed ? 220 : 72);
+        return c;
+      }
+      c.nscale8(40);                           // G A B: nothing assigned
+      return c;
+    }
     // SEQMODE3: the keyboard is not an instrument here - C D E F become
     // the pattern bars (C = steps 1-16 ... F = 49-64): dim blue background
     // with the EDITED bar bright; the bar the playhead reads breathes
@@ -723,6 +795,16 @@ void pollModeLeds() {
   static unsigned long lastPulseShow = 0;
   static int8_t lastBlink = -1;
 
+  // ENCABLETONMODE: clip states and the triggered-clip blink come from the
+  // script, so the pad row is repainted at ~30 fps while the overlay is up
+  if (modeBase == MODE_ENC && abltOn()) {
+    static unsigned long abltFlip = 0;
+    if ((long)(millis() - abltFlip) >= 0) {
+      abltFlip = millis() + 30;
+      refreshAllLeds();
+    }
+  }
+
   // playback blink driver: flash the keys the playhead sounds on the
   // keyboard channel (edge on/off repaints immediately - a finished chord
   // never keeps its green; the phase flip drives the flashing)
@@ -952,9 +1034,11 @@ bool seq3ChSelDismiss() {
 }
 
 // the channel picker owns the step pads: variant 3 (momentary, all three
-// families) and ENCMODE4 (the locked one - no button to hold)
+// families) and plain ENCMODE (the locked one - no button to hold; the user
+// asked for the inverse of the first cut, which put it on ENCMODE4 and hid
+// the running sequence there)
 bool chSelOverlay() {
-  if (modeBase == MODE_ENC && modeVariant == 4) return true;
+  if (modeBase == MODE_ENC && modeVariant == 1) return true;
   return modeVariant == 3 &&
          (modeBase == MODE_KEY || modeBase == MODE_ENC ||
           (modeBase == MODE_SEQ && seq3ChSelActive()));
@@ -976,6 +1060,49 @@ void seq3KbLatch(uint8_t ch) {
 }
 
 void seq3KbRelease() { seq3KbCh = 0; }
+
+// --- ENCABLETONMODE state --------------------------------------------------
+bool abltOn() { return abltLatched; }
+
+void abltSet(bool on) {
+  if (!on) abltPrev = false;      // never leave the pad row on the picker
+  abltLatched = on;
+}
+
+void abltToggle() { abltSet(!abltLatched); }
+
+bool abltPrevPick() { return abltLatched && abltPrev; }
+
+void abltPrevHold(bool on) { abltPrev = abltLatched && on; }
+
+bool abltActionSet() { return abltAct; }
+
+void abltActionToggle() { abltAct = !abltAct; }
+
+// ENCABLETONMODE bridge callbacks (Link.cpp asks for these)
+// the host moved Live's track selection: follow it on the encoder channel so
+// the device's channel picker and the DAW agree
+void linkTrackApply(uint8_t idx) {
+  if (idx > 15) return;
+  encSetChannel((uint8_t)(idx + 1));
+  if (modeBase == MODE_ENC) {
+    char hb[24];
+    snprintf(hb, sizeof(hb), "Live %.12s", linkTrackName());
+    headerShow(hb);
+    refreshMainScreen();
+  }
+}
+
+void linkFillDone(uint8_t ch, uint8_t ok, uint16_t notes) {
+  (void)ch;
+  if (!ok) {
+    headerShow("Clip Fill Failed");
+    return;
+  }
+  char fb[24];
+  snprintf(fb, sizeof(fb), "Clip Filled %u", (unsigned)notes);
+  headerShow(fb);
+}
 
 void modeOnEvent(uint8_t pad, uint8_t ev) {
   if (ev != EV_CLICKED && ev != EV_HOLD && ev != EV_DOUBLE && ev != EV_RELEASED) return;
@@ -1082,6 +1209,7 @@ void modeOnEvent(uint8_t pad, uint8_t ev) {
   // KEYMODE2 state (KeyLock, latch, params) back before anyone else uses it
   if (wasK4 && !nowK4) k4Stop();
   clearOverlay(G_ENC);
+  abltSet(false);           // ...and neither does the NEXT Ableton overlay
   encMuteHold(false);       // the M2 mute overlay never outlives the ENC mode
   drumMuteHold(false);      // nor the M1 drum-voice mute overlay
   arpPageDismiss();         // nor the M2 arp encoder page

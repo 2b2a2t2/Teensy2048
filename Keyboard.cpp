@@ -11,6 +11,7 @@
 #include "Drum.h"       // DRUM page params (the SEQ EEPROM block stores them)
 #include "Encoders.h"   // encSetChannel - boot reconcile of a locked ENCOD
 #include "bjorklund.h"  // COMP: Euclid stab pattern (same primitive as GNR8)
+#include "Buttons.h"    // EV_* - the hold-M2 layer overlay dispatches keys
 #include <EEPROM.h>
 
 #define KEY_OCT_MIN   (-2)
@@ -261,9 +262,37 @@ static int16_t recListenRes = 0;        // leftover encoder counts (LISTEN)
 static int16_t recPlayRes = 0;          // leftover encoder counts (PLAYBACK)
 static int16_t recOverRes = 0;          // leftover encoder counts (OVERDUB)
 
+// --- overdub layers (hold-M2 keyboard overlay, see Keyboard.h) --------------
+// stepLay[][][] = the layer every stored note was recorded in (0..3 = layer
+// 1..4; zero-init = the base content that predates layers, so an untouched
+// pattern reads as pure layer 1).  layMute = the per-track playback mute
+// mask (one bit per layer), recLay = the layer the running record pass
+// writes.  DRUM steps never carry tags - they gate per voice, like the
+// OVERDUB claim does for FOLLOW
+static uint8_t stepLay[SEQ_CH_COUNT][STEP_MAX][CHORD_MAX];
+static uint8_t layMute[SEQ_CH_COUNT] = {0};
+static uint8_t recLay[SEQ_CH_COUNT] = {0};
+
+// the layer a fresh record pass writes: the FIRST layer that holds no notes
+// anywhere in the pattern, so pre-existing content counts as layer 1 (the
+// first pass over a written pattern lands in layer 2) and a set where all
+// four layers are full stacks into layer 4.  Picked when the pass starts
+static uint8_t layPassPick(uint8_t ch) {
+  uint8_t has = 0;
+  for (uint8_t st = 0; st < STEP_MAX; st++)
+    for (uint8_t i = 0; i < stepChordLen[ch][st]; i++) {
+      uint8_t ly = stepLay[ch][st][i];
+      if (ly < 4) has |= (uint8_t)(1u << ly);
+    }
+  for (uint8_t L = 0; L < 4; L++)
+    if (!(has & (uint8_t)(1u << L))) return L;
+  return 3;                          // all four full: keep stacking on layer 4
+}
+
 // a step's attributes live and die with its content (both the MONO flags
 // and the DRUM per-voice accent/probability masks; the POLY FX byte, the
-// HAND strum onsets and the GNR8 oct/borrow/prob modifiers too)
+// HAND strum onsets, the GNR8 oct/borrow/prob modifiers and the layer tags
+// too - an empty step never carries a stale layer)
 static void stepAttClear(uint8_t ch, uint8_t st) {
   stepAtt[ch][st] = 0;
   stepFx[ch][st] = 0;
@@ -277,6 +306,7 @@ static void stepAttClear(uint8_t ch, uint8_t st) {
   for (uint8_t i = 0; i < 7; i++)
     stepSkankM[ch][st][i] = 0;   // SKANK locks: inherit the page knobs
   for (uint8_t i = 0; i < CHORD_MAX; i++) stepStrumDt[ch][st][i] = 0;
+  for (uint8_t i = 0; i < CHORD_MAX; i++) stepLay[ch][st][i] = 0;
 }
 
 // does this step carry a recorded HAND strum (any nonzero onset)?
@@ -413,8 +443,10 @@ static void stepSyncFrom(uint8_t x) {
       if (stepChordLen[y][n] == 0) continue;   // never creates active steps
       int8_t idx = srcStepBack(x, n);
       if (idx < 0) continue;                   // no source: keep as-is
-      for (uint8_t i = 0; i < CHORD_MAX; i++)
+      for (uint8_t i = 0; i < CHORD_MAX; i++) {
         stepChord[y][n][i] = stepChord[x][idx][i];
+        stepLay[y][n][i] = stepLay[x][idx][i];   // the layer travels too
+      }
       stepChordLen[y][n] = stepChordLen[x][idx];
       changed = true;
     }
@@ -696,12 +728,24 @@ static bool liveRecAppend(const uint8_t *notes, uint8_t n, uint16_t dt = 0,
     for (uint8_t j = 0; j < stepChordLen[recCh][st]; j++)
       if (stepChord[recCh][st][j] == note) dup = true;
     if (!dup) {
-      stepChord[recCh][st][stepChordLen[recCh][st]] = note;
-      stepStrumDt[recCh][st][stepChordLen[recCh][st]] = dt;
+      uint8_t at = stepChordLen[recCh][st];
+      stepChord[recCh][st][at] = note;
+      stepStrumDt[recCh][st][at] = dt;
+      // every note remembers the pass that wrote it (the overlay mutes and
+      // erases by that tag); DRUM stays untagged - it gates per voice
+      stepLay[recCh][st][at] = drum ? 0 : recLay[recCh];
       stepChordLen[recCh][st]++;
       wrote = true;
     }
   }
+  // OVERDUB = ON claims the step: this pass stacked notes onto content it
+  // did not clear, so the step now holds material you played - a claimed
+  // step keeps its OWN notes at playback even while the track follows
+  // (FOLLOW re-resolves every other step from the feeder; see seqAdvanceOnce).
+  // It rides in stepAtt, so it lives and dies with the content: rotate,
+  // copy/paste and the undo snapshot carry it, a fresh gesture with
+  // OVERDUB OFF clears it with the attributes, a generator re-roll wipes it
+  if (wrote && !drum && recOverdub[recCh]) stepAtt[recCh][st] |= SEQ_ATT_OVDM;
   seqOctClamp(recCh);
   stepSyncFrom(recCh);
   return wrote;
@@ -1458,6 +1502,7 @@ void stepShiftPattern(uint8_t n, int8_t dir) {
   int8_t d = dir > 0 ? 1 : -1;
   while (reps--) {
     stepRotRow(stepChord[ch], CHORD_MAX, n, d);
+    stepRotRow(stepLay[ch], CHORD_MAX, n, d);   // layer tags move with their notes
     stepRotRow(stepChordLen[ch], 1, n, d);
     stepRotRow(stepAtt[ch], 1, n, d);
     stepRotRow(stepFx[ch], 1, n, d);
@@ -1712,6 +1757,7 @@ static uint8_t snapEmbB[STEP_MAX][4];  // embellishment overrides
 static uint16_t snapDrumA[STEP_MAX];
 static uint16_t snapDrumP[STEP_MAX];
 static uint16_t snapStrumB[STEP_MAX][CHORD_MAX];
+static uint8_t snapLay[STEP_MAX][CHORD_MAX];  // overdub layer tags
 static int8_t  snapOctB[STEP_MAX];      // GNR8 per-step mods
 static uint8_t snapBrwB[STEP_MAX];
 static uint8_t snapModP[STEP_MAX];
@@ -1745,6 +1791,7 @@ void stepSnapshotTake() {
     for (uint8_t i = 0; i < CHORD_MAX; i++) {
       snapChord[st][i] = stepChord[ch][st][i];
       snapStrumB[st][i] = stepStrumDt[ch][st][i];
+      snapLay[st][i] = stepLay[ch][st][i];
     }
   }
   snapValid = true;
@@ -1774,6 +1821,7 @@ int stepSnapshotRestore() {
     for (uint8_t i = 0; i < CHORD_MAX; i++) {
       stepChord[ch][st][i] = snapChord[st][i];
       stepStrumDt[ch][st][i] = snapStrumB[st][i];
+      stepLay[ch][st][i] = snapLay[st][i];
     }
   }
   stepSyncFrom(ch);
@@ -1927,7 +1975,11 @@ uint8_t stepAttrs(uint8_t step) {
     if (drumProbOn[seqEditCh][step] & bit) m |= SEQ_ATT_PROB;
     return m;
   }
-  uint8_t m = stepAtt[seqEditCh][step];
+  // bits 4-5 are never stored as attributes (4 = the record pass's OVERDUB
+  // claim, 5 spare) - they are MASKED here because the FX (5) and TYPE (6)
+  // pulses are synthesised into them below, so a claimed step would pulse
+  // the armed FX target it does not carry
+  uint8_t m = (uint8_t)(stepAtt[seqEditCh][step] & 0xCF);
   if (seqTrack() == SEQ_TRACK_POLY) {
     if (stepFx[seqEditCh][step] & stepFxBit(stepFxSel())) m |= 0x10;
     if (m & 0xC0) m |= 0x20;          // TYPE override present -> target 6
@@ -3138,6 +3190,7 @@ static void seqAdvanceOnce(bool start, const bool *go,
       if (chStep[recCh] == lo[recCh] && hi[recCh] > lo[recCh]) {
         recState = 2;
         recLeft = (uint8_t)(hi[recCh] - lo[recCh]);
+        recLay[recCh] = layPassPick(recCh);   // this pass writes that layer
       }
     } else if (recLeft > 0 && --recLeft == 0) {
       recState = 0;
@@ -3155,7 +3208,9 @@ static void seqAdvanceOnce(bool start, const bool *go,
     if (!inRng[c]) { releaseCh(c); advPrev[c] = 0xFF; continue; }
     uint8_t pf = (advPrev[c] < STEP_MAX && seqTrackOf(c) == SEQ_TRACK_MONO)
                    ? stepAtt[c][advPrev[c]] : 0;
-    if (pf & SEQ_ATT_TIE) { tied[c] = true; continue; }
+    // TIE only while a note is actually ringing: an all-muted step left
+    // nothing sounding, and tying onto silence would swallow the next step
+    if ((pf & SEQ_ATT_TIE) && seqLen[c] > 0) { tied[c] = true; continue; }
     if (pf & SEQ_ATT_GLIDE) { defer[c] = true; continue; }
     // strummed strings ring across the boundary while SUS is on; a timed
     // recorded gesture rings until the next content step (release below
@@ -3224,7 +3279,18 @@ static void seqAdvanceOnce(bool start, const bool *go,
                   seqInCh[c] != (uint8_t)(c + 1) && !harmTrack;
     uint8_t fstp = 0;                  // feeder's step while following
     bool frz = seqFollowFreezeOf(c);    // FREEZE: hold the last incoming chord
-    if (follow) {
+    // OVERDUB claim: a step the record pass stacked while OVERDUB was ON
+    // plays its OWN notes even though the track follows - it reads exactly
+    // as it would with FOLLOW off (engine, FX, FScale, the PLAYBACK knob
+    // and the per-step OCT/TRANS all apply to its stored chord), while
+    // every other step of the track keeps re-resolving from the feeder.
+    // A plain record write (OVERDUB OFF) never claims: it still gates the
+    // rhythm and the feeder still supplies the pitches, as before.  FREEZE
+    // and the LIVE follow refreshes below lose to a claim too - the point
+    // of the knob is that what you played is what sounds
+    bool claim = (follow || harmFol) && len > 0 &&
+                 (stepAtt[c][stp] & SEQ_ATT_OVDM) != 0;
+    if (follow && !claim) {
       uint8_t fx = (uint8_t)(seqInCh[c] - 1);
       bool own = len > 0;              // activation stays the listener's
       // HAND zone: an empty OWN step still resolves the feeder - the strum
@@ -3294,7 +3360,7 @@ static void seqAdvanceOnce(bool start, const bool *go,
           }
         }
       }
-    } else {
+    } else if (!follow) {
       // not a follower this pass: drop any stale freeze cache so a later
       // FREEZE re-enters cold
       frzN[c] = 0;
@@ -3320,6 +3386,43 @@ static void seqAdvanceOnce(bool start, const bool *go,
       len = pendingLen[c];
       liveIn = true;
     }
+    // the chord about to play, hoisted above the gate so the layer filter
+    // can compact it before `len` is read: FREEZE replays its latched cache,
+    // a claimed (overdubbed) step points at its OWN chord - the feeder
+    // resolution and the FREEZE latch were both skipped for it - a follower
+    // reads the feeder's step, the live gesture plays the pending chord
+    uint8_t *ch = claim ? stepChord[c][stp]
+                 : (follow && frz && frzN[c]) ? frzCh[c]
+                 : follow ? stepChord[seqInCh[c] - 1][fstp]
+                          : liveIn ? pending[c] : stepChord[c][stp];
+    // overdub layers: a muted layer drops ITS notes out of this step - all
+    // of them muted = the step rests (the gate below sees len 0).  A
+    // follower is filtered with the FEEDER's mute mask and tag row (that is
+    // where its chord came from); FREEZE's latched cache, the untagged live
+    // gesture and DRUM steps (no tags, they gate per voice) play through
+    // untouched.  The compacted chord and its strum onsets live in filt[] /
+    // filtDt[] so the stored rows are never rewritten - filtDt keeps the
+    // u16 onsets in lockstep for the HAND replay below
+    uint8_t filt[CHORD_MAX];
+    uint16_t filtDt[CHORD_MAX];
+    bool filtOn = false;
+    uint8_t fch = c, fst = stp;
+    if (follow && !claim) { fch = (uint8_t)(seqInCh[c] - 1); fst = fstp; }
+    if (!drumTrack && !liveIn && !frz && layMute[fch]) {
+      uint8_t n2 = 0;
+      for (uint8_t i = 0; i < len && i < CHORD_MAX; i++) {
+        uint8_t ly = stepLay[fch][fst][i];
+        if (ly < 4 && (layMute[fch] & (uint8_t)(1u << ly))) continue;
+        filt[n2] = ch[i];
+        filtDt[n2] = stepStrumDt[fch][fst][i];
+        n2++;
+      }
+      if (n2 != len) {                  // at least one note was muted out
+        filtOn = true;
+        len = n2;
+        if (len) ch = filt;             // len 0: the rest branch below runs
+      }
+    }
     bool plays = (len > 0);
     // probability gate (MONO/POLY): the track's own %, read live so ENC8
     // moves every armed step at once; a miss silences the step this pass
@@ -3338,11 +3441,6 @@ static void seqAdvanceOnce(bool start, const bool *go,
       if (!handRing[c]) releaseCh(c);       // also ends a glide
       continue;
     }
-    // FREEZE replays the latched cache - point at it instead of the feeder's
-    // live step
-    uint8_t *ch = (follow && frz && frzN[c]) ? frzCh[c]
-                 : follow ? stepChord[seqInCh[c] - 1][fstp]
-                          : liveIn ? pending[c] : stepChord[c][stp];
     // LIVE HARM follow: with FOLLOW on the chord is re-derived from the
     // feeder's SOUNDING note this tick (post-probability) instead of the
     // stored step chord - prob rolls and arp walks re-harmonize every
@@ -3352,7 +3450,7 @@ static void seqAdvanceOnce(bool start, const bool *go,
     // feed this path.  Cold start = stored baked chord.  FOLLOW off =
     // stored playback
     uint8_t live[CHORD_MAX];
-    if (harmFol) {
+    if (harmFol && !claim) {
       uint8_t fx2 = (uint8_t)(seqInCh[c] - 1);
       uint8_t ln = 0;
       if (seqLen[fx2] > 0) {             // sounding: this tick's note
@@ -3384,7 +3482,7 @@ static void seqAdvanceOnce(bool start, const bool *go,
     // WALKED voicing, carried through the feeder's quiet gaps.  `live` is
     // free here: harmFol, skankTrack and skankFol never overlap.  FREEZE
     // skips the refresh - the latched chord keeps playing.
-    if ((skankTrack || skankFol) && follow && !frz) {
+    if ((skankTrack || skankFol) && follow && !claim && !frz) {
       uint8_t fx2 = (uint8_t)(seqInCh[c] - 1);
       uint8_t ln = 0;
       if (seqLen[fx2] > 0) {             // sounding: this tick's notes
@@ -3432,8 +3530,11 @@ static void seqAdvanceOnce(bool start, const bool *go,
     // a HAND gesture recorded with real timing replays literally: the stored
     // u16 onsets index the STORED chord order, so a timed step bypasses the
     // FX reshape and the FScale snap (order and dt survive).  All-zero dts
-    // (block-written chord) fall back to the even 8..40 ms spread below
-    bool handTimed = (handStep && !follow && stepStrumTimed(c, stp));
+    // (block-written chord) fall back to the even 8..40 ms spread below.
+    // A claimed step owns its chord like a non-follower does, so its
+    // recorded onsets replay literally as well
+    bool handTimed = (handStep && (!follow || claim) &&
+                      stepStrumTimed(c, stp));
     // PLAYBACK = RECORDED: the step's notes replay VERBATIM, all at once -
     // no step FX reshape, no FScale snap, no strum/HAND/COMP performance
     // shaping below (a recorded line replays exactly as stored).  Octave +
@@ -3541,11 +3642,13 @@ static void seqAdvanceOnce(bool start, const bool *go,
       } else {
         // PLAYBACK = RECORDED / OVERDUB = ON: the step's own notes play ALL
         // at once - the single-note engine pick steps aside, so the track is
-        // no longer mono on playback.  Two passes stay on the engine: FOLLOW
-        // reads the feeder (not this track's stored line), and liveIn is the
-        // injected EXT IN = LIVE gesture which must keep arpeggiating - that
-        // engine output is exactly what LISTEN = NOTE captures below
-        bool stack = !follow && !liveIn &&
+        // no longer mono on playback.  Two passes stay on the engine: a step
+        // that did not claim keeps FOLLOW reading the feeder (not this
+        // track's stored line) - an OVERDUBBED step claims and stacks even
+        // while following - and liveIn is the injected EXT IN = LIVE gesture
+        // which must keep arpeggiating - that engine output is exactly what
+        // LISTEN = NOTE captures below
+        bool stack = (!follow || claim) && !liveIn &&
                      (recVerbatim ||
                       (len > 1 &&
                        seqRecOverdubOf((uint8_t)c) == REC_OVER_ON));
@@ -3607,10 +3710,11 @@ static void seqAdvanceOnce(bool start, const bool *go,
           bool mapped = false;
           uint8_t mtype = seqMonoTypeOf(c);
           if (mtype == SEQ_MONO_BASS || mtype == SEQ_MONO_LEAD) {
-            if (follow) {
+            if (follow && !claim) {
               // map the own generated pitch onto the feeder chord (window +
               // MAP mode; LEAD uses ct/gd for chord/guide-tone resolution) -
-              // sound space already, shNote below is skipped
+              // sound space already, shNote below is skipped.  A claimed
+              // step maps nothing: it has no feeder chord to resolve onto
               note = mapBassNote(c, stp, ch, len, sh, modOn);
               mapped = true;
             } else {
@@ -3723,8 +3827,10 @@ static void seqAdvanceOnce(bool start, const bool *go,
             snote[sn] = note;
             svel[sn] = dvel;
             // timed HAND: the stored onset for this STORED index (untimed
-            // steps carry all zeros -> handled by the spread below)
-            sdts[sn] = handTimed ? stepStrumDt[c][stp][i] : 0;
+            // steps carry all zeros -> handled by the spread below); a
+            // layer-filtered step reads the compacted onset row instead
+            sdts[sn] = handTimed ? (filtOn ? filtDt[i] : stepStrumDt[c][stp][i])
+                                 : 0;
             sn++;
           }
         } else if (compOn) {         // stage the stab pattern
@@ -4224,6 +4330,34 @@ void seqAccentVelocityAdjust(int16_t counts) {
 
 int seqAccentVelocity() { return seqAccVel[seqEditCh]; }
 
+// --- per-track readers (ENCABLETONMODE pattern dump) -----------------------
+// The bridge fills a CLIP on any track, so it needs the values of a channel
+// other than the edit one: what the sequencer would SOUND there.
+int seqOctaveShiftOf(uint8_t ch) {
+  return (ch < 1 || ch > SEQ_CH_COUNT) ? 0 : seqOct[ch - 1];
+}
+
+int seqGatePctOf(uint8_t ch) {
+  return (ch < 1 || ch > SEQ_CH_COUNT) ? 100 : seqGate[ch - 1];
+}
+
+int seqVelocityOf(uint8_t ch) {
+  return (ch < 1 || ch > SEQ_CH_COUNT) ? 100 : seqVel[ch - 1];
+}
+
+int seqAccentVelocityOf(uint8_t ch) {
+  return (ch < 1 || ch > SEQ_CH_COUNT) ? 127 : seqAccVel[ch - 1];
+}
+
+int seqProbOf(uint8_t ch) {
+  return (ch < 1 || ch > SEQ_CH_COUNT) ? 100 : seqProb[ch - 1];
+}
+
+uint8_t stepAttrsOf(uint8_t ch, uint8_t step) {
+  if (ch >= SEQ_CH_COUNT || step >= STEP_MAX) return 0;
+  return stepAtt[ch][step];
+}
+
 void seqSetAccentVelocity(uint8_t seq, uint8_t v) {
   if (seq >= SEQ_CH_COUNT) return;
   if (v < 1) v = 1;
@@ -4374,6 +4508,8 @@ void extNoteOn(uint8_t port, uint8_t ch, uint8_t note, uint8_t vel) {
     if (assignStep >= 0 && s == seqEditCh) {
       if (!assignStarted) {
         stepChordLen[assignCh][assignStep] = 0;
+        for (uint8_t z = 0; z < CHORD_MAX; z++)
+          stepLay[assignCh][assignStep][z] = 0;  // fresh content = layer 1
         assignStarted = true;
       }
       if (stepChordLen[assignCh][assignStep] < CHORD_MAX)
@@ -4436,6 +4572,323 @@ void seqMuteToggle(uint8_t seq) {
   handRing[seq] = 0;            // a mute cuts the HAND ring too
 }
 
+// --- overdub-layer overlay (hold M2, SEQMODE 1/2/4) -------------------------
+// Holding M2 turns the keyboard row into the layer panel: white C D E F
+// pick layers 1..4, the five black keys arm MUTE / ERASE (a white key
+// confirms, press the armed key again to disarm) or fire UNDO / REDO /
+// RESET immediately, G A B are dark.  layOvSel is the raw hold flag (like
+// encMuteSel), the composite layOvActive() gates it on mode + track, and
+// layOvClose() runs on every M2 release so a mode switch mid-hold cannot
+// leave it stuck.  Every state change pushes the track's pre-state onto
+// the 8-slot undo stack first and clears redo; undo/redo swap the current
+// state between the two stacks and switch the edit channel to whatever
+// they restore (like stepSnapshotRestore).  The layer DATA lives with the
+// step table (stepLay / layMute / recLay at the top of this file)
+static bool     layOvSel = false;        // M2 hold flag (raw)
+static uint8_t  layArm = LAY_CMD_NONE;   // armed confirm command
+static uint16_t layHeld = 0;             // kidx bits eaten as layer keys
+static uint16_t layRel = 0;              // ...and releases still owed a click
+
+bool layOvEligible(void) {
+  return modeBase == MODE_SEQ && modeVariant != 3 &&
+         seqTrack() != SEQ_TRACK_DRUM;
+}
+
+bool layOvActive(void) { return layOvSel && layOvEligible(); }
+
+void layOvOpen(void) {
+  layOvSel = true;
+  layArm = LAY_CMD_NONE;
+}
+
+// M2 let go: returns whether the overlay was up so the caller repaints.
+// Mode-independent on purpose - a mode switch mid-hold must clean up too
+bool layOvClose(void) {
+  bool was = layOvSel;
+  layOvSel = false;
+  layArm = LAY_CMD_NONE;
+  layHeld = 0;
+  layRel = 0;
+  return was;
+}
+
+// notes of one layer on the edit track (the overlay's report + LED state)
+uint8_t layNotes(uint8_t layer) {
+  if (layer > 3 || seqEditCh >= SEQ_CH_COUNT) return 0;
+  uint8_t n = 0;
+  for (uint8_t st = 0; st < STEP_MAX; st++)
+    for (uint8_t i = 0; i < stepChordLen[seqEditCh][st]; i++)
+      if (stepLay[seqEditCh][st][i] == layer) n++;
+  return n;
+}
+
+// LED state of one layer: bit0 = holds notes, bit1 = muted
+uint8_t layInfo(uint8_t layer) {
+  if (layer > 3 || seqEditCh >= SEQ_CH_COUNT) return 0;
+  uint8_t v = 0;
+  if (layMute[seqEditCh] & (uint8_t)(1u << layer)) v |= 2;
+  if (layNotes(layer)) v |= 1;
+  return v;
+}
+
+uint8_t layArmCmd(void) { return layArm; }
+
+// --- layer undo / redo: 8 full-fidelity snapshots per direction ------------
+// Same field set as the M3 undo slot (chords, lengths, attributes, FX,
+// embellishment params, strum onsets, GNR8 mods, drum masks, SKANK locks)
+// plus the layer tag row and the mute mask - length and speed stay out:
+// no layer command touches them.  Both stacks together ~55 KB of the
+// Teensy's free RAM
+#define LAY_UNDO_N 8
+struct LaySnap {
+  uint8_t  ch;
+  uint8_t  muteB;
+  uint8_t  len[STEP_MAX];
+  uint8_t  att[STEP_MAX];
+  uint8_t  fx[STEP_MAX];
+  uint8_t  emb[STEP_MAX][4];
+  uint16_t drumA[STEP_MAX];
+  uint16_t drumP[STEP_MAX];
+  int8_t   octM[STEP_MAX];
+  uint8_t  brwM[STEP_MAX];
+  uint8_t  modP[STEP_MAX];
+  int8_t   trM[STEP_MAX];
+  uint8_t  skankM[STEP_MAX][7];
+  uint8_t  chord[STEP_MAX][CHORD_MAX];
+  uint16_t strumDt[STEP_MAX][CHORD_MAX];
+  uint8_t  lay[STEP_MAX][CHORD_MAX];
+};
+static LaySnap layStack[2][LAY_UNDO_N];  // [0] = undo, [1] = redo
+static uint8_t layN[2] = {0, 0};
+
+static void laySnapFill(LaySnap *s, uint8_t ch) {
+  s->ch = ch;
+  s->muteB = layMute[ch];
+  for (uint8_t st = 0; st < STEP_MAX; st++) {
+    s->len[st] = stepChordLen[ch][st];
+    s->att[st] = stepAtt[ch][st];
+    s->fx[st] = stepFx[ch][st];
+    for (uint8_t i = 0; i < 4; i++) s->emb[st][i] = stepEmb[ch][st][i];
+    s->drumA[st] = drumAccent[ch][st];
+    s->drumP[st] = drumProbOn[ch][st];
+    s->octM[st] = stepOctM[ch][st];
+    s->brwM[st] = stepBrwM[ch][st];
+    s->modP[st] = stepModP[ch][st];
+    s->trM[st] = stepTrM[ch][st];
+    for (uint8_t i = 0; i < 7; i++) s->skankM[st][i] = stepSkankM[ch][st][i];
+    for (uint8_t i = 0; i < CHORD_MAX; i++) {
+      s->chord[st][i] = stepChord[ch][st][i];
+      s->strumDt[st][i] = stepStrumDt[ch][st][i];
+      s->lay[st][i] = stepLay[ch][st][i];
+    }
+  }
+}
+
+static void laySnapApply(const LaySnap *s) {
+  if (s->ch >= SEQ_CH_COUNT) return;
+  if (seqEditCh != s->ch) seqSetEditChannel((uint8_t)(s->ch + 1));
+  uint8_t ch = s->ch;
+  layMute[ch] = s->muteB;
+  for (uint8_t st = 0; st < STEP_MAX; st++) {
+    stepChordLen[ch][st] = s->len[st];
+    stepAtt[ch][st] = s->att[st];
+    stepFx[ch][st] = s->fx[st];
+    for (uint8_t i = 0; i < 4; i++) stepEmb[ch][st][i] = s->emb[st][i];
+    drumAccent[ch][st] = s->drumA[st];
+    drumProbOn[ch][st] = s->drumP[st];
+    stepOctM[ch][st] = s->octM[st];
+    stepBrwM[ch][st] = s->brwM[st];
+    stepModP[ch][st] = s->modP[st];
+    stepTrM[ch][st] = s->trM[st];
+    for (uint8_t i = 0; i < 7; i++) stepSkankM[ch][st][i] = s->skankM[st][i];
+    for (uint8_t i = 0; i < CHORD_MAX; i++) {
+      stepChord[ch][st][i] = s->chord[st][i];
+      stepStrumDt[ch][st][i] = s->strumDt[st][i];
+      stepLay[ch][st][i] = s->lay[st][i];
+    }
+  }
+  seqOctClamp(ch);
+  stepSyncFrom(ch);
+}
+
+// push the edit track's state before a layer command; a new command
+// invalidates redo (the branch it would return to is gone).  The oldest
+// slot falls off when the stack is full
+static void layPush(void) {
+  if (layN[0] == LAY_UNDO_N) {
+    memmove(&layStack[0][0], &layStack[0][1], sizeof(LaySnap) * (LAY_UNDO_N - 1));
+    layN[0]--;
+  }
+  laySnapFill(&layStack[0][layN[0]++], seqEditCh);
+  layN[1] = 0;
+}
+
+// undo and redo are the same swap: the current state moves onto the other
+// stack, then the top of this one is applied (switching the edit channel
+// to the one it was taken from)
+static bool laySwap(uint8_t from) {
+  uint8_t to = (uint8_t)(1 - from);
+  if (!layN[from]) return false;
+  if (layN[to] == LAY_UNDO_N) {
+    memmove(&layStack[to][0], &layStack[to][1], sizeof(LaySnap) * (LAY_UNDO_N - 1));
+    layN[to]--;
+  }
+  laySnapFill(&layStack[to][layN[to]++], seqEditCh);
+  layN[from]--;
+  laySnapApply(&layStack[from][layN[from]]);
+  return true;
+}
+
+static bool layUndoFn(void) { return laySwap(0); }
+static bool layRedoFn(void) { return laySwap(1); }
+
+// MUTE arm confirm: toggle one layer's playback mute on the edit track.
+// Playback-only by design - no mirror / re-bake follows, and notes already
+// sounding ring out to the next step boundary (track-mute granularity)
+static bool layMuteToggle(uint8_t layer) {
+  if (layer > 3 || seqEditCh >= SEQ_CH_COUNT) return false;
+  layPush();
+  layMute[seqEditCh] ^= (uint8_t)(1u << layer);
+  return ((layMute[seqEditCh] >> layer) & 1) != 0;
+}
+
+// ERASE arm confirm: drop one layer's notes from every step of the edit
+// track - the rest compact in place, a step that empties loses its
+// attributes with it (empty ⇒ no attributes).  Nothing to erase = no
+// state change, no snapshot
+static bool layErase(uint8_t layer) {
+  if (layer > 3 || seqEditCh >= SEQ_CH_COUNT) return false;
+  uint8_t ch = seqEditCh;
+  bool has = false;
+  for (uint8_t st = 0; st < STEP_MAX && !has; st++)
+    for (uint8_t i = 0; i < stepChordLen[ch][st]; i++)
+      if (stepLay[ch][st][i] == layer) { has = true; break; }
+  if (!has) return false;
+  layPush();
+  for (uint8_t st = 0; st < STEP_MAX; st++) {
+    uint8_t n = stepChordLen[ch][st];
+    if (!n) continue;
+    uint8_t w = 0;
+    for (uint8_t i = 0; i < n; i++) {
+      if (stepLay[ch][st][i] == layer) continue;
+      stepChord[ch][st][w] = stepChord[ch][st][i];
+      stepStrumDt[ch][st][w] = stepStrumDt[ch][st][i];
+      stepLay[ch][st][w] = stepLay[ch][st][i];
+      w++;
+    }
+    if (w == n) continue;
+    stepChordLen[ch][st] = w;
+    for (uint8_t i = w; i < CHORD_MAX; i++) stepLay[ch][st][i] = 0;
+    if (w == 0) stepAttClear(ch, st);   // an empty step carries no attributes
+  }
+  seqOctClamp(ch);              // content shrank: the shift range may grow
+  stepSyncFrom(ch);             // mirrors / HARM re-derives follow the write
+  return true;
+}
+
+// RESET (A#): flatten every layer of the edit track into one - all tags
+// back to layer 1, mute mask cleared - so the pattern reads as a single
+// base layer again.  Already flat = no snapshot pushed
+static bool layFlatten(void) {
+  if (seqEditCh >= SEQ_CH_COUNT) return false;
+  uint8_t ch = seqEditCh;
+  bool any = layMute[ch] != 0;
+  for (uint8_t st = 0; st < STEP_MAX && !any; st++)
+    for (uint8_t i = 0; i < stepChordLen[ch][st]; i++)
+      if (stepLay[ch][st][i]) { any = true; break; }
+  if (!any) return true;
+  layPush();
+  for (uint8_t st = 0; st < STEP_MAX; st++)
+    for (uint8_t i = 0; i < CHORD_MAX; i++) stepLay[ch][st][i] = 0;
+  layMute[ch] = 0;
+  stepSyncFrom(ch);             // followers re-mirror the tag rows
+  return true;
+}
+
+// performs the pressed key, returning the action Events turns into a
+// header line: black C# / D# arm MUTE / ERASE (press again to disarm),
+// F# / G# / A# fire undo / redo / reset immediately, white C D E F
+// confirm the armed command or - with no arm - report that layer, G A B
+// have no job (swallowed while the overlay is up)
+static uint8_t layKeyAct(uint8_t kidx) {
+  switch (kidx) {
+    case 1:                                       // C#: mute arm
+      if (layArm == LAY_CMD_MUTE) {
+        layArm = LAY_CMD_NONE;
+        return LAY_ACT_ARM_OFF;
+      }
+      layArm = LAY_CMD_MUTE;
+      return LAY_ACT_ARM_MUTE;
+    case 3:                                       // D#: erase arm
+      if (layArm == LAY_CMD_ERASE) {
+        layArm = LAY_CMD_NONE;
+        return LAY_ACT_ARM_OFF;
+      }
+      layArm = LAY_CMD_ERASE;
+      return LAY_ACT_ARM_ERASE;
+    case 6:                                       // F#: undo
+      return layUndoFn() ? LAY_ACT_UNDO_OK : LAY_ACT_UNDO_NO;
+    case 8:                                       // G#: redo
+      return layRedoFn() ? LAY_ACT_REDO_OK : LAY_ACT_REDO_NO;
+    case 10:                                      // A#: reset / flatten
+      layFlatten();
+      return LAY_ACT_FLATTEN;
+    case 0: case 2: case 4: case 5: {             // white C D E F = layers
+      uint8_t layer = (kidx == 0) ? 0 : (kidx == 2) ? 1 :
+                      (kidx == 4) ? 2 : 3;
+      if (layArm == LAY_CMD_MUTE) {
+        layArm = LAY_CMD_NONE;
+        return layMuteToggle(layer) ? LAY_ACT_MUTE_ON : LAY_ACT_MUTE_OFF;
+      }
+      if (layArm == LAY_CMD_ERASE) {
+        layArm = LAY_CMD_NONE;
+        return layErase(layer) ? LAY_ACT_ERASED : LAY_ACT_EMPTY;
+      }
+      return LAY_ACT_REPORT;
+    }
+    default:                                      // G A B: nothing assigned
+      return LAY_ACT_EAT;
+  }
+}
+
+// one keyboard event against the overlay.  LAY_ACT_NONE = the overlay did
+// not touch it (Events runs the normal key path), LAY_ACT_EAT = swallowed
+// without a message, anything else = the action for the header.  Swallowed
+// presses remember themselves so the matching release / click never reaches
+// the instrument even when the overlay went away in between; a NORMAL
+// press clears both masks, so a key can never stay claimed
+uint8_t layKeyHandle(uint8_t kidx, uint8_t ev) {
+  if (kidx >= 12) return LAY_ACT_NONE;
+  uint16_t bit = (uint16_t)(1u << kidx);
+  switch (ev) {
+    case EV_PRESSED:
+      if (!layOvActive()) {
+        layHeld &= (uint16_t)~bit;
+        layRel &= (uint16_t)~bit;
+        return LAY_ACT_NONE;
+      }
+      layHeld |= bit;
+      layRel &= (uint16_t)~bit;
+      return layKeyAct(kidx);
+    case EV_RELEASED:
+      if (!(layHeld & bit)) return LAY_ACT_NONE;
+      layHeld &= (uint16_t)~bit;
+      layRel |= bit;                   // its click may still arrive
+      return LAY_ACT_EAT;
+    case EV_CLICKED:
+    case EV_DOUBLE:
+      if (layRel & bit) {
+        layRel &= (uint16_t)~bit;
+        return LAY_ACT_EAT;
+      }
+      return layOvActive() ? LAY_ACT_EAT : LAY_ACT_NONE;
+    case EV_HOLD:
+      return ((layHeld & bit) || layOvActive()) ? LAY_ACT_EAT : LAY_ACT_NONE;
+    default:
+      return LAY_ACT_NONE;
+  }
+}
+
 // --- SEQMODE3 erase --------------------------------------------------------
 // cut first so a running transport never re-sends erased notes; the step
 // history goes too - otherwise the recording chains would resurrect old
@@ -4493,6 +4946,7 @@ static struct SeqPatClip {
   uint8_t  skankM[STEP_MAX][7];
   uint8_t  chord[STEP_MAX][CHORD_MAX];
   uint16_t strumDt[STEP_MAX][CHORD_MAX];
+  uint8_t  lay[STEP_MAX][CHORD_MAX];   // overdub layer tags travel too
   uint16_t drumA[STEP_MAX];
   uint16_t drumP[STEP_MAX];
 } patClip;
@@ -4521,6 +4975,7 @@ int seqPatCopy() {
     for (uint8_t i = 0; i < CHORD_MAX; i++) {
       patClip.chord[st][i] = stepChord[ch][st][i];
       patClip.strumDt[st][i] = stepStrumDt[ch][st][i];
+      patClip.lay[st][i] = stepLay[ch][st][i];
     }
     patClip.drumA[st] = drumAccent[ch][st];
     patClip.drumP[st] = drumProbOn[ch][st];
@@ -4556,6 +5011,7 @@ int seqPatPaste() {
     for (uint8_t i = 0; i < CHORD_MAX; i++) {
       stepChord[ch][st][i] = patClip.chord[st][i];
       stepStrumDt[ch][st][i] = patClip.strumDt[st][i];
+      stepLay[ch][st][i] = patClip.lay[st][i];
     }
     drumAccent[ch][st] = patClip.drumA[st];
     drumProbOn[ch][st] = patClip.drumP[st];
@@ -4600,6 +5056,7 @@ void seqPatRepeatInto(uint8_t ch, uint8_t oldLen) {
     for (uint8_t k = 0; k < CHORD_MAX; k++) {
       stepChord[ch][dst][k] = stepChord[ch][src][k];
       stepStrumDt[ch][dst][k] = stepStrumDt[ch][src][k];
+      stepLay[ch][dst][k] = stepLay[ch][src][k];
       histChord[ch][dst][k] = histChord[ch][src][k];
     }
     drumAccent[ch][dst] = drumAccent[ch][src];
@@ -4770,10 +5227,10 @@ void seqCfgLoad() {
   uint8_t b[SEQ_EE_LEN];
   EEPROM.get(SEQ_EE_ADDR, b);
   // pick the NEWEST block length whose magic + checksum validate, so an
-  // older save (1296 = pre-EXT-IN, 1262 = pre-swing, 940 = pre-ARP, 923 =
-  // pre-kit-map, 666 = before the DRUM page, 665 = 7-rung speed ladder,
-  // ... down to 260 = legacy) still restores its fields and the newer ones
-  // keep their defaults
+  // older save (1330 = pre-record-options, 1296 = pre-EXT-IN, 1262 =
+  // pre-swing, 940 = pre-ARP, 923 = pre-kit-map, 666 = before the DRUM page,
+  // 665 = 7-rung speed ladder, ... down to 260 = legacy) still restores its
+  // fields and the newer ones keep their defaults
   uint16_t len = 0;
   for (uint16_t L = SEQ_EE_LEN;;) {
     uint8_t sum = 0;
@@ -5024,7 +5481,11 @@ int stepDrumToggle(uint8_t step) {
   uint8_t len = stepChordLen[seqEditCh][step];
   for (uint8_t i = 0; i < len; i++) {
     if (ch[i] != drumPart) continue;
-    for (uint8_t j = i; j + 1 < len; j++) ch[j] = ch[j + 1];
+    for (uint8_t j = i; j + 1 < len; j++) {
+      ch[j] = ch[j + 1];
+      stepLay[seqEditCh][step][j] = stepLay[seqEditCh][step][j + 1];
+    }
+    stepLay[seqEditCh][step][len - 1] = 0;   // no stale tag past the end
     stepChordLen[seqEditCh][step] = len - 1;
     seqOctClamp(seqEditCh);
     stepSyncFrom(seqEditCh);
@@ -5032,6 +5493,7 @@ int stepDrumToggle(uint8_t step) {
   }
   if (len >= CHORD_MAX) return -1;
   ch[len] = drumPart;
+  stepLay[seqEditCh][step][len] = 0;   // DRUM parts never carry a layer
   stepChordLen[seqEditCh][step] = len + 1;
   seqOctClamp(seqEditCh);
   stepSyncFrom(seqEditCh);

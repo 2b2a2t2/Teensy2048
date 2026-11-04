@@ -200,6 +200,38 @@ bool encMuteActive();                 // overlay up (flag + ENCMODE)
 bool seqIsMuted(uint8_t seq);         // sequence index 0..15
 void seqMuteToggle(uint8_t seq);      // step pad press
 
+// --- overdub layers (hold M2 = keyboard overlay, SEQMODE 1/2/4) -------------
+// Every stored note carries the layer of the record PASS that wrote it
+// (4 layers max; pre-existing content reads as layer 1, a pass picks the
+// first layer that holds no notes yet and a full set stacks into layer 4).
+// Holding M2 turns the keyboard row into the layer panel: white C D E F
+// pick layers 1..4 (with MUTE/ERASE armed they confirm, otherwise they
+// report), black C# / D# arm MUTE / ERASE, F# / G# / A# fire undo / redo /
+// reset.  Layer mutes gate playback per track (DRUM steps never carry
+// tags), erase drops the layer's notes, reset flattens all layers of the
+// edit track into one - commands ride an 8-deep undo/redo stack.  Patterns
+// are RAM-only, so layers are too (no EEPROM change)
+#define LAY_CMD_NONE  0xFF           // no confirm command armed
+#define LAY_CMD_MUTE  0              // white key = mute/unmute that layer
+#define LAY_CMD_ERASE 1              // white key = erase that layer
+// layKeyHandle() results: 0 = untouched (Events runs the normal key path),
+// LAY_ACT_EAT = swallowed silently, the rest = the action whose header
+// line Events.cpp builds from it
+enum LayAct : uint8_t {
+  LAY_ACT_NONE = 0, LAY_ACT_EAT, LAY_ACT_ARM_MUTE, LAY_ACT_ARM_ERASE,
+  LAY_ACT_ARM_OFF, LAY_ACT_MUTE_ON, LAY_ACT_MUTE_OFF, LAY_ACT_ERASED,
+  LAY_ACT_EMPTY, LAY_ACT_REPORT, LAY_ACT_UNDO_OK, LAY_ACT_UNDO_NO,
+  LAY_ACT_REDO_OK, LAY_ACT_REDO_NO, LAY_ACT_FLATTEN
+};
+bool    layOvEligible(void);         // SEQMODE 1/2/4 + non-DRUM edit track
+void    layOvOpen(void);             // M2 hold started
+bool    layOvClose(void);            // M2 let go: true = the overlay was up
+bool    layOvActive(void);           // up right now (flag + eligibility)
+uint8_t layKeyHandle(uint8_t kidx, uint8_t ev);   // LAY_ACT_* (0 = not ours)
+uint8_t layArmCmd(void);             // LAY_CMD_* armed, LAY_CMD_NONE = none
+uint8_t layInfo(uint8_t layer);      // LED state: bit0 = notes, bit1 = muted
+uint8_t layNotes(uint8_t layer);     // notes of that layer on the edit track
+
 // SEQMODE3 erase: clear one sequence (all steps + its history + sounding
 // notes) or the COMPLETE pattern (all 16, also while playing - sounding
 // notes are cut at once).  Listener sequences keep their own copy
@@ -234,11 +266,16 @@ bool seqPatClipHas(void);
 // clears with the step (record / tap-disable / erase).
 // Bits 6-7 are the POLY step TYPE override (F2 target): 00 = inherit the
 // track's TYPE, 01/10/11 = STEP/STRUM/HAND - never stored as the classic
-// flags, so the LED pulse masks (bits 0..5) stay clean
+// flags, so the LED pulse masks (bits 0..5) stay clean.  Bit 4 is not an
+// edit attribute either: the record pass stamps it on a step it stacked
+// with OVERDUB = ON (the OVERDUB claim), and stepAttrs() masks bits 4-5
+// back out before it synthesises the FX / TYPE pulses - a claimed step
+// must not light the armed-attribute LED
 #define SEQ_ATT_TIE    0x01
 #define SEQ_ATT_GLIDE  0x02
 #define SEQ_ATT_ACCENT 0x04
 #define SEQ_ATT_PROB   0x08
+#define SEQ_ATT_OVDM   0x10   // record pass stacked this step (OVERDUB ON)
 bool stepAttrToggle(uint8_t step, uint8_t att);
                                       // true = attribute now on.  MONO: the
                                       // step's own flag; DRUM: the SELECTED
@@ -321,6 +358,14 @@ void seqProbAdjust(int16_t counts);   // ENC8: 4 counts = 1%, clamped 0..100
 int  seqProbPct();                    // edit track's probability (%)
 void seqAccentVelocityAdjust(int16_t counts); // ENC6 + F3 held: accent vel
 int  seqAccentVelocity();             // edit track's accented-step velocity
+// per-track readers for the ENCABLETONMODE bridge (Link.cpp dumps any
+// channel's stored pattern, not just the edit one)
+int  seqOctaveShiftOf(uint8_t ch);    // 0..15, octave shift of track ch
+int  seqGatePctOf(uint8_t ch);
+int  seqVelocityOf(uint8_t ch);
+int  seqAccentVelocityOf(uint8_t ch);
+int  seqProbOf(uint8_t ch);
+uint8_t stepAttrsOf(uint8_t ch, uint8_t step);   // raw per-track attribute byte
 void seqSetAccentVelocity(uint8_t seq, uint8_t v); // EEPROM load, clamped
 void seqGatePoll();                   // fire gate note-offs (loop context)
 void seqSwingPoll();                  // drain deferred (swung) off-step

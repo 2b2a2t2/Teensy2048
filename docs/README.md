@@ -11,6 +11,7 @@ its neighbours.
 | To get sound out in the first five minutes | [Start here](start-here.md) |
 | A worked example for a musical result | [Recipes](recipes/index.md) |
 | The binding of a specific encoder in a specific mode | [Bindings](reference/bindings.md) or the [cheat sheet](cheatsheet.md) |
+| To drive Ableton Live from the pads and knobs | [ENCABLETONMODE](modes/link.md) |
 | To know whether a feature is safe to rely on | [Feature status](status.md) |
 | The meaning of "feeder", "page", "radio", "variant" | [Glossary](glossary.md) |
 | Pins, pad numbering, LED order | [Hardware](hardware.md) |
@@ -45,6 +46,7 @@ docs/
 │   ├── seqmode.md         SEQMODE 1–4 (tracks, steps, record, edit)
 │   ├── timing.md          swing and external input
 │   ├── encmode.md         ENCMODE 1–4 (CC banks, dials)
+│   ├── link.md            ENCABLETONMODE — the Ableton bridge overlay (NEXT)
 │   └── drum.md            DRUM part sequencing
 ├── generators/
 │   ├── arp.md             arpeggiator + 4 sub-pages

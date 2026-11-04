@@ -3,6 +3,7 @@
 #include "Buttons.h"
 #include "Keyboard.h"
 #include "Events.h"     // encCcIncoming - DAW CC feedback syncs ENCMODE knobs
+#include "Link.h"       // ENCABLETONMODE bridge: queued SysEx + pattern dump
 #include "Encoders.h"   // encDrain - accelerated 0-100% knobs
 #include <uClock.h>
 #include <MIDI.h>       // 5-pin DIN input (Serial2, pin 7 RX) - Teensyduino bundle
@@ -104,10 +105,10 @@ static void midiControlChange(uint8_t ch, uint8_t cc, uint8_t val) {
 // green playhead in every mode (SEQMODE owns it, all modes inherit);
 // active (recorded) steps = dimmed green, empty steps = dimmed dark blue
 static void drawSteps() {
-  // channel overlays (KEY3/SEQ3/ENC3, and the locked ENCMODE4) own the step
+  // channel overlays (KEY3/SEQ3/ENC3, and the locked plain ENCMODE) own the step
   // LEDs (hook repaints them on mode change), the playhead must not paint
   // over them.  SEQ3 gives them back to the sequencer as soon as an encoder
-  // moves; ENC4 keeps them until the mode changes
+  // moves; plain ENC keeps them until the mode changes
   if (chSelOverlay()) return;
   // DRUM part-select overlay (hold M1) also owns the step LEDs
   if (modeBase == MODE_SEQ && modeVariant != 3 &&
@@ -176,6 +177,8 @@ void seqPumpMidi() {
 
 void pollSeqClock() {
   seqPumpMidi();
+  linkPump();                  // ENCABLETONMODE: one queued SysEx + a chunk
+  linkTick();                  // ...and the HELLO retry / liveness timeout
 
   // sequencer note housekeeping: the ISR only queues flags, notes go out
   // here in loop context (no USB/MIDI calls from interrupt code)

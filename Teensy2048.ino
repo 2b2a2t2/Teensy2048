@@ -15,6 +15,7 @@ Modules: Buttons, TouchChips, Display, Encoders, Modes
 #include "Events.h"
 #include "SeqClock.h"
 #include "Keyboard.h"
+#include "Link.h"        // ENCABLETONMODE bridge (SysEx with the remote script)
 
 void setup() {
   Serial.begin(115200);
@@ -30,6 +31,7 @@ void setup() {
   initEncoders();
   initModes();
   initSeqClock();
+  linkInit();       // ENCABLETONMODE bridge: SysEx handler + send queue
 
   if (!initTouchChips()) while (1);
 }

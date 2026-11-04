@@ -27,8 +27,8 @@ alive under its page or radio).
 
 | Set | ENC1 | ENC2 | ENC3 | ENC4 | ENC5 | ENC6 | ENC7 | ENC8 |
 |---|---|---|---|---|---|---|---|---|
-| **SEQ 1** | OCT | -- | -- | -- | GATE | VEL | -- | PROB |
-| **SEQ 2** | OCT | -- | -- | -- | GATE | VEL | -- | PROB |
+| **SEQ 1** | OCT | LISTEN | PLAY | OVERDUB | GATE | VEL | -- | PROB |
+| **SEQ 2** | OCT | LISTEN | PLAY | OVERDUB | GATE | VEL | -- | PROB |
 | **SEQ 3** | OCT | LEN | FOLLOW | SPEED | INCH | TRACK | TYPE | BPM |
 | **SEQ 4** | SWING | AMT | EXT IN | SRC | GATE | VEL | -- | PROB |
 | **ENC 1–4** | CC17 | CC18 | CC19 | CC20 | CC1… | CC2… | CC3… | CC4… |
@@ -61,8 +61,9 @@ alive under its page or radio).
 | Hold a step | Arm a span start (TIE chain on a bass track) or open the held-step row |
 | Tap an **F** | Arm that sub-page; the whole encoder row becomes its knobs |
 | Tap the armed F again | Release, back to the plain row |
-| Tap **M1** | Step-edit radio (targets TIE / GLIDE / ACCENT / PROB) |
+| Tap **M1** | Step-edit radio (targets TIE / GLIDE / ACCENT / PROB, and lets ENC2–4 turn `LISTEN` / `PLAY` / `OVERDUB`) |
 | Tap **M2** | The track-type page (GNR8, LEAD, ARP, COMP, HARM, SKANK, DRUM styles, strum ADDS) |
+| Hold **M2** | Overdub-layer panel on the keyboard row: C D E F = layers 1–4, C# / D# arm mute / erase (white key confirms), F# / G# / A# = undo / redo / reset layers |
 | Tap **M3** | Generate (page open) / re-roll (drum page) / page group (ENCMODE) |
 | Hold **M3** | Undo one level (generators, drum page) |
 | Hold **PREV** | Swap the encoder row to SHIFT / TRANS |
@@ -71,6 +72,22 @@ alive under its page or radio).
 
 M1 and M2 are **mutually exclusive**: opening a page turns the edit radio off, and
 pressing M1 from the page closes it.
+
+## ENCABLETONMODE (NEXT, inside ENCMODE)
+
+Latched overlay, RAM only. Needs the companion remote script (`Remote Scripts/Teensy2048/`).
+
+| | |
+|---|---|
+| **NEXT** | `Live Mode On` / `Live Mode Off` |
+| Pads | the selected track's 16 clip slots — press empty = create + fill, filled = launch, playing = stop, double = re-fill |
+| **PREV** hold | pads = the 16 tracks (press = select in Live) |
+| **M3** | F row: `BANK< BANK> DEV< DEV>` ↔ `FILL SCENE STOP ALL` |
+| **F1/F2 · F3/F4** | parameter bank · device |
+| ENC1–8 | the current bank's eight Live parameters, on **CC 64–71** |
+
+Pad colours: bright green playing · blinking green triggered · dim green has a clip ·
+dark blue empty · dim red armed.
 
 ## Encoder feel
 

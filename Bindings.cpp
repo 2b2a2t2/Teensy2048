@@ -54,6 +54,7 @@ static const char* encLabels[ENC_SET_COUNT][8] = {
   /* ENC_KEY4_PREV    */ { "OCT", "SCALE", "KEY", "FSCALE", "SUB", "INV", "PAS", "COL" },
   /* ENC_KEY4_EMB     */ { "EMB", "PLACE", "ERA", "--", "--", "--", "--", "--" },
   /* ENC_KEY4_STEP    */ { "OCT", "DEG", "INV", "VOICE", "--", "--", "--", "--" },
+  /* ENC_ABLETON      */ { "P1", "P2", "P3", "P4", "P5", "P6", "P7", "P8" },
 };
 
 static const char* encSetNames[ENC_SET_COUNT] = {
@@ -63,16 +64,19 @@ static const char* encSetNames[ENC_SET_COUNT] = {
   "SEQENC_STEP_HELD", "SEQENC_ROT_OV", "SEQENC_STEPOV", "SEQENC_SKANK_STEP",
   "SEQENC_BAR_OV",
   "KEYENC2_PREV", "KEYENC4_PREV",
-  "KEYENC4_EMB", "KEYENC4_STEP"
+  "KEYENC4_EMB", "KEYENC4_STEP",
+  "ENCABLETON"
 };
 static const char* ctrlSetNames[CTRL_SET_COUNT] = {
   "SEQCTRL", "SEQCTRL2", "SEQCTRL3", "SEQCTRL4",
-  "ENCCTRL2", "ENCCTRL3", "ENCCTRL4"
+  "ENCCTRL2", "ENCCTRL3", "ENCCTRL4",
+  "ENCABLECTRL"
 };
 static const char* stepSetNames[STEP_SET_COUNT] = {
   "SEQSTEPS", "SEQSTEPS3", "SEQSTEPS4",
   "ENCSTEPS2", "ENCSTEPS3", "ENCSTEPS4",
-  "KEYSTEPS3", "KEYSTEPS4"
+  "KEYSTEPS3", "KEYSTEPS4",
+  "ENCABLECLIP"
 };
 static const char* keySetNames[KEY_SET_COUNT] = {
   "KEYBTNS", "KEYBTNS2", "KEYBTNS3", "KEYBTNS4"
@@ -108,6 +112,13 @@ ModeBinding currentBinding() {
   if (overlayOn[G_CTRL]) b.ctrl = (CtrlSet)overlaySet[G_CTRL];
   if (overlayOn[G_STEP]) b.step = (StepSet)overlaySet[G_STEP];
   if (overlayOn[G_KEY])  b.key  = (KeySet)overlaySet[G_KEY];
+  // ENCABLETONMODE (the NEXT overlay) owns the three DAW-facing groups while
+  // it is up: its labels are P1..P8 / the F action row / the clip pads
+  if (abltOn() && modeBase == MODE_ENC) {
+    b.enc = ENC_ABLETON;
+    b.ctrl = CTRL_ABLETON;
+    b.step = STEP_ABLETON;
+  }
   return b;
 }
 

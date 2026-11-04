@@ -22,17 +22,21 @@ enum EncSet : uint8_t {
   ENC_KEY4_PREV,               // overlay: PREV held in KEYMODE4
   ENC_KEY4_EMB,                // sticky: EMB menu open in KEYMODE4
   ENC_KEY4_STEP,               // overlay: step held in KEYMODE4 (OCT/DEG/INV/VOICE)
+  ENC_ABLETON,                 // overlay: ENCABLETONMODE (NEXT) - eight Live
+                               //   parameters, labels sent by the script
   ENC_SET_COUNT
 };
 enum CtrlSet : uint8_t {
   CTRL_SEQ, CTRL_SEQ2, CTRL_SEQ3, CTRL_SEQ4,
   CTRL_ENC2, CTRL_ENC3, CTRL_ENC4,
+  CTRL_ABLETON,                // overlay: ENCABLETONMODE control row
   CTRL_SET_COUNT
 };
 enum StepSet : uint8_t {
   STEP_SEQ, STEP_SEQ3, STEP_SEQ4,
   STEP_ENC2, STEP_ENC3, STEP_ENC4,
   STEP_KEY3, STEP_KEY4,
+  STEP_ABLETON,                // overlay: ENCABLETONMODE clip pads
   STEP_SET_COUNT
 };
 enum KeySet : uint8_t {

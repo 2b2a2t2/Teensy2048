@@ -33,11 +33,12 @@ A blank means the feature predates the initial import or cannot be attributed to
 | 16 tracks, one per MIDI channel, up to 64 steps each | SEQ 1 | Stable | 2026-09-25 | `LEN` per track; the pads show one 16-step bar at a time |
 | Polimeter / polyrhythm per track | SEQ 3 | Stable | 2026-09-30 | Length is per track, so tracks drift out of phase on purpose |
 | Step edit radio (TIE / GLIDE / ACCENT / PROB), shift/transpose | SEQ 1 | Stable | 2026-09-30 | Attributes are step content and move with rotate |
-| Live record | SEQ 1/2 | **Beta** | 2026-10-03 | Open tuning item: live-record options on the M1 step-edit row (see `TODO.md`) |
+| Live record | SEQ 1/2 | **Beta** | 2026-10-03 | `LISTEN` / `PLAY` / `OVERDUB` on the M1 step-edit row (`seqmode.md`); the arp capture path is compiled, not yet auditioned on hardware |
 | Bar loop, teleports on activation | SEQ 1 | Stable | 2026-10-03 | Global position kept in `chStepShadow` |
 | Swing, 8 style tables | SEQ 4 | Stable | 2026-11-01 | Effective ratio = 50 + (AMT/100) × (max − 50) |
 | External input, USB / DIN / BOTH | SEQ 4 | **Beta** | 2026-11-01 | DIN carries **notes only**; clock stays USB so two sources cannot double-advance |
 | Follow (a track reading another's timeline) | SEQ 3 | Stable | 2026-10-03 | Single level, non-recursive |
+| Overdub layers + hold-`M2` layer panel | SEQ 1/2/4 | **Beta** | 2026-11-04 | 4 layers/track picked per record pass; mute/erase/undo/redo/reset from the keyboard overlay; RAM only, not yet auditioned on hardware (`seqmode.md`) |
 | Per-bar octave / transpose, held bar pad | SEQ 3 | Stable | 2026-11-03 | Playback-only, RAM only; folds into the track's octave/TRANS before `KLOCK` snaps |
 | Per-channel mode memory, `SEQ 4 + REC` | SEQ 4 | Stable | 2026-09-30 | 16 channels × base/variant |
 
@@ -62,6 +63,8 @@ A blank means the feature predates the initial import or cannot be attributed to
 | Dial grid screen (270° arcs, CC captions) | ENC 1/2/4 | Stable | 2026-10-26 | ENC 3 keeps the plain label/value screen |
 | Locked channel picker | ENC 4 | Stable | 2026-09-30 | 16 pads = 16 encoder channels |
 | `ENC 4 + REC` (36×16 values + channel) | ENC 4 | Stable | 2026-09-30 | An older save is ignored |
+| ENCABLETONMODE (NEXT overlay, clip grid, CC 64–71 automap) | ENC, `NEXT` | **Beta** | 2026-11-04 | Compiles and follows the protocol; auditioned against Live over USB-MIDI, not yet part of a set. Needs the `Teensy2048` remote script; RAM only (no EEPROM change) |
+| Companion remote script `Remote Scripts/Teensy2048/` | — | **Beta** | 2026-11-04 | Tracks, clip states, clip fills, parameter pages; state only, never clock (`modes/link.md`) |
 | USB-MIDI device, notes/CC/clock | all | Stable | 2026-09-25 | USB Type **MIDI** — no serial tty |
 | 5-pin DIN input (Serial2) | SEQ 4 | **Beta** | 2026-11-01 | Notes only, no clock/transport |
 | SEQMODE4 + REC save/restore | SEQ 4 | Stable | 2026-09-30 | Block grows per feature; older saves load with defaults |

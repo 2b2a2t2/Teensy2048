@@ -24,8 +24,8 @@ alive under its page or radio. Every code is expanded in the
 
 | Mode | ENC1 | ENC2 | ENC3 | ENC4 | ENC5 | ENC6 | ENC7 | ENC8 |
 |---|---|---|---|---|---|---|---|---|
-| **SEQ 1** | OCT | -- | -- | -- | GATE | VEL | -- | PROB |
-| **SEQ 2** | OCT | -- | -- | -- | GATE | VEL | -- | PROB |
+| **SEQ 1** | OCT | LISTEN | PLAY | OVERDUB | GATE | VEL | -- | PROB |
+| **SEQ 2** | OCT | LISTEN | PLAY | OVERDUB | GATE | VEL | -- | PROB |
 | **SEQ 3** | OCT | LEN | FOLLOW | SPEED | INCH | TRACK | TYPE | BPM |
 | **SEQ 4** | SWING | AMT | EXT IN | SRC | GATE | VEL | -- | PROB |
 | **ENC 1** | CC17 | CC18 | CC19 | CC20 | CC1 | CC2 | CC3 | CC4 |
@@ -52,6 +52,15 @@ In ENCMODE, `ENC5–8` print the live CC number of the armed bank: `CC1–CC4` i
 | **KEY 4 PREV** | `PREV` held in KEY 4 | OCT · SCALE · KEY · FSCALE · SUB · INV · PAS · COL |
 | **KEY 4 EMB** | `NEXT` tapped in KEY 4 | EMB · PLACE · ERA · -- · -- · -- · -- · -- |
 | **KEY 4 STEP** | a step pad held in KEY 4 | OCT · DEG · INV · VOICE · -- · -- · -- · -- |
+| **ENCABLETON** | `NEXT` tapped in ENCMODE | P1 · P2 · P3 · P4 · P5 · P6 · P7 · P8 |
+
+`ENCABLETON` ([page](../modes/link.md)) is the one overlay that takes **three** groups at
+once: the knobs (`ENC_ABLETON`, labels `P1–P8` until Live names them), the control row
+(`CTRL_ABLETON`: `TRACKS · LIVE · DRUM · MUTE · CLIPS`, with `BANK< BANK> DEV< DEV>` or — on
+the M3 action set — `FILL SCENE STOP ALL` on `F1–F4`) and the pads (`STEP_ABLETON`: the
+selected track's 16 clip slots, or the 16 tracks with `PREV` held). Its knobs send
+**CC 64–71**, not the base set's CC 17–20 / CC 1–36, so the ENCMODE dials and their
+per-CC-per-channel memory are untouched.
 
 Page rows (ARP sub-pages, GNR8 option radios, the strum ADDS row, the DRUM knob sets,
 COMP/HARM/SKANK/LEAD pages) are themselves overlays: they take the whole encoder row while
