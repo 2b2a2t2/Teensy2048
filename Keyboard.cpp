@@ -4603,8 +4603,9 @@ void seqMuteToggle(uint8_t seq) {
 // --- overdub-layer overlay (hold M2, SEQMODE 1/2/4) -------------------------
 // Holding M2 turns the keyboard row into the layer panel: white C D E F
 // pick layers 1..4, the five black keys select MUTE / ERASE (a white key
-// confirms; MUTE is the default selection and stays on after a mute,
-// ERASE clears after its confirm) or fire UNDO / REDO / RESET
+// confirms; MUTE is the resting selection - the panel opens on it, it never
+// disarms, and ERASE hands back to it after a confirm) or fire
+// UNDO / REDO / RESET
 // immediately, G A B are dark.  layOvSel is the raw hold flag (like
 // encMuteSel), the composite layOvActive() gates it on mode + track, and
 // layOvClose() runs on every M2 release so a mode switch mid-hold cannot
@@ -4627,8 +4628,8 @@ bool layOvActive(void) { return layOvSel && layOvEligible(); }
 
 void layOvOpen(void) {
   layOvSel = true;
-  layArm = LAY_CMD_MUTE;          // mute is the default selection: a white
-                                  // key mutes straight away, no re-arm trip
+  layArm = LAY_CMD_MUTE;          // mute is the resting selection: a white
+                                  // key mutes straight away and the arm stays
 }
 
 // M2 let go: returns whether the overlay was up so the caller repaints.
@@ -4843,17 +4844,16 @@ static bool layFlatten(void) {
 // the overlay is up)
 static uint8_t layKeyAct(uint8_t kidx) {
   switch (kidx) {
-    case 1:                                       // C#: mute arm
-      if (layArm == LAY_CMD_MUTE) {
-        layArm = LAY_CMD_NONE;
-        return LAY_ACT_ARM_OFF;
-      }
+    case 1:                                       // C#: mute (resting arm)
+      // mute is the resting selection and never disarms: the panel opens on
+      // it, a mute leaves it selected, and pressing C# again only repeats
+      // the confirmation - so a layer-by-layer mute pass needs no re-arm
       layArm = LAY_CMD_MUTE;
       return LAY_ACT_ARM_MUTE;
     case 3:                                       // D#: erase arm
       if (layArm == LAY_CMD_ERASE) {
-        layArm = LAY_CMD_NONE;
-        return LAY_ACT_ARM_OFF;
+        layArm = LAY_CMD_MUTE;        // off again = back on the mute arm
+        return LAY_ACT_ARM_MUTE;
       }
       layArm = LAY_CMD_ERASE;
       return LAY_ACT_ARM_ERASE;
@@ -4874,7 +4874,7 @@ static uint8_t layKeyAct(uint8_t kidx) {
         return layMuteToggle(layer) ? LAY_ACT_MUTE_ON : LAY_ACT_MUTE_OFF;
       }
       if (layArm == LAY_CMD_ERASE) {
-        layArm = LAY_CMD_NONE;
+        layArm = LAY_CMD_MUTE;        // erasing once hands the row back to mute
         return layErase(layer) ? LAY_ACT_ERASED : LAY_ACT_EMPTY;
       }
       return LAY_ACT_REPORT;

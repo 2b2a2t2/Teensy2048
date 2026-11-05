@@ -108,18 +108,21 @@ layers); DRUM steps stay untagged.
 
 | Key | Job |
 |---|---|
-| **C · D · E · F** (white) | layers **1 · 2 · 3 · 4** — with nothing armed, a press **reports** the layer (`Layer 2: 7 notes` / `Layer 2 empty`); with `MUTE` or `ERASE` armed it **confirms** on that layer |
-| **C#** | arm / disarm **mute layer** (`Mute layer?`) |
-| **D#** | arm / disarm **erase layer** (`Erase layer?`) |
+| **C · D · E · F** (white) | layers **1 · 2 · 3 · 4** — a press **confirms** the selected command on that layer: `MUTE` toggles that layer's playback, `ERASE` deletes its notes |
+| **C#** | **(re)select mute layer** — the resting selection, it never disarms (`Mute layer?`) |
+| **D#** | arm **erase layer**; pressing it again goes back to mute (`Erase layer?`) |
 | **F#** | **undo** the last layer command (`Undone` / `Nothing to undo`) |
 | **G#** | **redo** it (`Redone` / `Nothing to redo`) |
 | **A#** | **reset layers** — flatten the whole track back to one layer (`Layers flattened`) |
 | **G · A · B** | nothing assigned (swallowed while the panel is up) |
 
-Arming is a toggle: pressing the armed black key again disarms (`Layer cmd off`), and any
-confirm or a command press clears the arm. The white keys and black commands swallow their
-press, release and click, so nothing leaks to the instrument even if the overlay closes
-mid-hold.
+`MUTE` is the **resting selection**: the panel opens on it, a white key mutes or unmutes
+that layer and the arm **stays** — so four layers mute in four presses, no re-arming in
+between, and tapping `C#` again only repeats `Mute layer?`. `ERASE` is the one command that
+has to be picked: `D#` arms it (`Erase layer?`), the next white key erases that layer, and
+the row **falls back to `MUTE`** (pressing `D#` again goes back to mute without erasing).
+The white keys and black commands swallow their press, release and click, so nothing leaks
+to the instrument even if the overlay closes mid-hold.
 
 - **Mute layer** gates **playback only** on this track: the layer's notes drop out of every
   step (a step whose notes are all muted **rests**), and notes already sounding ring out to
@@ -138,10 +141,12 @@ mid-hold.
   whatever they restore.
 
 **LEDs**: the whole keyboard row turns into the panel — the four white keys wear the
-track's page hue **bright when the layer holds notes, dim when empty, red when muted**;
-the five black keys wear the same hue **dim as commands, bright while armed**; `G A B` sit
-dark and the gap LEDs go black. Touch still flashes white, and the panel wins over every
-inherited key colour while it is up.
+track's page hue **bright when the layer holds notes, dim when empty, dim red when
+muted**; the five black keys sit dim in the same hue except the **selected** one, which
+wears its own colour — `MUTE` a **dim orange that breathes** (~1 s, the only moving light
+in the row), `ERASE` a static **dim dark red**; `G A B` sit dark and the gap LEDs go black.
+Touch still flashes white, and the panel wins over every inherited key colour while it is
+up.
 
 Like the patterns they tag, layers and the undo stacks live in **RAM only** — no EEPROM
 change, gone on power cycle.

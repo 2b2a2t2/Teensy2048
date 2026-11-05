@@ -205,10 +205,10 @@ void seqMuteToggle(uint8_t seq);      // step pad press
 // (4 layers max; pre-existing content reads as layer 1, a pass picks the
 // first layer that holds no notes yet and a full set stacks into layer 4).
 // Holding M2 turns the keyboard row into the layer panel: white C D E F
-// pick layers 1..4 (MUTE is selected by default and stays selected after
-// a mute, so layers mute one after another; with ERASE selected they
-// confirm an erase, with none selected they report), black C# / D# select
-// MUTE / ERASE, F# / G# / A# fire undo / redo / reset.  Layer mutes gate
+// pick layers 1..4 (MUTE is the resting selection: the panel opens on it and
+// it never disarms, so layers mute one after another; with ERASE selected
+// they confirm an erase and the row falls back to MUTE), black C# / D#
+// select MUTE / ERASE, F# / G# / A# fire undo / redo / reset.  Layer mutes gate
 // playback per track (DRUM steps never carry
 // tags), erase drops the layer's notes, reset flattens all layers of the
 // edit track into one - commands ride an 8-deep undo/redo stack.  Patterns
@@ -221,7 +221,7 @@ void seqMuteToggle(uint8_t seq);      // step pad press
 // line Events.cpp builds from it
 enum LayAct : uint8_t {
   LAY_ACT_NONE = 0, LAY_ACT_EAT, LAY_ACT_ARM_MUTE, LAY_ACT_ARM_ERASE,
-  LAY_ACT_ARM_OFF, LAY_ACT_MUTE_ON, LAY_ACT_MUTE_OFF, LAY_ACT_ERASED,
+  LAY_ACT_MUTE_ON, LAY_ACT_MUTE_OFF, LAY_ACT_ERASED,
   LAY_ACT_EMPTY, LAY_ACT_REPORT, LAY_ACT_UNDO_OK, LAY_ACT_UNDO_NO,
   LAY_ACT_REDO_OK, LAY_ACT_REDO_NO, LAY_ACT_FLATTEN
 };

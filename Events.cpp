@@ -1909,9 +1909,6 @@ void handleButtonEvents() {
             case LAY_ACT_ARM_ERASE:
               snprintf(lb, sizeof(lb), "Erase layer?");
               break;
-            case LAY_ACT_ARM_OFF:
-              snprintf(lb, sizeof(lb), "Layer cmd off");
-              break;
             case LAY_ACT_MUTE_ON:
               snprintf(lb, sizeof(lb), "Layer %u Muted", ln);
               break;

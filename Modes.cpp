@@ -995,6 +995,21 @@ void pollModeLeds() {
     refreshAllLeds();
   }
 
+  // hold-M2 layer panel: the selected MUTE key breathes dim orange, so the
+  // row needs a repaint at ~30 fps while the panel is up (the edge restores
+  // the static colours on release)
+  static bool layActive = false;
+  static unsigned long layFlip = 0;
+  bool layNow = layOvActive();
+  if (layNow != layActive) {
+    layActive = layNow;
+    refreshAllLeds();
+  }
+  if (layActive && (long)(millis() - layFlip) >= 0) {
+    layFlip = millis() + 30;
+    refreshAllLeds();
+  }
+
   int8_t active = activeModeLed();
   if (active < 0) { lastBlink = -1; return; }
 

@@ -177,6 +177,20 @@ from the Backlog while this section has open items** (unless overridden).
 - Harmonic rhythm control — chord-change rate independent of step rate
 
 ## ✅ Done (ticked items; prune occasionally)
+- [x] **Layer panel: mute arm never resets, MUTE breathes orange, ERASE dim dark red**
+  (user report: *"layer mute should be dimmed orange and pulsing when selected (and
+  selected by default, we should not have to re-arm mute each time we mute a layer),
+  layer-erase should be dimmed darkred"*) - `layOvOpen()` already defaulted to `MUTE`, but
+  pressing `C#` toggled the arm **off** (`Layer cmd off`) and an erase confirm cleared it,
+  so mutes kept landing on the report instead. `MUTE` is now the resting selection that
+  never disarms (`C#` re-selects), `D#` off and an erase confirm both fall back to `MUTE`,
+  and the now unreachable `LAY_ACT_ARM_OFF` is gone. The orange was already in the LED hook
+  but `pollModeLeds()` had no driver for the panel, so it was painted once and sat still: a
+  30 fps repaint now runs while `layOvActive()`, making the selected mute breathe dim
+  orange (~1 s) and leaving selected erase a static dim dark red. `Modes.cpp`,
+  `Keyboard.cpp/.h`, `Events.cpp`, `docs/modes/seqmode.md`, `docs/cheatsheet.md`,
+  `CHANGELOG.md`; compiled (`FLASH: code:215568`), `tools/header_lint.py` 0 findings;
+  2026-11-03
 
 - [x] **Overdub layers + hold-M2 layer overlay** (user request: *"holding M2 should
   show the different layers (4 max) of overdub on a dedicated keyboard overlay (same

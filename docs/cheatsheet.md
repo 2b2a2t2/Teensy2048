@@ -63,7 +63,7 @@ alive under its page or radio).
 | Tap the armed F again | Release, back to the plain row |
 | Tap **M1** | Step-edit radio (targets TIE / GLIDE / ACCENT / PROB, and lets ENC2–4 turn `LISTEN` / `PLAY` / `OVERDUB`) |
 | Tap **M2** | The track-type page (GNR8, LEAD, ARP, COMP, HARM, SKANK, DRUM styles, strum ADDS) |
-| Hold **M2** | Overdub-layer panel on the keyboard row: C D E F = layers 1–4, C# / D# arm mute / erase (white key confirms), F# / G# / A# = undo / redo / reset layers |
+| Hold **M2** | Overdub-layer panel on the keyboard row: C D E F = layers 1–4, C# = mute (always armed) / D# = erase (white key confirms), F# / G# / A# = undo / redo / reset layers |
 | Tap **M3** | Generate (page open) / re-roll (drum page) / page group (ENCMODE) |
 | Hold **M3** | Undo one level (generators, drum page) |
 | Hold **PREV** | Swap the encoder row to SHIFT / TRANS |

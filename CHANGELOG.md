@@ -33,16 +33,27 @@ de-facto version marker is the size of the saved-settings block (see
 
 ### Sequencer
 
+- **Layer panel: `MUTE` never has to be re-armed, and its key breathes** - the hold-`M2`
+  panel opened on `MUTE` already, but tapping `C#` disarmed it and an erase cleared the arm,
+  so a layer-by-layer pass kept dropping back to the report. `MUTE` is the **resting
+  selection** now: `C#` only repeats `Mute layer?`, a white key mutes/unmutes and the arm
+  stays, and `ERASE` hands the row back to `MUTE` after its confirm (a second `D#` also
+  goes back to mute instead of nothing). The selected `MUTE` key is a **dim orange that
+  breathes** - the panel was painted once when it opened, so the colour never moved; a
+  30 fps repaint now runs while the row is up - and selected `ERASE` stays a static **dim
+  dark red**. Muted layers themselves read dim red as before.
+
 - **Overdub layers + the hold-`M2` layer panel** — every note a record pass writes now
   remembers **which pass wrote it**: up to **4 layers per track** (RAM only, like the
   patterns; DRUM steps stay untagged). A pass writes the **first layer that holds no notes
   anywhere**, so pre-existing content counts as layer 1, the first pass over a written
   pattern lands in layer 2, and a full set **stacks into layer 4**. **Holding `M2`** in
   SEQMODE 1/2/4 (non-DRUM edit track) opens a keyboard-row panel in the **M2 button's
-  hue**: white **C D E F = layers 1–4** (bright = holds notes, dim = empty, red = muted;
-  a press reports `Layer 2: 7 notes`), the black keys carry **C# = mute layer · D# =
-  erase layer · F# = undo · G# = redo · A# = reset layers** — mute/erase arm first and a
-  white key confirms (press the armed key again to disarm), undo/redo/reset fire at once.
+  hue**: white **C D E F = layers 1–4** (bright = holds notes, dim = empty, dim red =
+  muted), the black keys carry **C# = mute layer · D# = erase layer · F# = undo · G# =
+  redo · A# = reset layers** — `MUTE` is armed whenever the panel opens and a white key
+  confirms on that layer, `D#` arms erase for one confirm (see the note above),
+  undo/redo/reset fire at once.
   **Mute** gates playback per layer (an all-muted step rests; a follower filters with the
   feeder's mask), **erase** deletes the layer's notes from every step (the rest compact,
   emptied steps lose their attributes, mirrors/HARM re-derive), **reset** flattens all
