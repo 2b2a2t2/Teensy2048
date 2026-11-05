@@ -115,9 +115,7 @@ de-facto version marker is the size of the saved-settings block (see
   playhead is sounding and reading **dim orange** on a voice muted in the ENCMODE drum
   overlay (mute wins over the blink; touch still flashes white). The keyboard **octave
   snaps to 1** on landing there - the octave the kit's own notes sit on (`C1` = 36
-  through `B1` = 47) - and the snap is **local**: the octave the other tracks were left
-  on is held aside and put back when you leave the drum track, so no other track sees
-  its setting change, while the octave knob still transposes the drum row. Pressing a
+  through `B1` = 47) -and the octave is **per track**: every track keeps its own KEYMODE octave (default 3, a DRUM row defaulting to 1), so the snap and any knob turn on one track never move another, while the octave knob still transposes the drum row. Pressing a
   pad also **picks that drum voice** for the step edit, the direct form of hold `M1` +
   step N (`C` = part 1, `C#` = part 2 … `D#2` = part 16).
 

@@ -20,8 +20,9 @@ A blank means the feature predates the initial import or cannot be attributed to
 
 | Feature | Mode | Status | Since | Notes |
 |---|---|---|---|---|
+| Per-track keyboard octave | KEY 1–4 | Stable | 2026-11-04 | Each track keeps its own octave (default 3; a DRUM row 1); RAM only, like the octave itself |
 | Chromatic pads, in-scale LEDs, octave/scale/key | KEY 1 | Stable | 2026-09-25 | MIDI 24 = C0; pads outside the scale stay dark |
-| Drum-track pad row | KEY 1, DRUM | Stable | 2026-11-04 | One dim orange-red row, no scale/key/chord engine; the octave snaps to 1 only while the track is live (other tracks keep theirs) and a pad press picks that drum voice for the step edit |
+| Drum-track pad row | KEY 1, DRUM | Stable | 2026-11-04 | One dim orange-red row, no scale/key/chord engine; defaults to octave 1 (the kit) and a pad press picks that drum voice for the step edit |
 | Chord engine, bass, spread, density, latch | KEY 2 | Stable | 2026-09-26 | 8-note maximum |
 | Force-to-scale on inbound notes | KEY 2 | Stable | 2026-09-28 | `FScale` |
 | Channel select + ENCOD/KBOARD links | KEY 3 | Stable | 2026-09-30 | Momentary; restores the previous base and variant; both links boot **locked** |

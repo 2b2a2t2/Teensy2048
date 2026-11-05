@@ -785,27 +785,45 @@ bool keyDrumTrack() {
   return seqTrackOf(s) == SEQ_TRACK_DRUM;
 }
 
-// a drum track's pads are kit notes (C1 = 36 = octave 1), so the keyboard
-// defaults to octave 1 the moment it lands on one.  The octave the other
-// tracks were left on is held aside and put back on the way out - the snap
-// is edge triggered, so the octave knob still transposes the drum row while
-// you are on it, and no other track sees its setting changed (loop context:
-// called by pollSeqClock beside keyMonoPoll)
-static bool   drumOctWas = false;
-static bool   octHeld = false;                 // a drum track holds the octave
-static int8_t octBeforeDrum = KEY_OCT_DEF;     // ..and this is what it hides
+// per-track keyboard octave: every track keeps its own KEYMODE octave (all
+// variants), so transposing the row on one track never moves another.  The
+// knob writes the LIVE value; this table stores it per track.  A track that
+// was never transposed runs on its default: KEY_OCT_DEF (3), or KEY_DRUM_OCT
+// (1) while it is a DRUM track - the kit's C1 = 36 sits under the pads
+// there.  Drum-ness is part of the key, so a track switched between DRUM and
+// POLY keeps both settings.  RAM only, like the octave itself.  Loop context
+// (called by pollSeqClock beside keyMonoPoll).
+static int8_t  octPitch[SEQ_CH_COUNT];          // per track: pitched rows
+static bool    octPitchSeen[SEQ_CH_COUNT];
+static int8_t  octDrum[SEQ_CH_COUNT];           // per track: DRUM rows
+static bool    octDrumSeen[SEQ_CH_COUNT];
+static uint8_t octSlot = 0xFF;                  // track the live octave is on
+static bool    octSlotDrum = false;             // ..and whether it is a DRUM one
 
-void keyDrumOctPoll() {
+static int8_t octTrackWant(uint8_t s, bool d) {
+  if (d) return octDrumSeen[s] ? octDrum[s] : KEY_DRUM_OCT;
+  return octPitchSeen[s] ? octPitch[s] : KEY_OCT_DEF;
+}
+
+static void octTrackStash(uint8_t s, bool d, int8_t o) {
+  if (s >= SEQ_CH_COUNT) return;
+  if (d) { octDrum[s] = o; octDrumSeen[s] = true; }
+  else   { octPitch[s] = o; octPitchSeen[s] = true; }
+}
+
+void keyOctTrackPoll() {
+  uint8_t s = (uint8_t)(keyCh - 1);
+  if (s >= SEQ_CH_COUNT) return;
   bool d = keyDrumTrack();
-  if (d && !drumOctWas) {          // landed on a drum track: kit octave, and
-    octBeforeDrum = keyOctave();   // ..the other tracks' setting goes aside
-    octHeld = true;
-    if (keyOctave() != KEY_DRUM_OCT) setOctave(KEY_DRUM_OCT);
-  } else if (!d && drumOctWas && octHeld) {   // left it: restore, so the
-    octHeld = false;                         // ..other tracks never changed
-    if (keyOctave() != octBeforeDrum) setOctave(octBeforeDrum);
+  if (s != octSlot || d != octSlotDrum) {   // another track, or the same
+    octTrackStash(octSlot, octSlotDrum, octave);   // ..track as another row:
+    octSlot = s;                                   // ..the one we leave keeps
+    octSlotDrum = d;                               // ..its own octave
+  } else {
+    octTrackStash(s, d, octave);            // same track: the knob writes it
   }
-  drumOctWas = d;
+  int8_t want = octTrackWant(s, d);
+  if (octave != want) setOctave(want);
 }
 
 // the 7 white keys are the strummed strings: C..B -> 0..6, black keys -1

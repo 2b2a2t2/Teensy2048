@@ -320,10 +320,10 @@ bool handLive();
 // press skips the scale filter and the chord engines, and the LEDs drop
 // the scale/chord colors for one dim orange-red row.  A pad press also
 // selects that drum voice for the step edit (the direct form of hold M1 +
-// step N), and the octave snaps to 1 (C1 = 36 = the kit) on entry - the
-// octave the other tracks were left on is restored when you leave it
+// step N), and a DRUM row defaults to octave 1 (C1 = 36 = the kit) while
+// every track keeps its own octave
 bool keyDrumTrack();
-void keyDrumOctPoll();             // octave 1 on entering a drum track (loop)
+void keyOctTrackPoll();            // per-track KEYMODE octave swap (loop)
 
 // strum options - the black keys while handLive() (tap toggles, RAM only,
 // booted as SUS+SUSCOMMON): Le Strum's set ported from StrumController.c

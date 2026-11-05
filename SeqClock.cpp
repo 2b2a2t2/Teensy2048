@@ -196,7 +196,7 @@ void pollSeqClock() {
     else if (sAdv != 255) seqStepAdvance(false);
   }
   keyMonoPoll();               // live MONO-track keyboard voice (TRACK/TYPE)
-  keyDrumOctPoll();            // drum track landed: keyboard octave -> 1 (kit)
+  keyOctTrackPoll();           // per-track keyboard octave (KEYMODE, all variants)
   seqGatePoll();               // track gate note-offs (MONO step-edit)
   seqStrumPoll();              // staggered strum note-ons (FX / TYPE=STRUM)
   compPoll();                  // COMP stab re-strikes (POLY STEP, HITS 2..8)
