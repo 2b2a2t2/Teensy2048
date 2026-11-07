@@ -563,7 +563,7 @@ void handleButtonEvents() {
           uint8_t lbits = linkClipBits(sidx);
           if (ev == EV_PRESSED) {
             if (!linkAlive()) {
-              headerShow("Live Link Off");
+              headerShow("Link Down Check MIDI");
             } else if (lbits & 0x02) {
               linkClipAct(sidx, 1);
               headerShow("Clip Stopped");
@@ -881,6 +881,8 @@ void handleButtonEvents() {
           if (currentBinding().enc == ENC_KEY4_STEP) {
             clearOverlay(G_ENC);
             if (k4EmbMenu()) setOverlay(G_ENC, ENC_KEY4_EMB);
+            else if (k4Tonality())
+              setOverlay(G_ENC, (uint8_t)(ENC_KEY4_MENU + k4TonaBank()));
           }
           refreshMainScreen();    // labels back to the mode's own row
         }
@@ -1636,7 +1638,22 @@ void handleButtonEvents() {
     for (uint8_t i = 0; i < CONTROLS_NUM_G; i++)
       if (groupControls[i] == kl) k4ci = (int8_t)i;
     if (modeBase == MODE_KEY && modeVariant == 4) {
-      if (k4ci == 1 && ev == EV_CLICKED) {
+      // TONALITY page open: F1..F4 pick its bank.  They shadow the usual F
+      // row for as long as the page is up (VARIATION / LOCK / LEAD / AUTO
+      // come back with the page closed) - the pad of the open bank burns
+      // white, the other three drift through a slow dim hue cycle
+      if (k4Tonality() && k4ci >= 5 && ev == EV_CLICKED) {
+        uint8_t bk = (uint8_t)(k4ci - 5);
+        k4TonaBankSet(bk);
+        setOverlay(G_ENC, (uint8_t)(ENC_KEY4_MENU + bk));
+        headerShow(k4TonaBankLong());
+        refreshMainScreen();
+        refreshAllLeds();
+        if (logRoom(48)) {
+          Serial.print("  bank ");
+          Serial.println(k4TonaBankLong());
+        }
+      } else if (k4ci == 1 && ev == EV_CLICKED) {
         bool on = !k4EmbMenu();
         k4EmbMenuSet(on);
         if (on) setOverlay(G_ENC, ENC_KEY4_EMB);
@@ -1655,9 +1672,18 @@ void handleButtonEvents() {
         if (logRoom(48))
           Serial.println(on ? "  key write" : "  key audition");
       } else if (k4ci == 3 && ev == EV_CLICKED) {
-        bool on = k4AutoToggle();
-        headerShow(on ? "Auto Advance on" : "Auto Advance off");
-        if (logRoom(48)) Serial.println(on ? "  auto on" : "  auto off");
+        // M2 = the TONALITY menu (sticky, like the EMB row): the four
+        // tonality knobs on the encoder row, no PREV hold needed.  Auto
+        // advance moved to F4 when this page took the M2 slot
+        bool on = k4TonalityToggle();
+        if (on) setOverlay(G_ENC, (uint8_t)(ENC_KEY4_MENU + k4TonaBank()));
+        else if (k4EmbMenu()) setOverlay(G_ENC, ENC_KEY4_EMB);
+        else clearOverlay(G_ENC);
+        headerShow(on ? "Tonality On" : "Tonality Off");
+        refreshMainScreen();   // the row swaps to OCT/SCALE/KEY/FSCALE
+        refreshAllLeds();      // the M2 pad brightens while the page is up
+        if (logRoom(48))
+          Serial.println(on ? "  tonality on" : "  tonality off");
       } else if (k4ci == 4 && ev == EV_CLICKED) {
         int w = k4ApplyAll();
         if (w > 0) k4AnnouncePattern();   // the progression that was written
@@ -1690,6 +1716,12 @@ void handleButtonEvents() {
         bool on = k4LeadToggle();
         headerShow(on ? "Lead on" : "Lead off");
         if (logRoom(48)) Serial.println(on ? "  lead on" : "  lead off");
+      } else if (k4ci == 8 && ev == EV_CLICKED) {
+        // F4 tap = auto advance (moved off M2); a long press is still the
+        // audition-only hold below (a hold never reports a click)
+        bool on = k4AutoToggle();
+        headerShow(on ? "Auto Advance on" : "Auto Advance off");
+        if (logRoom(48)) Serial.println(on ? "  auto on" : "  auto off");
       } else if (k4ci == 8 && ev == EV_PRESSED) {
         k4HoldSet(true);
         if (logRoom(48)) Serial.println("  hold audition");
@@ -1853,6 +1885,8 @@ void handleButtonEvents() {
         // and only a live KEYMODE4 owns that menu, never a stale flag)
         if (modeBase == MODE_KEY && modeVariant == 4 && k4EmbMenu())
           setOverlay(G_ENC, ENC_KEY4_EMB);
+        else if (modeBase == MODE_KEY && modeVariant == 4 && k4Tonality())
+          setOverlay(G_ENC, (uint8_t)(ENC_KEY4_MENU + k4TonaBank()));
         else clearOverlay(G_ENC);
         prevOvActive = false;
         refreshMainScreen();
@@ -2193,6 +2227,17 @@ void encCcLoad() {
   encSetChannel(b[1]);
 }
 
+// KEYMODE4: the M2 TONALITY menu borrows the four tonality knobs that
+// otherwise only live on the PREV overlay (OCT / SCALE / KEY / FSCALE), s
+// they can be dialled without holding PREV.  One predicate for the four
+// dispatch guards below
+// the M2 TONALITY page owns the encoder row while it is open - and it has
+// FOUR banks, so the test is a range rather than one set id
+static bool k4TonalityRow() {
+  EncSet e = currentBinding().enc;
+  return e >= ENC_KEY4_MENU && e <= ENC_KEY4_MENU4;
+}
+
 void handleEncoderEvents() {
   uint8_t ei;
   int16_t ed;
@@ -2210,9 +2255,51 @@ void handleEncoderEvents() {
       headerSetLeft(modeHeaderLabel());
     }
 
+    // KEYMODE4 TONALITY page (M2): the open bank's slot for this encoder.
+    // Six slots mirror a control that lives elsewhere (KEY / SCALE / FSCALE /
+    // SURP / VOICE-LEAD / PHRASE) and forward the turn, so the page and the
+    // PREV overlay can never disagree; the rest store their own value
+    if (modeBase == MODE_KEY && modeVariant == 4 && ed != 0 &&
+        k4TonalityRow()) {
+      uint8_t slot = (uint8_t)(k4TonaBank() * 8 + ei);
+      uint8_t mir = k4TonaMirror(slot);
+      if (mir == 1) {                       // KEY
+        keyRootAdjust(ed);
+        refreshAllLeds();
+        k4Refresh();
+        k4Announce();
+      } else if (mir == 2) {                // SCALE
+        keyScaleAdjust(ed);
+        refreshAllLeds();
+        k4Refresh();
+        k4Announce();
+      } else if (mir == 3) {                // FSCALE
+        chordFScaleAdjust(ed);
+      } else if (mir == 4) {                // SURP
+        k4KnobAdjust(6, ed);
+        k4Regenerate();
+      } else if (mir == 5) {                // VOICE-LEAD
+        if ((ed > 0) != k4Lead()) k4LeadToggle();
+      } else if (mir == 6) {                // PHRASE
+        k4PhraseAdjust(ed);
+      } else {
+        k4TonaAdjust(slot, ed);
+      }
+      char hb[22];
+      snprintf(hb, sizeof(hb), "%s %s", k4TonaName(slot), k4TonaLabel(slot));
+      headerShow(hb);
+      refreshMainScreen();
+      if (logRoom(64)) {
+        Serial.print("  ");
+        Serial.println(hb);
+      }
+      any = true;
+    }
+
     // KEYMODE: ENC1 = octave -2..8 (clamped, no wrap; 4 counts = 1 octave).
     // KEYMODE4: the main row owns ENC1 for GENRE - the octave lives on the
-    // PREV overlay row (same composite guard the scale row uses)
+    // PREV overlay row and on the M2 tonality menu (same composite guard
+    // the scale row uses)
     if (modeBase == MODE_KEY && ei == 0 && ed != 0 &&
         (modeVariant != 4 || currentBinding().enc == ENC_KEY4_PREV)) {
       keyOctaveAdjust(ed);

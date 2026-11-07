@@ -94,7 +94,7 @@ static void queue(const uint8_t *p, uint8_t len) {
 
 static bool flushOne() {
   if (qTail == qHead) return false;
-  usbMIDI.sendSysEx(qLen[qTail], qBuf[qTail], true);
+  usbMIDI.sendSysEx(qLen[qTail], qBuf[qTail], false);
   qTail = (uint8_t)((qTail + 1) % Q_SLOTS);
   return true;
 }

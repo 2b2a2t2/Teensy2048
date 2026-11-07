@@ -21,7 +21,7 @@ map you made stay byte-identical, because the bridge knobs use a **new CC block,
 |---|---|
 | **NEXT** tap | `Live Mode On` / `Live Mode Off`; lights the pad row from Live at once |
 | leave ENCMODE, or change variant | the overlay closes (it is RAM only, like every page) |
-| script not answering | header `Live Link Off`; pads do nothing, knobs still send CC 64–71 |
+| script not answering | `Live Link On` never appears; a clip press says `Link Down Check MIDI` and sends nothing — the knobs still send CC 64–71 |
 
 ## Controls while the overlay is up
 
@@ -100,22 +100,32 @@ never edits them — a bridge problem is fixed in the firmware or in the MIDI se
 
 ## Troubleshooting
 
-The header tells you where the link stands, so no log file is needed: `Live Link On` means a
-frame came back and the overlay is live, `Live Link Off` means the firmware is still sending
-`HELLO` into the dark.
+Two strings that are easy to mix up: **`Live Mode On` / `Live Mode Off`** is the overlay opening
+and closing, **`Live Link On` / `Live Link Off`** is the handshake with the script. The overlay
+can be open with no link at all — pads blue, `Live Mode On` in the header — and every clip
+press then answers **`Link Down Check MIDI`** without sending anything.
 
 | Symptom | Meaning | Fix |
 |---|---|---|
-| header stays `Live Link Off`, Live's monitor shows frames 200 ms apart for 5 s, then 1 s apart | the firmware is talking, nothing answers | pick **Teensy2048** as a Control Surface, tick that port's **Remote** switch, set the port as the surface's **Input**, and share it with no other surface |
-| header stays `Live Link Off`, the monitor shows **no** frames at all | the board sits on a port the surface never sees, or the overlay is not up | press NEXT in ENCMODE; in Settings → MIDI Ports make sure the Teensy port is enabled and is the one the surface owns |
-| header `Live Link On`, pads stay dark | the handshake landed but clip state does not arrive | the surface has no **Output** port: assign the same port as **Output** |
+| header only ever shows `Live Mode On`, clip presses say `Link Down Check MIDI`, and Live's monitor shows frames 200 ms apart for 5 s, then 1 s apart | the firmware is talking and nothing answers | pick **Teensy2048** as a Control Surface and give that port **both** the **Input** and the **Output** column — the answer leaves on the output, so a surface with no output port is mute even though it is loaded |
+| the same, but the monitor shows **no** frames at all | the board sits on a port the surface never sees, or the overlay is not up | press NEXT in ENCMODE; in Settings → MIDI Ports make sure the Teensy port is enabled and is the one the surface owns |
+| header `Live Link On`, pads stay dark | the handshake landed, so a state burst went missing | close and re-open the overlay with NEXT — every `HELLO` makes the script resend track, parameters and clip state |
 | header `Live Link On`, pads show clips | linked | audition |
 
-Those `Invalid` lines are the firmware's own `HELLO` seen from Live's side (the monitor counts
-the payload, not the `F0`/`F7`), and Live hands any message that is not three bytes to the
-surface's `handle_sysex` — so a run of them is a missing answer, not a framing fault. Retries
-are 200 ms for the first 5 s and then 1 s, and any tagged frame counts as life: one lost `ACK`
-cannot lock the link out for the session.
+A run of `Invalid 7 bytes` lines used to mean the firmware was emitting its `HELLO` payload
+without the `F0`/`F7` SysEx delimiters (the USB side sent the 7 payload bytes as a raw
+message), so Live never handed anything to the surface's `handle_sysex`. That framing fault
+is fixed: `HELLO` now leaves as a proper SysEx and Live's monitor shows it as a SysEx
+message. If `Invalid` lines still appear, the board is talking and nothing is answering —
+check the surface's Input/Output port assignment. Retries are 200 ms for the first 5 s and
+then 1 s, and any tagged frame counts as life: one lost `ACK` cannot lock the link out for
+the session.
+
+If the surface row itself does not come back after a Live restart, the script did not load: it
+needs **Live 11 or newer** (it builds notes with `MidiNoteSpecification`). Live's own log names
+the reason —
+`grep -i "teensy2048\|traceback\|importerror" ~/Library/Preferences/Ableton/Live*/Log.txt | tail -20`
+— and the script logs nothing itself, by design: it ships as-is and is never edited here.
 
 ## Limits
 

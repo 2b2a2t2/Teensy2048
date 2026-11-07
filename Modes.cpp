@@ -771,6 +771,26 @@ static CRGB modeLedHook(uint8_t pad, bool isTouched, CRGB defaultColor) {
     if (isTouched) return CRGB::White;
     return CHSV((uint8_t)(millis() >> 2), 255, 100);  // full cycle ~1s
   }
+  // KEYMODE4 TONALITY page (F1..F4 = the four banks): the open bank is a
+  // solid white pad, the other three drift through one slow hue cycle, so the
+  // row reads as "one chosen, three to try".  The value stays well clear of
+  // the bottom of the range: the strip runs at FastLED brightness 25, and a
+  // dim value down at ~50 gets torn up by the temporal dithering (the pad
+  // blinks colour/black instead of gliding through the hues)
+  if (modeBase == MODE_KEY && modeVariant == 4 && k4Tonality() &&
+      led >= groupControls[5] && led <= groupControls[8]) {
+    uint8_t bi = (uint8_t)(led - groupControls[5]);
+    if (bi == k4TonaBank()) return CRGB::White;
+    return CHSV((uint8_t)(millis() >> 4), 255, isTouched ? 255 : 130);
+  }
+  // KEYMODE4 M2 (TONALITY menu): the same hue-cycle marker, four times
+  // slower, brighter while the page is open - the button reads as "menu"
+  // without borrowing the hue of any SEQMODE page
+  if (modeBase == MODE_KEY && modeVariant == 4 &&
+      led == groupControls[3]) {
+    if (isTouched) return CRGB::White;
+    return CHSV((uint8_t)(millis() >> 4), 255, k4Tonality() ? 200 : 110);
+  }
   // PLAY transport pad: dim dark green = stopped, bright green = running
   // (touch always wins)
   if (led == groupTransport[0]) {
@@ -1010,6 +1030,20 @@ void pollModeLeds() {
     refreshAllLeds();
   }
 
+  // KEYMODE4: the M3 generator marker (1 s cycle) and the M2 menu marker
+  // (4 s) both move, so the row repaints at ~30 fps while the variant is up
+  static bool k4Active = false;
+  static unsigned long k4Flip = 0;
+  bool k4Now = (modeBase == MODE_KEY && modeVariant == 4);
+  if (k4Now != k4Active) {
+    k4Active = k4Now;
+    refreshAllLeds();
+  }
+  if (k4Active && (long)(millis() - k4Flip) >= 0) {
+    k4Flip = millis() + 30;
+    refreshAllLeds();
+  }
+
   int8_t active = activeModeLed();
   if (active < 0) { lastBlink = -1; return; }
 
@@ -1243,6 +1277,7 @@ void modeOnEvent(uint8_t pad, uint8_t ev) {
   f3AccentHold(false);      // nor the F3 accent-velocity rebind of ENC6
   strumFRowDismiss();       // nor the M2 strum ADDS row
   genPageDismiss();         // nor the M2 GNR8 encoder page
+  k4TonalityDismiss();      // nor the KEYMODE4 tonality menu
   stepChainDisarm();        // ...nor an armed attribute chain span
 
   applyModeLeds();

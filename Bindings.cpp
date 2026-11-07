@@ -54,6 +54,10 @@ static const char* encLabels[ENC_SET_COUNT][8] = {
   /* ENC_KEY4_PREV    */ { "OCT", "SCALE", "KEY", "FSCALE", "SUB", "INV", "PAS", "COL" },
   /* ENC_KEY4_EMB     */ { "EMB", "PLACE", "ERA", "--", "--", "--", "--", "--" },
   /* ENC_KEY4_STEP    */ { "OCT", "DEG", "INV", "VOICE", "--", "--", "--", "--" },
+  /* ENC_KEY4_MENU    */ { "KEY", "SCALE", "GRAV", "MOD", "MODTGT", "MODLEN", "FSCALE", "CADSTR" },
+  /* ENC_KEY4_MENU2   */ { "BORROW", "PREP", "SD", "MIX", "DIAT", "UNRES", "SURP", "STRICT" },
+  /* ENC_KEY4_MENU3   */ { "PARAL", "BASS", "LEAP", "DOUBL", "CMNTN", "TOP", "LEAD", "SPREAD" },
+  /* ENC_KEY4_MENU4   */ { "RATE", "ELIDE", "CADWIN", "CELL", "VAR", "ANTE", "MOTIF", "PHRASE" },
   /* ENC_ABLETON      */ { "P1", "P2", "P3", "P4", "P5", "P6", "P7", "P8" },
 };
 
@@ -64,7 +68,8 @@ static const char* encSetNames[ENC_SET_COUNT] = {
   "SEQENC_STEP_HELD", "SEQENC_ROT_OV", "SEQENC_STEPOV", "SEQENC_SKANK_STEP",
   "SEQENC_BAR_OV",
   "KEYENC2_PREV", "KEYENC4_PREV",
-  "KEYENC4_EMB", "KEYENC4_STEP",
+  "KEYENC4_EMB", "KEYENC4_STEP", "KEYENC4_MENU", "KEYENC4_MENU2",
+  "KEYENC4_MENU3", "KEYENC4_MENU4",
   "ENCABLETON"
 };
 static const char* ctrlSetNames[CTRL_SET_COUNT] = {

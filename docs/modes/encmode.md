@@ -25,6 +25,6 @@ _Docs home: [Teensy2048](../README.md) · [Cheat sheet](../cheatsheet.md) · [Gl
   (fill track / fill scene / stop track / stop all); **F1/F2** = parameter bank,
   **F3/F4** = device
 - it needs the companion remote script in `Remote Scripts/Teensy2048/`; without it the
-  overlay says `Live Link Off` and the knobs still send CC 64–71
+  overlay says `Link Down Check MIDI` and the knobs still send CC 64–71
 - clip content, LED meanings, the protocol and the limits:
   [ENCABLETONMODE](link.md)

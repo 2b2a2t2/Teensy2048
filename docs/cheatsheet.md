@@ -50,6 +50,10 @@ alive under its page or radio).
 | **PREV held**, KEY 2 | OCT · SCALE · KEY · LATCH · KLOCK · PERF · -- · -- |
 | **PREV held**, KEY 4 | OCT · SCALE · KEY · FSCALE · SUB · INV · PAS · COL |
 | **EMB menu**, KEY 4 | EMB · PLACE · PHRASE · -- · -- · -- · -- · -- |
+| **M2 menu** 1 TONAL, KEY 4 | KEY · SCALE · GRAV · MOD · MODTGT · MODLEN · FSCALE · CADSTR |
+| **M2 menu** 2 CHROMA, KEY 4 | BORROW · PREP · SD · MIX · DIAT · UNRES · SURP · STRICT |
+| **M2 menu** 3 VOICE, KEY 4 | PARAL · BASS · LEAP · DOUBL · CMNTN · TOP · LEAD · SPREAD |
+| **M2 menu** 4 ARC, KEY 4 | RATE · ELIDE · CADWIN · CELL · VAR · ANTE · MOTIF · PHRASE |
 | **Step held**, KEY 4 | OCT · DEG · INV · VOICE · -- · -- · -- · -- |
 | **Bar pad held**, SEQ 3 | OCT · TRANS · -- · -- · -- · -- · -- · -- |
 

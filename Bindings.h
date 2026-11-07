@@ -22,6 +22,10 @@ enum EncSet : uint8_t {
   ENC_KEY4_PREV,               // overlay: PREV held in KEYMODE4
   ENC_KEY4_EMB,                // sticky: EMB menu open in KEYMODE4
   ENC_KEY4_STEP,               // overlay: step held in KEYMODE4 (OCT/DEG/INV/VOICE)
+  ENC_KEY4_MENU,               // sticky: the M2 TONALITY menu, bank 1
+  ENC_KEY4_MENU2,              //   ...bank 2 (F2 while the page is open)
+  ENC_KEY4_MENU3,              //   ...bank 3 (F3)
+  ENC_KEY4_MENU4,              //   ...bank 4 (F4)
   ENC_ABLETON,                 // overlay: ENCABLETONMODE (NEXT) - eight Live
                                //   parameters, labels sent by the script
   ENC_SET_COUNT

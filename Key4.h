@@ -107,8 +107,34 @@ uint8_t k4EmbColorAmt();
 // --- control buttons --------------------------------------------------------
 bool k4WriteToggle();      // M1: key presses land on the focused step
 bool k4Write();
-bool k4AutoToggle();       // M2: focus advances after every write
+bool k4AutoToggle();       // F4 tap: focus advances after every write
 bool k4Auto();
+// M2 tap: the TONALITY menu (sticky encoder page) - OCT / SCALE / KEY /
+// FSCALE without holding PREV.  Frees the M2 slot, which used to be the
+// auto-advance toggle (that now lives on F4); dies with KEYMODE4
+bool k4TonalityToggle();
+bool k4Tonality();
+void k4TonalityDismiss();
+// --- TONALITY page banks (M2) -----------------------------------------------
+// The page is four banks of eight; F1..F4 pick the bank while it is open (the
+// pad reads bright white on the open bank, a slow dim hue cycle on the rest).
+// Bank 1 TONAL CENTER (key/scale, gravity, modulation plan-target-span,
+// fscale, cadence strictness), 2 CHROMATICISM (borrow budget, preparation,
+// secondary dominants, modal mixture, diatonic bias, unresolved cost, Surp,
+// functional strictness), 3 VOICE LEADING (parallels, bass, leaps, doubling,
+// common tones, top voice, Voice-Lead, spread), 4 STRUCTURE (harmonic rate,
+// phrase overlap, cadence window, cell reuse, variation operator, antecedent
+// relation, motif length, Phrase).  Mirrored slots forward the turn.
+uint8_t     k4Tona(uint8_t i);          // slot = bank*8 + encoder
+uint8_t     k4TonaMirror(uint8_t i);    // 0 stored, else the forwarded control
+const char* k4TonaName(uint8_t i);      // long name (header)
+const char* k4TonaLabel(uint8_t i);     // short value (value column)
+void        k4TonaAdjust(uint8_t i, int16_t counts);
+void        k4TonaBankSet(uint8_t b);   // 0..3
+uint8_t     k4TonaBank();
+const char* k4TonaBankName();           // "TONAL" (header left slot)
+const char* k4TonaBankLong();           // "Tonal Center"
+
 bool k4LeadToggle();       // F3: inversions choose minimal bass movement
 bool k4Lead();
 void k4HoldSet(bool on);   // F4 held: audition only (no write, no advance)

@@ -8,6 +8,15 @@ Rules of engagement live in `AGENTS.md` (read it before touching this file).
 Current phase: tuning + bug hunting on the hardware. **No feature work
 from the Backlog while this section has open items** (unless overridden).
 
+- [ ] **ENCABLETONMODE — the link never comes up on the bench** (reported 2026-11-05): the
+  overlay opens (`Live Mode On`, pads blue) and every clip press answers `Link Down Check MIDI`,
+  so nothing ever answers `HELLO` even though Live's monitor shows the frames. The firmware
+  send/receive path is verified (handler installed once, `linkPump` / `linkTick` called from
+  `pollSeqClock`, 200 ms for 5 s then 1 s), so the silence is on the Live side: the surface's
+  **Output** port, its **Input** port (or another surface owning that port), or the script not
+  loading at all (needs Live 11+). Read Live's own log before changing firmware; `Remote
+  Scripts/` stays frozen.
+
 - [ ] **ENCABLETONMODE — audition against Live** (implemented 2026-11-04, see
   `docs/modes/link.md`): install `Remote Scripts/Teensy2048/`, flash, then check handshake
   (`Live Mode On`), clip LEDs, single fill + scene fill, launch/stop/quantisation, the
@@ -20,11 +29,15 @@ from the Backlog while this section has open items** (unless overridden).
 
 ## 🧊 Backlog — features (frozen until Active is empty)
 
-### SEQMODE (sequencer, `Keyboard.cpp` / `Bindings.cpp` / `Events.cpp`)
+### SEQ editing & workflow (`Keyboard.cpp` / `Display.cpp`)
 
-- [ ] **Euclidean sequencing** — Euclidean rhythm as a step-writing tool (e.g. GNR8-adjacent or a dedicated pad gesture). `bjorklund.h` + `Gen.cpp` already provide the Bjorklund/Euclidean placement primitive to reuse.
+- [ ] **Euclidean sequencing** — Euclidean rhythm as a step-writing tool (dedicated pad gesture). **Partial:** GNR8 `ALGO=EUCLID`, LEAD's optional Euclid and COMP/HITS on-positions already cover the generation side; only the dedicated step-writer gesture remains. `bjorklund.h` + `Gen.cpp` provide the Bjorklund/Euclidean placement primitive to reuse.
+- [ ] **Split main screen: encoder part vs button part** — divide the main screen into two zones (encoder grid, control-button grid). When an encoder is tweaked or a button is used, temporarily enlarge that part and show the encoder's full name + value, or the accessed button function, then fall back. Today: 4x4 encoder grid y16–40 + button rows y54/62 (`Display.cpp:38`), transient feedback via `headerShow()` (`Display.cpp:502`). Related: on-device legend/help overlay — big temporary legend of the current mode/variant/overlay bindings, same enlarge-then-fall-back idea.
+- [ ] **Multi-level undo** — 3–4 snapshot ring buffer instead of the one-level M3-hold. **Partial:** the layer overlay already ships 8-slot undo/redo stacks (`layStack[2][8]`); only the global M3-hold ring remains.
+- [ ] **Dead value encoders on open M2 pages** (parked 2026-11-01 from Active, scoped check done) — those knobs live only in the `ed != 0 && stepEditOn` branch and every M2 page turns the M1 radio off: **GNR8** loses ENC5/6/8 (GATE/VEL/PROB), and also on an armed F sub-page, whose branch sits before the generic one and swallows the row with `any = true`; **LEAD**, **HARM** and **COMP** lose only ENC8 (PROB); **SKANK** owns all eight and **DRUM**'s base row owns all eight, so neither needs work. GATE/VEL are genuinely unbound for POLY tracks (`seqGe` needs `SEQ_TRACK_MONO`, `stepEditCtx()` gates the adjust), so HARM/COMP only need the PROB path. Template is the ARP page fix: an `ei == 4 || 5 || 7` branch guarded by `arpSlotAt(...) < 0`. `Events.cpp`
+- [ ] **`Config.h` — consolidate scattered constants** — (`Keyboard.h`, `Chords.h`, inline magic numbers).
 
-### Cross-cutting modules (shared options across POLY/MONO engines)
+### Melodic generation — shared modules (`Gen.cpp` / `SeqClock.cpp`)
 
 - [ ] **Articulation-state engine** — 4-state machine (legato/tenuto/staccato/marcato) with transition weights; generates articulation pattern first, then fills pitch/timing. Shared by LEAD (sax/trumpet fall/doit/shake), POLY STAB/COMP (horn stabs, piano comp), BASS (walking articulation). Articulation page on M2 for applicable types.
 - [ ] **Interval-transition grammar** — weighted interval table (1st/2nd order: last interval + direction → next interval + direction). Hard constraints: leap recovery (stepwise opposite), tendency-tone resolution, no same-direction leap chains. Style tables (JAZZ/BLUES/CLASSICAL) in PROGMEM (~120 bytes). INTERVAL STYLE knob morphs stepwise ↔ leap-heavy. Used by LEAD, BASS WALKING, GNR8.
@@ -71,34 +84,23 @@ from the Backlog while this section has open items** (unless overridden).
 - [ ] **GNR8: CORPUS algo** — third ALGO alongside CLASSIC/EUCLID. Embedded small corpus transition table (style fingerprint) for "stochastic without random". CORPUS selector + COHERENCE knob (blend corpus vs. uniform).
 - [ ] **GNR8: POOL algo** — persistent pitch pool (64 steps) across generate passes; RESEED gesture regenerates pool; FILL/PROB/TIE shape expression. ALGO = POOL.
 
-### Scheduling / structural engines
+### Ensemble & scheduling engines
 
 - [ ] **Real-time harmonizer (COUNTER mode)** — POLY track listens to live keyboard (or another track's live output) and generates species counterpoint (1st–5th species + CANON toggle) in real time. Feeder = live input channel.
 - [ ] **Rhythm-first engine** — generates rhythmic phrase first (clave/tresillo, Euclid + syncopation), then assigns pitches by separate rule (highest pitch on longest note, stepwise through rhythm). Pitch demoted to filler.
-- [ ] **Register-band engine** — (see cross-cutting Register-band module).
-- [ ] **Density-envelope engine** — (see cross-cutting Density envelope module).
-- [ ] **Call-response between two machine tracks** — track A phrase → track B response (same rhythm inverted contour, or same contour different rhythm) → track A responds. Two-track alternation engine.
-- [ ] **Silence-first engine** — generates rest pattern first (rhythmic grammar / Euclid), then fills sounding steps with pitch from any engine. Silence as structural parameter.
 
-### Harmony / chord engines
+### Harmony & chord generation (`Key4.cpp` / `Chords.cpp`)
 
-- [ ] **Markov order-2 chord transition** — extend Key4 genre scoring to use previous 2 chords (bigram → next) instead of unigram; captures cadential function (ii–V–I as unit). Transition tables per genre; Key4.cpp scoring.
-- [ ] **Real-time harmonizer (COUNTER mode)** — POLY track listens to live keyboard (or another track's live output) and generates species counterpoint (1st–5th species + CANON toggle) in real time. Feeder = live input channel.
-
-### ENCMODE (encoder/CC mode, `Events.cpp` / `Bindings.cpp` / `Display.cpp`)
-
-- [ ] **Knob motion recording** — record encoder movements over time and play them back as CC automation. Reuse the ENCMODE EEPROM save block (`Events.cpp:1227`) for persistence.
-
-### Chord progression (`Chords.cpp` / `Key4.cpp`)
+#### Progression editing
 
 - [ ] **Per-chord length** — adjust how long each chord in the progression is held (individual step length, not uniform).
 - [ ] **Insert chord** — insert a chord at a position within the progression, shifting the rest.
 
-### Scale / Key
+#### Modulation
 
 - [ ] **Record scale or key change** — capture scale/key changes as they happen (automation over time). Extend with a per-bar key/scale map (16 slots): playback resolves KEY/SCALE per bar (FScale lookup in `Chords.cpp`, send path in `SeqClock.cpp`), enabling generator-driven modulation (pivot chord then re-key). Scale tables in `Chords.cpp` (`kScalePat`, `kScaleName`), KeyLock/key state in `Chords.h`/`Key4.cpp`.
 
-### Composition engine (`Key4.cpp` / `Gen.cpp` / `SeqClock.cpp`)
+#### Chord-gen scoring (`Key4.cpp`)
 
 - [ ] **Chord-gen: tension trajectory** (a curve, not a knob bias) — replace the
   flat **TENS** bias with a positional target: **RISE** (build to bar 3–4) ·
@@ -153,30 +155,55 @@ from the Backlog while this section has open items** (unless overridden).
   corpus (MIDI chord files or roman-numeral lists, ~50 tunes per genre); the
   biggest quality jump available with no new hardware. Feeds / supersedes
   **Per-genre substitution tables** below
+- [ ] **Markov order-2 chord transition** — extend Key4 genre scoring to use previous 2 chords (bigram → next) instead of unigram; captures cadential function (ii–V–I as unit). Transition tables per genre; Key4.cpp scoring.
+- [ ] **Beam-search 4-bar phrase proposal** — score whole spans; "propose a phrase" long-press. **Partial:** `planBuild()` backward planning pass already shipped with the phrase templates; only the long-press gesture is missing.
+
+#### FOLLOW & motif
 
 - [ ] **FOLLOW approach tones** — new per-step modifier (semitone/scale approach into the next chord tone), reusing the PROB/BRW machinery (`SeqClock.cpp` FOLLOW map + per-step attributes in `Keyboard.cpp`).
+- [ ] **FOLLOW variations** — inversion-aware NEAR, BASS rhythmic independence (HAND-style empty-step resolution), octave/register contour, tiered fallback (buffered feeder chord → pending → last-known), second-follower chain with recursion guard.
 - [ ] **Motif capture** — (storage half of *Chord-gen: motivic repetition*) snapshot a 4-bar phrase as a motif; transpose/repeat per track with a "repeat every N bars" flag (new `Motif.h/cpp`; today: 16-step loop + one-level undo).
 - [ ] **Energy-arc automation** — per-bar envelope automating the KEYMODE4 TENS/MOTION/SURP knobs over the pattern length (build/drop); the same curve as *Chord-gen: tension trajectory* — one implementation, two surfaces.
 - [ ] **Per-genre substitution tables** — (see *Chord-gen: corpus-derived transition weights* for deriving instead of authoring them) replace fixed `subSw[7]` (`Key4.cpp:689`) with per-genre tables like the transition data, gated by SURP + function state; add tritone sub and modal interchange (borrow from parallel minor) as first-class substitutions.
 
-### General — display & workflow (`Display.cpp`)
+### ENCMODE (encoder/CC mode, `Events.cpp` / `Bindings.cpp` / `Display.cpp`)
 
-- [ ] **Split main screen: encoder part vs button part** — divide the main screen into two zones (encoder grid, control-button grid). When an encoder is tweaked or a button is used, temporarily enlarge that part and show the encoder's full name + value, or the accessed button function, then fall back. Today: 4x4 encoder grid y16–40 + button rows y54/62 (`Display.cpp:38`), transient feedback via `headerShow()` (`Display.cpp:502`). Related: on-device legend/help overlay — big temporary legend of the current mode/variant/overlay bindings, same enlarge-then-fall-back idea.
+- [ ] **Knob motion recording** — record encoder movements over time and play them back as CC automation. Reuse the ENCMODE EEPROM save block (`Events.cpp:1227`) for persistence.
+
+### Testing & tooling
+
+- [ ] **Host-side unit tests for the pure logic (chords/genre/bjorklund)** — prerequisite before any `Events.cpp` dispatch refactor. Then migrate dispatch incrementally (one binding group at a time, e.g. ENCMODE CC banks first; verify with the `logSets()` serial dump + on-hardware testing per group) instead of a big-bang BindingResolver/DSL rewrite. **Partial:** the host harness already exists (drum style checks 41/41, u8g2 dial render on host); only the chords/genre/bjorklund suites are missing.
 
 ## 💡 Parking lot (raw ideas, unsorted)
 
-- Dead value encoders on open M2 pages (parked 2026-11-01 from Active, scoped check done) — those knobs live only in the `ed != 0 && stepEditOn` branch and every M2 page turns the M1 radio off: **GNR8** loses ENC5/6/8 (GATE/VEL/PROB), and also on an armed F sub-page, whose branch sits before the generic one and swallows the row with `any = true`; **LEAD**, **HARM** and **COMP** lose only ENC8 (PROB); **SKANK** owns all eight and **DRUM**'s base row owns all eight, so neither needs work. GATE/VEL are genuinely unbound for POLY tracks (`seqGe` needs `SEQ_TRACK_MONO`, `stepEditCtx()` gates the adjust), so HARM/COMP only need the PROB path. Template is the ARP page fix: an `ei == 4 || 5 || 7` branch guarded by `arpSlotAt(...) < 0`. `Events.cpp`
 - Chord anticipation — chord changes on the "& of 4" instead of the downbeat (`SeqClock.cpp` advance path). Researched 2026-10-22: the FOLLOW mechanism reads the feeder's current playhead (`fstp = chStep[fx]`), the listener's own steps gate the rhythm — anticipation would need lookahead + a timer drain (like `gateOffAt`/`compQ`); user put it in the freezer ("not what I thought it would be")
-- Host-side unit tests for the pure logic (chords/genre/bjorklund) — prerequisite before any `Events.cpp` dispatch refactor. Then migrate dispatch incrementally (one binding group at a time, e.g. ENCMODE CC banks first; verify with the `logSets()` serial dump + on-hardware testing per group) instead of a big-bang BindingResolver/DSL rewrite
-- README split — extract user manual (Workflows) and developer docs (architecture, event flow, extending) into `docs/`, keep `README.md` as concise overview + quick start; do it when the README next grows past a pain threshold
-- Multi-level undo (3–4 snapshot ring buffer instead of the one-level M3-hold)
 - Optional SD-card save for patterns/progressions (Teensy 4.1 slot; RAM-only by design today)
-- `Config.h` — consolidate scattered constants (`Keyboard.h`, `Chords.h`, inline magic numbers)
-- Beam-search 4-bar phrase proposal (score whole spans; "propose a phrase" long-press)
-- FOLLOW variations: inversion-aware NEAR, BASS rhythmic independence (HAND-style empty-step resolution), octave/register contour, tiered fallback (buffered feeder chord → pending → last-known), second-follower chain with recursion guard
-- Harmonic rhythm control — chord-change rate independent of step rate
 
 ## ✅ Done (ticked items; prune occasionally)
+- [x] **KEYMODE4 TONALITY page: four banks on F1-F4, 32 controls**
+  (user request: *"when we are in KEYMODE4 tonality page, F1-4 buttons should
+  toggle 4 banks (slowly dimmed cycling HUE or bright white when selected)"* plus
+  the bank design) - the page was a four-knob OCT/SCALE/KEY/FSCALE shortcut.
+  It is now four banks of eight, `F1`-`F4` pick the open one (white pad) while
+  the others cycle hue slowly and dim, and the header's left slot names the
+  bank. 26 new controls wired into `scorePc` / `deriveProposal` / the apply
+  pass / `k4Variation`, six slots mirroring existing controls, all defaults
+  neutral (opening the page changes nothing until a knob moves). `Key4.cpp/.h`,
+  `Bindings.cpp/.h`, `Events.cpp`, `Display.cpp`, `Modes.cpp`,
+  `docs/modes/keymode.md`, `docs/cheatsheet.md`, `CHANGELOG.md`; compiled
+  (`FLASH: code:220560`); 2026-11-04
+- [x] **KEYMODE4: auto advance -> F4, M2 = slowly hue-cycling TONALITY menu**
+  (user request: *"in keymode4, we need to move auto advance to F4 so we can add a
+  M2 menu (like ARP), the M2 menu button should be slowly cycling HUE"*) - `M2`
+  tap toggled auto-advance, so the page slot had no room. `F4` tap = auto advance
+  now (hold still = audition-only), and `M2` opens a sticky `ENC_KEY4_MENU` page:
+  `OCT / SCALE / KEY / FSCALE` on ENC1-4 (`--` on 5-8), `TONALITY` in the header
+  slot, dismissed with the mode like the EMB row. The M2 pad cycles hue at 4x the
+  M3 marker's period (dim closed, brighter open), driven by a new 30 fps KEYMODE4
+  repaint - the M3 cycle had no driver either and sat still between repaints.
+  `Bindings.cpp/.h`, `Events.cpp`, `Display.cpp`, `Key4.cpp/.h`, `Modes.cpp`,
+  `docs/modes/keymode.md`, `docs/cheatsheet.md`, `CHANGELOG.md`; compiled
+  (`FLASH: code:216016`), `tools/header_lint.py` 0 findings; 2026-11-03
 - [x] **Layer panel: mute arm never resets, MUTE breathes orange, ERASE dim dark red**
   (user report: *"layer mute should be dimmed orange and pulsing when selected (and
   selected by default, we should not have to re-arm mute each time we mute a layer),

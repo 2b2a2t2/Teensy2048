@@ -20,6 +20,55 @@
 static uint8_t  sGenre = 0;                              // boot = genre 0
 static uint8_t  sKnob[7] = {50, 50, 50, 50, 50, 50, 50}; // MOOD..SURP
 
+// --- TONALITY page (M2): four banks of eight ------------------------------
+// Each bank is one mental model - tonic centre, chromaticism, voice leading,
+// structure - and F1..F4 pick it while the page is up (M2 tap opens/closes).
+// Every default below is the NEUTRAL value: the knob sits on its "no change"
+// point or on the behaviour the generator already had, so opening the page
+// and touching nothing sounds exactly like it did before the banks existed.
+// Six slots mirror a control that already lives elsewhere (KEY / SCALE /
+// FSCALE / SURP / VOICE-LEAD / PHRASE): they store nothing, the turn is
+// forwarded, so the page and the PREV overlay can never disagree.
+static uint8_t sTonaBank = 0;                 // 0..3
+// set while the borrow budget is spent: scorePc refuses every chromatic
+// candidate so the re-pick below can only land inside the scale
+static bool    sNoBorrow = false;
+static uint8_t sTona[32] = {
+  /* 1 TONAL CENTER  */ 0, 0, 50, 0, 4, 2, 0, 50,
+  /* 2 CHROMATICISM  */ 0, 0, 50, 0, 0, 0, 0, 0,
+  /* 3 VOICE LEADING */ 40, 50, 50, 1, 50, 50, 0, 50,
+  /* 4 STRUCTURE     */ 0, 0, 0, 0, 0, 0, 2, 0
+};
+// max usable value per slot (enums count entries - 1, percents 100)
+static const uint8_t tonaMax[32] = {
+  0, 0, 100, 3, 6, 3, 0, 100,
+  100, 100, 100, 100, 100, 100, 0, 100,
+  100, 100, 100, 2, 100, 100, 0, 100,
+  3, 100, 3, 100, 4, 3, 2, 0
+};
+// mirror id: 0 stored, 1 KEY, 2 SCALE, 3 FSCALE, 4 SURP, 5 VOICE-LEAD,
+// 6 PHRASE (the turn is forwarded, nothing is stored)
+static const uint8_t tonaMir[32] = {
+  1, 2, 0, 0, 0, 0, 3, 0,
+  0, 0, 0, 0, 0, 0, 4, 0,
+  0, 0, 0, 0, 0, 0, 5, 0,
+  0, 0, 0, 0, 0, 0, 0, 6
+};
+static const char* const tonaNames[32] = {
+  "Key", "Scale", "Tonal Gravity", "Modulation Plan", "Mod Target",
+  "Mod Span", "Force To Scale", "Cadence Strict",
+  "Borrow Budget", "Preparation", "Secondary Dom", "Modal Mixture",
+  "Diatonic Bias", "Unresolved", "Surprise", "Functional Strict",
+  "Parallel Strict", "Bass Continuity", "Leap Limit", "Doubling Rule",
+  "Common Tone", "Top Voice", "Voice Leading", "Register Spread",
+  "Harmonic Rate", "Phrase Overlap", "Cadence Window", "Cell Reuse",
+  "Variation Operator", "Antecedent", "Motif Length", "Phrase"
+};
+static const char* const tonaBankNames[4] = { "TONAL", "CHROMA", "VOICE",
+                                              "ARC" };
+static const char* const tonaBankLong[4] = { "Tonal Center", "Chromaticism",
+                                             "Voice Leading", "Structure" };
+
 // embellishment encoders (PREV hold: EN5-8)
 static uint8_t  sEmbSubProb  = 50;  // EN5: substitution probability %
 static uint8_t  sEmbInvBias  = 0;   // EN6: inversion preference 0-3
@@ -34,9 +83,10 @@ static bool     sHarmInput = false; // EMB ENC3: false = bass (Mode A),
 static bool     sHarmHold  = false; // EMB ENC4: force hold when the bass
                                     // repeats a note (independent of MOTION)
 static bool     sWrite = false;  // M1: boots in AUDITION, land = opt-in
-static bool     sAuto = false;   // M2: boots with auto-advance off
+static bool     sAuto = false;   // F4: boots with auto-advance off
 static bool     sLead = false;   // F3: minimal-bass-movement inversions
 static bool     sHold = false;   // F4 held: audition only
+static bool     sTonality = false; // M2: the tonality menu row is open
 static uint8_t  sFocus = 0;      // write target, inside the pattern
 static uint64_t sLock = 0;       // step lock bits (apply skips them)
 static uint32_t sSeed = 0x9E3779B9u;
@@ -486,6 +536,14 @@ static uint32_t scorePc(uint8_t prev, uint8_t pc, uint8_t pos,
     if (t >= 67) bf += (uint32_t)(t - 67) / 2u;
     s = s * bf / 100u;
     if (s == 0) s = 1;
+    if (sNoBorrow) return 0;        // BORROW BUDGET spent
+    // DIATONIC BIAS (bank 2): the standing cost of any alteration - the
+    // budget above says how MANY, this says how much each one hurts
+    if (sTona[12]) s = s * (uint32_t)(100u - sTona[12] / 2u) / 100u;
+    // UNRESOLVED PENALTY (bank 2): a chromatic chord away from a cadence
+    // point has nothing to resolve it, so it costs extra
+    if (!barEnd(pos) && sTona[13])
+      s = s * (uint32_t)(100u - sTona[13] / 2u) / 100u;
   }
 
   uint8_t m = sKnob[2];             // MOTION: stay vs change around 50
@@ -497,7 +555,15 @@ static uint32_t scorePc(uint8_t prev, uint8_t pc, uint8_t pos,
   int32_t mf = 100 + (majDeg ? bias : -bias) / 2;
   s = (uint32_t)((int32_t)s * mf / 100);
 
-  uint8_t cad = sKnob[3];                      // CADENCE (all layers below)
+  // TONAL GRAVITY (bank 1): how hard the tonic and the dominant pull.  50 =
+  // the plain genre grammar; 100 nearly doubles their weight, 0 halves it
+  if (in && (d == 0 || d == 4))
+    s = s * (uint32_t)(50u + sTona[2]) / 100u;
+
+  // CADENCE STRICTNESS (bank 1) scales every cadence term below: 50 is the
+  // knob's own weight, 100 makes the progressions insist on a cadence, 0
+  // lets them drift
+  uint8_t cad = (uint8_t)((uint32_t)sKnob[3] * (50u + sTona[7]) / 100u);
   if (barEnd(pos) && (d == 0 || d == 4)) {     // cadence points: I / V
     s = s * (100u + (uint32_t)cad) / 100u;
   }
@@ -507,6 +573,11 @@ static uint32_t scorePc(uint8_t prev, uint8_t pc, uint8_t pos,
   if (barEnd(pos)) {
     if (prev == 1 && d == 4) s = s * (100u + (uint32_t)cad) / 100u;  // ii-V
     if (prev == 4 && d == 0) s = s * (100u + (uint32_t)cad) / 100u;  // V-I
+    // FUNCTIONAL STRICTNESS (bank 2): a bar end that repeats the chord it
+    // just had is the one grammar break the table cannot see - at 100 the
+    // repeat is vetoed outright, below that it is only dented
+    if (sTona[15] && d == prev && in)
+      s = s * (uint32_t)(100u - sTona[15]) / 100u;
   }
   // phrase end (last bar of the pattern): the authentic cadence V-I lands
   // with an extra layer, plagal IV-I gets a softer one - the term that
@@ -520,7 +591,8 @@ static uint32_t scorePc(uint8_t prev, uint8_t pc, uint8_t pos,
 
   // PHRASE plan: this bar end is supposed to land on `plan` - a hard pull,
   // because the goal came from the backward pass and must actually win
-  if (plan != K4_PLAN_NONE && in && d == plan) s = s * 8u;
+  if (plan != K4_PLAN_NONE && in && d == plan)
+    s = s * (uint32_t)(8u + sTona[26]);      // CADENCE WINDOW tightens it
 
   // secondary-dominant resolution: the previous chord was a V/x - its
   // target degree gets pulled (scaled by SURP, the knob that opened the
@@ -541,7 +613,14 @@ static uint32_t scorePc(uint8_t prev, uint8_t pc, uint8_t pos,
     for (uint8_t i = 0; i < 3; i++)
       for (uint8_t j = 0; j < 3; j++)
         if (pt[i] == ct[j]) { common++; break; }
-    if (common) s = s * (100u + (uint32_t)common * 15u) / 100u;
+    // COMMON TONE (bank 3) sets the weight of that reward: 50 = the plain
+    // +15% per held tone, 0 no reward, 100 double
+    if (common)
+      s = s * (100u + (uint32_t)common * 15u * sTona[20] / 50u) / 100u;
+    // PREPARATION (bank 2): a borrowed chord with no common tone is a jump
+    // with no thread to follow - the knob decides how much that costs
+    if (!in && sTona[9] && common == 0)
+      s = s * (uint32_t)(100u - sTona[9] / 2u) / 100u;
     uint8_t sum = 0;                       // stepwise motion: pair each
     for (uint8_t i = 0; i < 3; i++) {      // candidate tone to its nearest
       uint8_t best = 6;                    // previous tone (ties re-use)
@@ -552,13 +631,27 @@ static uint32_t scorePc(uint8_t prev, uint8_t pc, uint8_t pos,
       sum += best;
     }
     if (sum < 6) s = s * (100u + (uint32_t)(6 - sum) * 4u) / 100u;
+    // TOP VOICE (bank 3): a melody that moves by step is what the ear
+    // follows - reward a top voice that stays within a whole tone
+    if (sTona[21] != 50 && (uint8_t)circDist(ct[2], pt[2]) <= 2)
+      s = s * (uint32_t)(50u + sTona[21]) / 100u;
     // root motion: circDist folds 7 (P5) to 5 (P4) - roots a fifth or
     // fourth apart while both triads carry a perfect fifth = the fifths
     // travel in parallel (same root = stationary, no parallels)
     uint8_t rm = (uint8_t)circDist(prevRoot, pc);
     bool p5a = (prevQ == CHORD_Q_MAJ || prevQ == CHORD_Q_MIN);
     bool p5b = (fwQuality(d) == CHORD_Q_MAJ || fwQuality(d) == CHORD_Q_MIN);
-    if (p5a && p5b && rm == 5) s = s * 80u / 100u;
+    if (p5a && p5b && rm == 5) {
+      // PARALLEL STRICTNESS (bank 3): 40 reproduces the old fixed 80%
+      // dent, 100 is a veto, 0 lets the fifths travel
+      uint8_t ps = sTona[16];
+      if (ps >= 95) s = s / 8u;
+      else s = s * (uint32_t)(100u - ps / 2u) / 100u;
+    }
+    // BASS CONTINUITY (bank 3): weight on a bass that walks (a second or a
+    // third) instead of leaping
+    if (sTona[17] != 50 && rm <= 2)
+      s = s * (uint32_t)(50u + sTona[17]) / 100u;
   }
 
   uint8_t sp = sKnob[6];                      // SURP: seeded temperature
@@ -596,7 +689,9 @@ static void deriveProposal(uint8_t prev, uint8_t pc, uint8_t prevBass,
   if (sdTgt != 255) {
     uint32_t hs = hash32(sSeed ^ ((uint32_t)prev << 8) ^ ((uint32_t)pc << 16) ^
                          0x5Eu);
-    if ((hs % 100u) < (uint32_t)((uint16_t)sKnob[6] * 30u / 100u)) sd = sdTgt;
+    // SECONDARY DOM DENSITY (bank 2) is the chance knob now: at 50 it
+    // matches the Surp-gated roll this used to be, 100 is 30%, 0 never
+    if ((hs % 100u) < (uint32_t)((uint16_t)sTona[10] * 30u / 100u)) sd = sdTgt;
   }
   if (oSD) *oSD = sd;
 
@@ -627,7 +722,17 @@ static void deriveProposal(uint8_t prev, uint8_t pc, uint8_t prevBass,
     uint32_t hs = hash32(sSeed ^ (prev * 0x12345678u) ^ (pc * 0x9ABCDEFu) ^ 0xF1u);
     q = (hs % 100u) < (uint32_t)colorP ? CHORD_Q_SUS : fwQuality(d);
   } else if (in) q = fwQuality(d);
-  else q = (sKnob[0] >= 50) ? CHORD_Q_MAJ : CHORD_Q_MIN;   // borrowed: MOOD
+  else {
+    q = (sKnob[0] >= 50) ? CHORD_Q_MAJ : CHORD_Q_MIN;   // borrowed: MOOD
+    // MODAL MIXTURE (bank 2): the chord borrowed from outside the scale can
+    // come from the parallel mode instead of a colouring of the same one
+    if (sTona[11]) {
+      uint32_t hm = hash32(sSeed ^ (prev * 0x5BD1E995u) ^ (pc * 0x1B873593u) ^
+                           0x7Au);
+      if ((hm % 100u) < (uint32_t)sTona[11])
+        q = (q == CHORD_Q_MAJ) ? CHORD_Q_MIN : CHORD_Q_MAJ;
+    }
+  }
 
   if (sd == 255) {
     if (bucket == 1) {
@@ -789,6 +894,70 @@ void k4KnobAdjust(uint8_t idx, int16_t counts) {
 
 uint8_t k4Knob(uint8_t idx) { return idx < 7 ? sKnob[idx] : 0; }
 
+// --- TONALITY page accessors ----------------------------------------------
+uint8_t k4Tona(uint8_t i) { return i < 32 ? sTona[i] : 0; }
+uint8_t k4TonaMirror(uint8_t i) { return i < 32 ? tonaMir[i] : 0; }
+const char* k4TonaName(uint8_t i) {
+  return i < 32 ? tonaNames[i] : "--";
+}
+void k4TonaBankSet(uint8_t b) {
+  if (b > 3) b = 3;
+  sTonaBank = b;
+}
+uint8_t k4TonaBank() { return sTonaBank; }
+const char* k4TonaBankName() { return tonaBankNames[sTonaBank]; }
+const char* k4TonaBankLong() { return tonaBankLong[sTonaBank]; }
+
+// one count per step; percents clamp, enums wrap (a selector should never
+// stick at its end - that reads as a dead knob)
+void k4TonaAdjust(uint8_t i, int16_t counts) {
+  if (i >= 32 || counts == 0) return;
+  if (tonaMir[i]) return;                // mirrors never store
+  int v = (int)sTona[i] + (counts > 0 ? 1 : -1);
+  int mx = (int)tonaMax[i];
+  if (mx == 0) return;
+  if (mx >= 100) {                       // percent: clamp
+    if (v < 0) v = 0;
+    if (v > mx) v = mx;
+  } else {                               // enum: wrap
+    if (v < 0) v = mx;
+    if (v > mx) v = 0;
+  }
+  sTona[i] = (uint8_t)v;
+}
+
+const char* k4TonaLabel(uint8_t i) {
+  static char buf[8];
+  if (i >= 32) return "--";
+  uint8_t v = sTona[i];
+  switch (i) {
+    case 3: { static const char* const n[4] = { "NONE", "REL", "PAR",
+                                                "DEG" };
+              return n[v & 3]; }
+    case 4: { static const char* const n[7] = { "1", "2", "3", "4", "5",
+                                                "6", "7" };
+              return n[v % 7]; }
+    case 5:
+    case 26: { snprintf(buf, sizeof(buf), "%uB", (unsigned)(v + 1));
+               return buf; }
+    case 19: { static const char* const n[3] = { "ROOT", "FREE", "STRICT" };
+               return n[v % 3]; }
+    case 24: { snprintf(buf, sizeof(buf), "%u", (unsigned)(v + 1));
+               return buf; }
+    case 28: { static const char* const n[5] = { "TRANS", "REVOI", "REORD",
+                                                 "EXTND", "SUBST" };
+               return n[v % 5]; }
+    case 29: { static const char* const n[4] = { "FREE", "MIRR", "RESP",
+                                                 "PAR" };
+               return n[v & 3]; }
+    case 30: { static const char* const n[3] = { "1", "2", "4" };
+               return n[v % 3]; }
+    default: break;
+  }
+  snprintf(buf, sizeof(buf), "%u", (unsigned)v);
+  return buf;
+}
+
 // MOOD reads out as a word.  The knob stays a continuous bright/dark bias in
 // scorePc - these bands are a LABEL on the same 0..100 value, not a selector
 const char* k4MoodName() {
@@ -902,6 +1071,9 @@ bool k4WriteToggle() { sWrite = !sWrite; return sWrite; }
 bool k4Write()       { return sWrite; }
 bool k4AutoToggle()  { sAuto = !sAuto; return sAuto; }
 bool k4Auto()        { return sAuto; }
+bool k4TonalityToggle() { sTonality = !sTonality; return sTonality; }
+bool k4Tonality()       { return sTonality; }
+void k4TonalityDismiss() { sTonality = false; sTonaBank = 0; }
 bool k4LeadToggle()  { sLead = !sLead; k4Refresh(); return sLead; }
 bool k4Lead()        { return sLead; }
 void k4HoldSet(bool on) { sHold = on; }
@@ -1017,6 +1189,88 @@ int k4KeyCommitted() {
 // bVII->V (degree space; the swap lands on that degree's pitch class)
 static const uint8_t subSw[7] = {2, 3, 0, 1, 6, 3, 4};
 
+// TONALITY voicing knobs (bank 3) shape what M3 WRITES: DOUBL adds or prunes
+// a doubled root, SPREAD pushes the top voice out (or pulls it in), LEAP
+// clamps the widest gap between adjacent voices.  Defaults (FREE / 50 / 50)
+// leave the built chord exactly as chordBuild returned it
+static uint8_t k4VoiceShape(uint8_t *nt, uint8_t n) {
+  if (n < 3 || n > 7) return n;
+  if (sTona[19] == 0 && n < 6) {            // ROOT: double it an octave up
+    if (nt[0] + 12 <= 127) nt[n++] = (uint8_t)(nt[0] + 12);
+  } else if (sTona[19] == 2) {              // STRICT: one of each pitch class
+    uint8_t out[8], k = 0;
+    for (uint8_t i = 0; i < n; i++) {
+      bool dup = false;
+      for (uint8_t j = 0; j < k; j++)
+        if ((out[j] % 12) == (nt[i] % 12)) { dup = true; break; }
+      if (!dup) out[k++] = nt[i];
+    }
+    for (uint8_t i = 0; i < k; i++) nt[i] = out[i];
+    n = k;
+  }
+  // SPREAD: 50 keeps the close voicing, high opens the top octave, low folds
+  if (sTona[23] >= 70 && nt[n - 1] + 12 <= 127) nt[n - 1] += 12;
+  else if (sTona[23] <= 30 && n >= 4 && nt[n - 1] - nt[0] > 12)
+    nt[n - 1] -= 12;
+  // LEAP: 50 leaves the built voicing alone, above it packs the voices
+  // tighter (12 semitones at 51 down to 4 at 100), below it does nothing -
+  // a chord the engine built is never widened by a strictness knob
+  if (sTona[18] > 50) {
+    uint8_t lim = (uint8_t)(12u - (uint32_t)(sTona[18] - 50u) * 8u / 50u);
+    for (uint8_t i = 1; i < n; i++) {
+      while (nt[i] > nt[i - 1] + lim && nt[i] >= 12) nt[i] -= 12;
+    }
+  }
+  return n;
+}
+
+// MODULATION PLAN (bank 1): the tail of the pattern is restated in another
+// key - every tone moves by the same interval, so qualities, inversions and
+// the voicing the generator chose all survive.  RELATIVE moves to the
+// relative minor/major (-3), DEGREE to the target degree, PARALLEL keeps the
+// tonic and flips the mode colour instead (the same key, the other mode)
+static void applyModulation(int L) {
+  uint8_t plan = sTona[3];
+  if (plan == 0 || L < 24) return;
+  uint8_t span = (uint8_t)(sTona[5] + 1);        // 1..4 bars
+  int from = (4 - span) * 16;
+  if (from < 0) from = 0;
+  if (from >= L) return;
+  int off = 0;
+  if (plan == 1) off = -3;                       // RELATIVE
+  else if (plan == 3) {                          // DEGREE
+    uint8_t tg = sTona[4] % 7;
+    off = (int)sFw[tg] - (int)sFw[0];
+    if (off > 6) off -= 12;
+    if (off < -6) off += 12;
+  }
+  for (int st = from; st < L; st++) {
+    uint8_t n = 0;
+    const uint8_t *nt = stepChordAt((uint8_t)st, &n);
+    if (!nt || n == 0 || n > 8) continue;
+    uint8_t out[8];
+    if (plan == 2) {                             // PARALLEL: flip the mode
+      uint8_t r = 0, q = 0;
+      decodeChord(nt, n, &r, &q);
+      uint8_t nq = (q == CHORD_Q_MAJ) ? CHORD_Q_MIN
+                 : (q == CHORD_Q_MIN) ? CHORD_Q_MAJ : q;
+      if (nq == q) continue;
+      uint8_t built = chordBuild((uint8_t)(12 * keyOctave() + 24 + (r % 12)),
+                                 nq, 0, 0, out);
+      if (built) stepChordWrite((uint8_t)st, out, built);
+      continue;
+    }
+    if (off == 0) continue;
+    for (uint8_t i = 0; i < n; i++) {
+      int v = (int)nt[i] + off;
+      if (v < 0) v = 0;
+      if (v > 127) v = 127;
+      out[i] = (uint8_t)v;
+    }
+    stepChordWrite((uint8_t)st, out, n);
+  }
+}
+
 static int k4ApplyBody() {
   int L = seqPatLen();
   if (L <= 0) return 0;
@@ -1033,6 +1287,14 @@ static int k4ApplyBody() {
   // they keep this main chord when the passing rule declines it)
   uint8_t mDeg[64], mBass[64];            // STEP_MAX: pattern max 64
   bool mOk[64];
+  // HARMONIC RATE (bank 4): a new chord every N steps - the harmony stops
+  // being glued to the rhythm.  The chord is held across the N steps, so a
+  // rate of 2 is a half-note progression over sixteenths
+  uint8_t hrate = (uint8_t)(sTona[24] + 1);
+  uint8_t holdN = 0, holdNotes[8];
+  uint8_t holdDeg = 0, holdBass = 0, holdRoot = 0, holdQ = CHORD_Q_MAJ;
+  bool holdOk = false;
+  uint8_t borrowUsed = 0;                 // BORROW BUDGET: spent so far
   // PHRASE restatement is BAR-level, not half-level: every template is a
   // four-letter map (AABB / ABAB / ABAC / AABA) and a bar whose letter has
   // already played replays the FIRST bar that carried it.  That is the only
@@ -1054,6 +1316,17 @@ static int k4ApplyBody() {
       }
     }
   }
+  // ANTECEDENT (bank 4): with no phrase template the second half can still
+  // answer the first - MIRROR restates both bars, RESPOND only bar 3 (bar 4
+  // is the answer), PARALLEL restates them a fifth up
+  int8_t srcA[4] = { -1, -1, -1, -1 };
+  if (sPhrase == 0 && sTona[29]) {
+    int nbA = (L + 15) / 16;
+    if (nbA >= 3) {
+      srcA[2] = 0;
+      if (nbA >= 4 && sTona[29] != 2) srcA[3] = 1;
+    }
+  }
   for (uint8_t st = 0; st < (uint8_t)L; st++) {
     mOk[st] = false;
     if (k4Locked(st)) {
@@ -1067,6 +1340,17 @@ static int k4ApplyBody() {
       }
       continue;
     }
+    if (hrate > 1 && (st % hrate) != 0) {   // harmony holds through the slot
+      if (holdOk && stepChordWrite(st, holdNotes, holdN) >= 0) {
+        mDeg[st] = holdDeg;
+        mBass[st] = holdBass;
+        mOk[st] = true;
+        written++;
+        prev = holdDeg; prevBass = holdBass; prevRoot = holdRoot;
+        prevQ = holdQ; prevSd = 255;
+      }
+      continue;
+    }
     // PHRASE: this bar carries a letter that already played - replay that
     // bar's chord for the same in-bar position.  Going through the normal
     // write path also advances the chain (prev/prevBass/prevRoot/prevQ), so
@@ -1077,11 +1361,29 @@ static int k4ApplyBody() {
     // old half-copy behaved.
     {
       uint8_t qu = (uint8_t)(st / 16);
+      if (qu < 4 && srcOf[qu] < 0 && srcA[qu] >= 0) srcOf[qu] = srcA[qu];
+      // CELL REUSE (bank 4): a bar that would be new material repeats the
+      // bar before it instead, now and then, the way a solo quotes itself
+      if (sPhrase != 0 && qu > 0 && qu < 4 && srcOf[qu] < 0 && sTona[27]) {
+        uint32_t hc = hash32(sSeed ^ ((uint32_t)qu << 8) ^ 0xC9u);
+        if ((hc % 100u) < (uint32_t)sTona[27])
+          srcOf[qu] = (int8_t)(qu - 1);
+      }
       bool barLast = ((st % 16) == 15) || (st == (uint8_t)(L - 1));
-      if (qu < 4 && srcOf[qu] >= 0 && !barLast) {
+      // MOTIF LENGTH (bank 4): how much of the source bar is restated - a
+      // one- or two-chord motif leaves the rest of the bar new
+      uint8_t mlen = (sTona[30] == 0) ? 4 : (sTona[30] == 1) ? 8 : 16;
+      if (qu < 4 && srcOf[qu] >= 0 && !barLast && (st % 16) < mlen) {
         uint8_t from = (uint8_t)((uint8_t)srcOf[qu] * 16 + (st % 16));
         uint8_t sn = 0;
         const uint8_t *snt = stepChordAt(from, &sn);
+        uint8_t tr = (srcA[qu] >= 0 && sTona[29] == 3) ? 7 : 0;
+        uint8_t tuned[8];
+        if (snt && sn && tr) {
+          for (uint8_t i = 0; i < sn && i < 8; i++)
+            tuned[i] = (uint8_t)((snt[i] + tr <= 127) ? snt[i] + tr : 127);
+          snt = tuned;
+        }
         if (snt && sn && stepChordWrite(st, snt, sn) >= 0) {
           uint8_t rRoot = 0, rQ = 0;
           mDeg[st] = decodeChord(snt, sn, &rRoot, &rQ);
@@ -1104,10 +1406,28 @@ static int k4ApplyBody() {
       int bar = st / 16;
       if (bar > 3) bar = 3;
       plan = sPlanDeg[bar];
+      // PHRASE OVERLAP (bank 4): an elided bar end goes without its landing,
+      // so the next bar opens on the resolution instead (never the last bar)
+      if (sTona[25] && st != (uint8_t)(L - 1)) {
+        uint32_t he = hash32(sSeed ^ ((uint32_t)st << 8) ^ 0xA7u);
+        if ((he % 100u) < (uint32_t)sTona[25]) plan = K4_PLAN_NONE;
+      }
     }
     uint8_t pPrev = prev, pRoot = prevRoot, pQ = prevQ, pSd = prevSd;
     uint8_t pc = pickPc(prev, st, prevRoot, prevQ, prevSd, plan);
     if (pc > 11) continue;
+    // BORROW BUDGET (bank 2): a hard cap on non-diatonic chords per pattern,
+    // so "surprising" is a budget instead of a dice roll - 0 is unlimited
+    if (sTona[8] && !fwHas(pc)) {
+      uint8_t cap = (uint8_t)(64u - (uint32_t)sTona[8] * 64u / 100u);
+      if (borrowUsed >= cap) {
+        sNoBorrow = true;
+        uint8_t alt = pickPc(prev, st, prevRoot, prevQ, prevSd, plan);
+        sNoBorrow = false;
+        if (alt <= 11) pc = alt;
+      }
+    }
+    if (!fwHas(pc)) borrowUsed++;
     if (sEmbMode == 2 && fwHas(pc)) {      // PASS+SUB: swap the degree,
       uint32_t h = hash32(sSeed ^ ((uint32_t)st << 8) ^     // rolled once
                           ((uint32_t)pc << 16) ^ 0xC2u);
@@ -1121,8 +1441,12 @@ static int k4ApplyBody() {
     uint8_t notes[8];
     uint8_t n = chordBuild(root, q, ext, inv, notes);
     if (n == 0) continue;
+    n = k4VoiceShape(notes, n);           // DOUBL / SPREAD / LEAP
     if (stepChordWrite(st, notes, n) < 0) continue;
     written++;
+    holdN = n;
+    for (uint8_t i = 0; i < n && i < 8; i++) holdNotes[i] = notes[i];
+    holdOk = true;
     mDeg[st] = fwDeg(pc);
     mBass[st] = (uint8_t)(notes[0] % 12); // the bass the build chose
     mOk[st] = true;
@@ -1170,6 +1494,7 @@ static int k4ApplyBody() {
       written++;
     }
   }
+  applyModulation(L);                     // MOD PLAN / TARGET / SPAN
   if (sPhrase != 0 && sPlanGoal != K4_PLAN_NONE) {
     char pb[24];
     if (sPlanGoal == K4_PLAN_NONE)
@@ -1458,7 +1783,68 @@ int k4Regenerate() {
   return k4ApplyBody();
 }
 
+// VARIATION OPERATOR (bank 4) - what F1 does when the generator re-seeds:
+// TRANSPOSE is the plain reseed, the other four transform the material that
+// is already written instead of drawing new material
+static int k4VariationOperators() {
+  int L = seqPatLen();
+  if (L <= 0 || L > 64) return 0;
+  buildFw();
+  uint8_t op = sTona[28];
+  static uint8_t src[64][9];            // REORDER reads the old pattern first
+  if (op == 2) {
+    for (uint8_t st = 0; st < (uint8_t)L; st++) {
+      uint8_t cnt = 0;
+      const uint8_t *nt = stepChordAt(st, &cnt);
+      uint8_t n = (nt && cnt <= 8) ? cnt : 0;
+      src[st][0] = n;
+      for (uint8_t i = 0; i < n; i++) src[st][1 + i] = nt[i];
+    }
+  }
+  int changed = 0;
+  for (uint8_t st = 0; st < (uint8_t)L; st++) {
+    if (k4Locked(st)) continue;
+    uint8_t cnt = 0;
+    uint8_t notes[8];
+    uint8_t n = 0;
+    if (op == 2) {                       // REORDER: hand each step its
+      n = src[st][0];                    // neighbour's chord
+      for (uint8_t i = 0; i < n; i++) notes[i] = src[st][1 + i];
+    } else {
+      const uint8_t *nt = stepChordAt(st, &cnt);
+      if (!nt || cnt == 0 || cnt > 8) continue;
+      for (uint8_t i = 0; i < cnt; i++) notes[i] = nt[i];
+      n = cnt;
+      if (op == 1) {                     // REVOICE: next inversion up
+        uint8_t tmp = notes[0];
+        for (uint8_t i = 1; i < n; i++) notes[i - 1] = notes[i];
+        notes[n - 1] = (uint8_t)((tmp + 12 <= 127) ? tmp + 12 : tmp);
+      } else if (op == 3 && n < 6) {     // EXTEND: add the seventh
+        notes[n++] = (uint8_t)((notes[0] + 10 <= 127) ? notes[0] + 10 : notes[0]);
+      } else if (op == 4) {              // SUBSTITUTE through the EMB table
+        uint8_t d = decodeChord(notes, n, 0, 0);
+        if (d < 7) {
+          uint8_t nd = subSw[d];
+          uint8_t built = chordBuild((uint8_t)(12 * keyOctave() + 24 + sFw[nd]),
+                                     fwQuality(nd), 0, 0, notes);
+          if (built) n = built;
+        }
+      }
+    }
+    if (n == 0) continue;
+    if (stepChordWrite(st, notes, n) >= 0) changed++;
+  }
+  histRebuild();
+  k4Refresh();
+  return changed;
+}
+
 int k4Variation() {
+  if (sTona[28] != 0) {                  // a transform, not a new draw
+    stepSnapshotTake();
+    sRegenSnap = false;
+    return k4VariationOperators();
+  }
   sSeed = hash32(sSeed ^ (uint32_t)millis() ^ 0xB5297A4Du);
   if (sSeed == 0) sSeed = 0x9E3779B9u;
   return k4ApplyAll();
@@ -1480,6 +1866,7 @@ void k4Stop() {
   sHistN = 0;
   sHold = false;
   sEmbMenu = false;            // the EMB row never outlives KEYMODE4
+  sTonality = false;           // ...nor the M2 tonality menu
   sStepSel = -1;               // ...nor the held-step encoder row
   headerStickClear();          // nor the persistent progression header
 }

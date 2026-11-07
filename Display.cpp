@@ -110,7 +110,7 @@ static const char* ctrlLegend(uint8_t i) {
       return fr[i - 5];
     }
     if (key4) {          // KEYMODE4: VAR / LOCK / LEAD / HOLD
-      static const char* k4r2[4] = { "VAR", "LOCK", "LEAD", "HOLD" };
+      static const char* k4r2[4] = { "VAR", "LOCK", "LEAD", "AUTO" };
       return k4r2[i - 5];
     }
     if (!key2) {
@@ -148,7 +148,7 @@ static const char* ctrlLegend(uint8_t i) {
     if (modeBase == MODE_SEQ && modeVariant != 3 &&
         seqTrack() == SEQ_TRACK_MONO && seqMonoType() == SEQ_MONO_LEAD)
       return "LEAD";
-    if (key4) return "AUTO";
+    if (key4) return "MENU";
     return key2 ? "Min" : "M2";
   }
   if (i == 4) {
@@ -345,6 +345,8 @@ void refreshMainScreen() {
   bool key4Ov = (b.enc == ENC_KEY4_PREV);
   // ...or its sticky EMB menu (EMB / PLACE)
   bool key4Emb = (b.enc == ENC_KEY4_EMB);
+  // ...or the M2 TONALITY page - four banks, F1..F4 pick one
+  bool key4Menu = (b.enc >= ENC_KEY4_MENU && b.enc <= ENC_KEY4_MENU4);
   // ...or the held-step row (OCT/DEG/INV/VOICE editing ONE step)
   bool key4Step = (b.enc == ENC_KEY4_STEP);
 
@@ -610,6 +612,9 @@ void refreshMainScreen() {
       snprintf(val, sizeof(val), "%u", k4Knob(1));      // ENC3 = TENS
     } else if (key4 && c == 3) {
       snprintf(val, sizeof(val), "%u", k4Knob(2));      // ENC4 = MOTION
+    } else if (key4Menu) {
+      snprintf(val, sizeof(val), "%s",   // the open bank's value for this knob
+               k4TonaLabel((uint8_t)(k4TonaBank() * 8 + c)));
     } else if (key4Ov && c == 3) {
       snprintf(val, sizeof(val), "%s",
                chordFScale() ? "ON" : "OFF");       // overlay ENC4 = FScale
@@ -846,7 +851,7 @@ void refreshMainScreen() {
       snprintf(val, sizeof(val), "%s", k4PhraseName());      // PHRASE
     } else if (key4 && 4 + c == 7) {
       snprintf(val, sizeof(val), "%u", k4Knob(6));          // SURP
-    } else if (key4Ov || key4Emb) {
+    } else if (key4Ov || key4Emb || key4Menu) {
       snprintf(val, sizeof(val), "");          // overlay row 2 idle
     } else if (keyOv && 4 + c == 4) {
       snprintf(val, sizeof(val), "%s", chordKeyLock() ? "ON" : "OFF");
@@ -903,6 +908,9 @@ void drawHeaderText() {
     left = "DRUM PATTERN";       // the drum pattern page owns the row
   } else if (genPageActive()) {
     left = "GENERATOR";          // the generator page owns the encoder row
+  } else if (currentBinding().enc >= ENC_KEY4_MENU &&
+             currentBinding().enc <= ENC_KEY4_MENU4) {
+    left = k4TonaBankName();    // the M2 page owns the row: which bank
   } else if (arpPageActive()) {
     left = arpOptionName(arpOptionSel());   // ARP / ARP ORDER .. ARP OPTIONS
   } else if (strumFRowActive()) {

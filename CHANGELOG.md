@@ -8,6 +8,11 @@ de-facto version marker is the size of the saved-settings block (see
 
 ### Ableton Live bridge
 
+- **A clip press with no link now says `Link Down Check MIDI`** instead of repeating
+  `Live Link Off`, which read like the overlay closing; the overlay's own strings are
+  `Live Mode On` / `Live Mode Off`. `modes/link.md` now separates the two pairs and names the
+  surface's missing **Output** port as the usual reason a loaded script never answers.
+
 - **`ENCABLETONMODE` — tap `NEXT` in ENCMODE and the instrument becomes a Live controller** —
   a latched overlay (like an ARP page, not a fourth mode family) with a companion remote
   script in `Remote Scripts/Teensy2048/`. The pads become the selected track's 16 **clip
@@ -118,6 +123,37 @@ de-facto version marker is the size of the saved-settings block (see
   at a time (the last pad pressed); the row drops when the last C-F pad lets go.
 
 ### Keyboard
+
+- **KEYMODE4: the TONALITY page is four banks of eight** - `M2` opened a single
+  four-knob row (OCT/SCALE/KEY/FSCALE), which is a shortcut, not tonality
+  control. It now has four banks and `F1`-`F4` pick one while the page is up
+  (the open bank's pad burns white, the other three drift through a slow dim
+  hue cycle). Bank 1 TONAL CENTER (`KEY SCALE GRAV MOD MODTGT MODLEN FSCALE
+  CADSTR`), 2 CHROMATICISM (`BORROW PREP SD MIX DIAT UNRES SURP STRICT`),
+  3 VOICE LEADING (`PARAL BASS LEAP DOUBL CMNTN TOP LEAD SPREAD`), 4 STRUCTURE
+  (`RATE ELIDE CADWIN CELL VAR ANTE MOTIF PHRASE`) - 26 new generator controls
+  plus the six mirrors (KEY/SCALE/FSCALE/SURP/VOICE-LEAD/PHRASE), every one
+  defaulting to a neutral value so the page never changes the sound until a
+  knob is turned. Tonal gravity, modulation plan/target/span, cadence
+  strictness, borrow budget, preparation, secondary-dominant density, modal
+  mixture, diatonic bias, unresolved cost, functional strictness, parallel
+  strictness, bass continuity, leap limit, doubling rule, common-tone weight,
+  top-voice weight, register spread, harmonic rhythm, phrase overlap, cadence
+  window, cell reuse, the variation operator, antecedent relation and motif
+  length all reach the scoring, the apply pass or the variation pass.
+  `Key4.cpp/.h`, `Bindings.cpp/.h` (four new sets), `Events.cpp`, `Display.cpp`,
+  `Modes.cpp`.
+- **KEYMODE4: M2 is a TONALITY menu, auto-advance moved to F4** - the M2 button
+  carried the auto-advance toggle, which blocked the encoder-page slot the other
+  modes use for their menus. `F4` **tap** now toggles auto-advance (a long press
+  is still the audition-only hold), and `M2` toggles a sticky **TONALITY** page:
+  `OCT / SCALE / KEY / FSCALE` on ENC1-4, the four knobs the PREV overlay otherwise
+  hides behind a hold, `--` on the rest, `TONALITY` in the header's left slot. The
+  M2 pad is a **slow hue cycle** - four times slower than the M3 APPLY marker, dim
+  while the page is closed and brighter while it is open (KEYMODE4 now repaints at
+  30 fps so both markers actually move; the M3 cycle was being sampled once per
+  repaint before). The page dies with the mode, like the EMB row. `Bindings.cpp/.h`
+  (`ENC_KEY4_MENU`), `Events.cpp`, `Display.cpp`, `Key4.cpp/.h`, `Modes.cpp`.
 
 - **The keyboard on a `DRUM` track is a drum pad row** - when the keyboard channel
   points at a DRUM sequence the twelve pads stop being pitches: the scale filter, the
